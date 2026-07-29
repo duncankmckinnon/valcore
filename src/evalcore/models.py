@@ -112,8 +112,7 @@ class CapabilitySpec(BaseModel):
     def _check_name(self) -> "CapabilitySpec":
         if self.name not in VALID_CAPABILITIES:
             raise ValueError(
-                f"Unknown capability {self.name!r}; valid names are "
-                f"{sorted(VALID_CAPABILITIES)}."
+                f"Unknown capability {self.name!r}; valid names are {sorted(VALID_CAPABILITIES)}."
             )
         return self
 
@@ -296,9 +295,7 @@ def validate_version(version: EvaluatorVersion) -> None:
 
     missing = sorted(_template_columns(version.prompt_template) - set(version.required_columns))
     if missing:
-        raise ConfigError(
-            f"prompt_template references columns not in required_columns: {missing}."
-        )
+        raise ConfigError(f"prompt_template references columns not in required_columns: {missing}.")
 
     for cap in version.capabilities:
         cap_name = cap.get("name")

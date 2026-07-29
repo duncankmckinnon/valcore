@@ -19,14 +19,14 @@ from evalcore.models import (
 
 def make_version(**overrides: object) -> EvaluatorVersion:
     """Build a valid categorical EvaluatorVersion, applying any field overrides."""
-    base: dict[str, object] = dict(
-        evaluator_id="ev1",
-        version_name="v1",
-        model="gateway/anthropic:claude-sonnet-5",
-        instructions="You are an evaluator.",
-        prompt_template="Rate the answer to {question}.",
-        required_columns=["question"],
-        output_fields=[
+    base: dict[str, object] = {
+        "evaluator_id": "ev1",
+        "version_name": "v1",
+        "model": "gateway/anthropic:claude-sonnet-5",
+        "instructions": "You are an evaluator.",
+        "prompt_template": "Rate the answer to {question}.",
+        "required_columns": ["question"],
+        "output_fields": [
             {
                 "name": "verdict",
                 "type": "enum",
@@ -34,26 +34,26 @@ def make_version(**overrides: object) -> EvaluatorVersion:
                 "enum_values": ["pass", "fail"],
             }
         ],
-        score_field="verdict",
-        score_kind=ScoreKind.CATEGORICAL,
-        score_labels=["pass", "fail"],
-        capabilities=[],
-        tools=[],
-    )
+        "score_field": "verdict",
+        "score_kind": ScoreKind.CATEGORICAL,
+        "score_labels": ["pass", "fail"],
+        "capabilities": [],
+        "tools": [],
+    }
     base.update(overrides)
     return EvaluatorVersion(**base)
 
 
 def make_numeric_version(**overrides: object) -> EvaluatorVersion:
     """Build a valid numeric EvaluatorVersion, applying any field overrides."""
-    base: dict[str, object] = dict(
-        evaluator_id="ev1",
-        version_name="v1",
-        model="gateway/anthropic:claude-sonnet-5",
-        instructions="You are an evaluator.",
-        prompt_template="Rate {question}.",
-        required_columns=["question"],
-        output_fields=[
+    base: dict[str, object] = {
+        "evaluator_id": "ev1",
+        "version_name": "v1",
+        "model": "gateway/anthropic:claude-sonnet-5",
+        "instructions": "You are an evaluator.",
+        "prompt_template": "Rate {question}.",
+        "required_columns": ["question"],
+        "output_fields": [
             {
                 "name": "rating",
                 "type": "float",
@@ -62,10 +62,10 @@ def make_numeric_version(**overrides: object) -> EvaluatorVersion:
                 "maximum": 1.0,
             }
         ],
-        score_field="rating",
-        score_kind=ScoreKind.NUMERIC,
-        score_labels=None,
-    )
+        "score_field": "rating",
+        "score_kind": ScoreKind.NUMERIC,
+        "score_labels": None,
+    }
     base.update(overrides)
     return EvaluatorVersion(**base)
 
@@ -96,9 +96,7 @@ VALIDATE_VERSION_REJECTIONS = [
     ),
     pytest.param(
         {
-            "output_fields": [
-                {"name": "verdict", "type": "str", "description": "d"}
-            ],
+            "output_fields": [{"name": "verdict", "type": "str", "description": "d"}],
             "score_labels": None,
         },
         "must be an enum",
@@ -152,6 +150,15 @@ def test_validate_version_rejections(overrides: dict[str, object], message: str)
         validate_version(make_version(**overrides))
 
 
+def test_valid_version_with_known_capability_passes() -> None:
+    validate_version(make_version(capabilities=[{"name": "CodeMode", "config": {}}]))
+
+
+def test_categorical_labels_out_of_order_rejected() -> None:
+    with pytest.raises(ConfigError, match="must exactly match"):
+        validate_version(make_version(score_labels=["fail", "pass"]))
+
+
 def test_numeric_score_field_wrong_type_rejected() -> None:
     version = make_numeric_version(
         output_fields=[
@@ -169,11 +176,11 @@ def test_numeric_score_field_wrong_type_rejected() -> None:
 
 def make_dataset(**overrides: object) -> Dataset:
     """Build a dataset compatible with make_version(), applying any overrides."""
-    base: dict[str, object] = dict(
-        name="ds",
-        columns=["question", "answer"],
-        label_schema={"kind": "categorical", "labels": ["pass", "fail"]},
-    )
+    base: dict[str, object] = {
+        "name": "ds",
+        "columns": ["question", "answer"],
+        "label_schema": {"kind": "categorical", "labels": ["pass", "fail"]},
+    }
     base.update(overrides)
     return Dataset(**base)
 
@@ -212,27 +219,27 @@ def test_output_field_valid_enum() -> None:
 
 OUTPUT_FIELD_REJECTIONS = [
     pytest.param(
-        dict(name="verdict", type=FieldType.ENUM, description="d"),
+        {"name": "verdict", "type": FieldType.ENUM, "description": "d"},
         id="enum-without-values",
     ),
     pytest.param(
-        dict(name="x", type=FieldType.STR, description="d", enum_values=["a"]),
+        {"name": "x", "type": FieldType.STR, "description": "d", "enum_values": ["a"]},
         id="non-enum-with-values",
     ),
     pytest.param(
-        dict(name="x", type=FieldType.STR, description="d", minimum=0.0),
+        {"name": "x", "type": FieldType.STR, "description": "d", "minimum": 0.0},
         id="bounds-on-non-numeric",
     ),
     pytest.param(
-        dict(name="x", type=FieldType.INT, description="d", minimum=5.0, maximum=1.0),
+        {"name": "x", "type": FieldType.INT, "description": "d", "minimum": 5.0, "maximum": 1.0},
         id="min-greater-than-max",
     ),
     pytest.param(
-        dict(name="not an identifier", type=FieldType.STR, description="d"),
+        {"name": "not an identifier", "type": FieldType.STR, "description": "d"},
         id="invalid-identifier",
     ),
     pytest.param(
-        dict(name="class", type=FieldType.STR, description="d"),
+        {"name": "class", "type": FieldType.STR, "description": "d"},
         id="python-keyword-name",
     ),
 ]
@@ -253,14 +260,14 @@ def test_label_schema_valid_numeric() -> None:
 
 
 LABEL_SCHEMA_REJECTIONS = [
-    pytest.param(dict(kind=ScoreKind.CATEGORICAL), id="categorical-without-labels"),
+    pytest.param({"kind": ScoreKind.CATEGORICAL}, id="categorical-without-labels"),
     pytest.param(
-        dict(kind=ScoreKind.CATEGORICAL, labels=["a"], minimum=0.0),
+        {"kind": ScoreKind.CATEGORICAL, "labels": ["a"], "minimum": 0.0},
         id="categorical-with-bounds",
     ),
-    pytest.param(dict(kind=ScoreKind.NUMERIC, labels=["a"]), id="numeric-with-labels"),
+    pytest.param({"kind": ScoreKind.NUMERIC, "labels": ["a"]}, id="numeric-with-labels"),
     pytest.param(
-        dict(kind=ScoreKind.NUMERIC, minimum=5.0, maximum=1.0),
+        {"kind": ScoreKind.NUMERIC, "minimum": 5.0, "maximum": 1.0},
         id="numeric-min-greater-than-max",
     ),
 ]

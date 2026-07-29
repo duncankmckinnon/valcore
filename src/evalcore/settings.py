@@ -53,7 +53,9 @@ def validate_model_string(model: str) -> None:
         if model.startswith(prefix):
             name = model[len(prefix) :]
             if not name:
-                raise ConfigError(f"Model string {model!r} is missing a model name after {route!r}.")
+                raise ConfigError(
+                    f"Model string {model!r} is missing a model name after {route!r}."
+                )
             return
     raise ConfigError(
         f"Model string {model!r} must start with one of {GATEWAY_ROUTES} followed by ':<model>'."
