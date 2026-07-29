@@ -118,14 +118,6 @@ async def execute_run(
             wanted = set(only_row_ids)
             rows = [row for row in rows if row.id in wanted]
 
-        if run.kind is RunKind.VALIDATION:
-            unlabeled = sum(1 for row in rows if row.label is None)
-            if unlabeled:
-                raise ContractError(
-                    f"Validation run requires every row to carry a label; "
-                    f"{unlabeled} row(s) are unlabeled."
-                )
-
         built_agent = agent if agent is not None else build_agent(version)
     except Exception as exc:  # noqa: BLE001 — any setup failure becomes a FAILED run
         failed = await asyncio.to_thread(
@@ -137,6 +129,16 @@ async def execute_run(
         )
         await emit("error", {"error": str(exc)})
         return failed
+
+    # The missing-label contract is a caller error, not a FAILED run: it must
+    # propagate rather than be recorded on the run.
+    if run.kind is RunKind.VALIDATION:
+        unlabeled = sum(1 for row in rows if row.label is None)
+        if unlabeled:
+            raise ContractError(
+                f"Validation run requires every row to carry a label; "
+                f"{unlabeled} row(s) are unlabeled."
+            )
 
     if only_row_ids is not None:
         await asyncio.to_thread(_clear_results, store, run_id, list(only_row_ids))
