@@ -35,7 +35,7 @@ export function ConfigDiff({ current, proposed, changedFields, onApply }: Config
   }
 
   const accept = (field: string) => {
-    onApply({ [field]: (proposed as Record<string, unknown>)[field] } as Partial<GeneratedConfig>);
+    onApply({ [field]: (proposed as unknown as Record<string, unknown>)[field] } as Partial<GeneratedConfig>);
     setPending((rest) => rest.filter((name) => name !== field));
   };
 
@@ -46,7 +46,7 @@ export function ConfigDiff({ current, proposed, changedFields, onApply }: Config
   const acceptAll = () => {
     const updates: Record<string, unknown> = {};
     for (const field of pending) {
-      updates[field] = (proposed as Record<string, unknown>)[field];
+      updates[field] = (proposed as unknown as Record<string, unknown>)[field];
     }
     onApply(updates as Partial<GeneratedConfig>);
     setPending([]);
@@ -65,11 +65,11 @@ export function ConfigDiff({ current, proposed, changedFields, onApply }: Config
           <div className="config-diff-values">
             <div className="config-diff-before">
               <span className="config-diff-label">Before</span>
-              <pre>{formatValue((current as Record<string, unknown>)[field])}</pre>
+              <pre>{formatValue((current as unknown as Record<string, unknown>)[field])}</pre>
             </div>
             <div className="config-diff-after">
               <span className="config-diff-label">After</span>
-              <pre>{formatValue((proposed as Record<string, unknown>)[field])}</pre>
+              <pre>{formatValue((proposed as unknown as Record<string, unknown>)[field])}</pre>
             </div>
           </div>
           <div className="config-diff-buttons">
