@@ -3,11 +3,16 @@
 
 import type {
   Dataset,
+  DatasetCreated,
   DatasetRow,
+  DatasetStats,
   Evaluator,
   EvaluatorVersion,
   GeneratedConfig,
+  LabelSchema,
   RefinedConfig,
+  RowPatch,
+  RowsPage,
   Run,
   RunResult,
 } from "./types";
@@ -92,13 +97,24 @@ export const datasets = {
     api<Dataset>("/api/datasets", { method: "POST", ...jsonBody(data) }),
   remove: (id: string) => api<void>(`/api/datasets/${id}`, { method: "DELETE" }),
   upload: (form: FormData) =>
-    api<Dataset>("/api/datasets/upload", { method: "POST", body: form }),
-  generate: (data: { description: string; count: number; model?: string }) =>
-    api<Dataset>("/api/datasets/generate", { method: "POST", ...jsonBody(data) }),
-  rows: (id: string) => api<DatasetRow[]>(`/api/datasets/${id}/rows`),
-  patchRow: (id: string, rowId: string, data: Partial<DatasetRow>) =>
+    api<DatasetCreated>("/api/datasets/upload", { method: "POST", body: form }),
+  generate: (data: {
+    name: string;
+    description?: string;
+    columns: string[];
+    label_schema: LabelSchema;
+    count: number;
+  }) => api<DatasetCreated>("/api/datasets/generate", { method: "POST", ...jsonBody(data) }),
+  rows: (id: string, params?: { limit?: number; offset?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.limit !== undefined) query.set("limit", String(params.limit));
+    if (params?.offset !== undefined) query.set("offset", String(params.offset));
+    const suffix = query.toString();
+    return api<RowsPage>(`/api/datasets/${id}/rows${suffix ? `?${suffix}` : ""}`);
+  },
+  patchRow: (id: string, rowId: string, data: RowPatch) =>
     api<DatasetRow>(`/api/datasets/${id}/rows/${rowId}`, { method: "PATCH", ...jsonBody(data) }),
-  stats: (id: string) => api<Record<string, unknown>>(`/api/datasets/${id}/stats`),
+  stats: (id: string) => api<DatasetStats>(`/api/datasets/${id}/stats`),
 };
 
 export const runs = {
