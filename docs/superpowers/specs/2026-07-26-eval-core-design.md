@@ -26,9 +26,13 @@ Single user, runs locally, no auth.
 - **Models:** Pydantic AI Gateway — a single `PYDANTIC_AI_GATEWAY_API_KEY` env var, cross-provider
   model strings. No provider credentials stored in the app.
 
-> The exact Pydantic AI gateway provider/model-string API is to be confirmed against the installed
-> `pydantic-ai` version during implementation; the design only assumes "one key in env, model
-> selected per evaluator version".
+Verified against the installed packages (`pydantic-ai` 2.19.0, `pydantic-ai-harness` 0.12.0):
+model strings take the form `gateway/<provider>:<model>` (e.g. `gateway/anthropic:claude-sonnet-5`),
+with gateway routes for anthropic, openai, google, google-cloud, bedrock, and groq. The API key is
+read from the environment by pydantic-ai itself, so no provider object is ever constructed.
+`Agent(...)` accepts `capabilities=[...]` directly, and the harness capability constructors expose
+the guardrails this design relies on (`FileSystem(root_dir=, allowed_patterns=)`,
+`Shell(allowed_commands=, default_timeout=)`). CodeMode requires the `code-mode` extra.
 
 ## Architecture
 
@@ -69,7 +73,7 @@ EvaluatorVersion     id, evaluator_id, version_name, notes, frozen, created_at
                      instructions          system prompt (editable text)
                      prompt_template       user message template w/ {column} refs
                      required_columns      e.g. ["input", "output", "context"]
-                     output_schema         JSON Schema — custom per evaluator
+                     output_fields         ordered OutputField specs — custom per evaluator
                      score_field           name of the designated score field
                      score_kind            categorical{labels:[...]} | numeric{min,max}
                      capabilities          [{name, config}]
@@ -94,10 +98,17 @@ numeric score kinds.
 
 ### Output schemas and the score field
 
-Evaluators declare a **fully custom Pydantic output schema** and mark exactly one field as
-`score_field`. Agreement metrics are computed on that field only; the rest of the schema is stored
-as structured detail on each `RunResult`. This keeps arbitrary schemas while preserving generic
-accuracy / confusion-matrix / MAE reporting.
+Evaluators declare a **fully custom output schema** and mark exactly one field as `score_field`.
+Agreement metrics are computed on that field only; the rest of the schema is stored as structured
+detail on each `RunResult`. This keeps arbitrary schemas while preserving generic accuracy /
+confusion-matrix / MAE reporting.
+
+The schema is persisted as an ordered list of `OutputField` specs — `{name, type, description,
+required, enum_values?, minimum?, maximum?}` where `type` is one of str/int/float/bool/enum — not
+as raw JSON Schema. Both directions of the parity requirement depend on this: `factory.py` turns
+the specs into a live model via `pydantic.create_model`, and `export.py` renders them as a literal
+`class ...(BaseModel)` definition a human can read and edit. Raw JSON Schema round-trips poorly
+into readable Python source.
 
 ### The dataset owns the label schema
 
