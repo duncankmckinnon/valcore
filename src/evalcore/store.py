@@ -196,7 +196,11 @@ class Store:
             session.delete(dataset)
 
     def add_rows(self, dataset_id: str, rows: list[dict]) -> list[DatasetRow]:
-        """Append rows, assigning sequential ``idx`` continuing from the current max."""
+        """Append data-only rows, assigning sequential ``idx`` from the current max."""
+        return self.add_prepared_rows(dataset_id, [{"data": data} for data in rows])
+
+    def add_prepared_rows(self, dataset_id: str, rows: list[dict]) -> list[DatasetRow]:
+        """Append rows given as full ``DatasetRow`` field dicts (each must include ``data``)."""
         with session_scope(self.engine) as session:
             _require(session, Dataset, dataset_id)
             current_max = session.exec(
@@ -204,22 +208,40 @@ class Store:
             ).one()
             next_idx = 0 if current_max is None else current_max + 1
             created: list[DatasetRow] = []
-            for offset, data in enumerate(rows):
-                row = DatasetRow(dataset_id=dataset_id, idx=next_idx + offset, data=data)
+            for offset, fields in enumerate(rows):
+                row = DatasetRow(dataset_id=dataset_id, idx=next_idx + offset, **fields)
                 session.add(row)
                 created.append(row)
             return created
 
-    def list_rows(self, dataset_id: str) -> list[DatasetRow]:
-        """Return every row of a dataset ordered by ``idx``."""
+    def get_row(self, id: str) -> DatasetRow:
+        """Return the dataset row with ``id`` or raise NotFoundError."""
         with session_scope(self.engine) as session:
-            return list(
-                session.exec(
-                    select(DatasetRow)
-                    .where(DatasetRow.dataset_id == dataset_id)
-                    .order_by(DatasetRow.idx)
-                )
+            return _require(session, DatasetRow, id)
+
+    def list_rows(
+        self, dataset_id: str, limit: int | None = None, offset: int = 0
+    ) -> list[DatasetRow]:
+        """Return rows of a dataset ordered by ``idx``, optionally paginated."""
+        with session_scope(self.engine) as session:
+            query = (
+                select(DatasetRow)
+                .where(DatasetRow.dataset_id == dataset_id)
+                .order_by(DatasetRow.idx)
+                .offset(offset)
             )
+            if limit is not None:
+                query = query.limit(limit)
+            return list(session.exec(query))
+
+    def update_row(self, id: str, **fields: object) -> DatasetRow:
+        """Update the given fields on a dataset row."""
+        with session_scope(self.engine) as session:
+            row = _require(session, DatasetRow, id)
+            for key, value in fields.items():
+                setattr(row, key, value)
+            session.add(row)
+            return row
 
     def set_label(
         self,
@@ -245,6 +267,20 @@ class Store:
             ).all()
             labeled = sum(1 for label in labels if label is not None)
             return labeled, len(labels)
+
+    def label_distribution(self, dataset_id: str) -> dict[str, int]:
+        """Return a count of labeled rows keyed by their string label value."""
+        with session_scope(self.engine) as session:
+            labels = session.exec(
+                select(DatasetRow.label).where(DatasetRow.dataset_id == dataset_id)
+            ).all()
+            distribution: dict[str, int] = {}
+            for label in labels:
+                if label is None:
+                    continue
+                key = str(label.get("value"))
+                distribution[key] = distribution.get(key, 0) + 1
+            return distribution
 
     # -- Runs -----------------------------------------------------------------
 
