@@ -44,12 +44,11 @@ class RunEvent:
 
 @dataclass
 class _Outcome:
-    """The in-memory result of scoring one row, used to derive run-level state."""
+    """The in-memory result of scoring one row, used to shape its ``row`` event."""
 
     row_id: str
     success: bool
     predicted: str | float | None
-    label_value: str | float | None
 
 
 def _label_value(row: DatasetRow) -> str | float | None:
@@ -113,10 +112,12 @@ async def execute_run(
         dataset = await asyncio.to_thread(store.get_dataset, run.dataset_id)
         check_dataset_compatibility(version, dataset)
 
-        rows = await asyncio.to_thread(store.list_rows, dataset.id)
+        all_rows = await asyncio.to_thread(store.list_rows, dataset.id)
         if only_row_ids is not None:
             wanted = set(only_row_ids)
-            rows = [row for row in rows if row.id in wanted]
+            rows = [row for row in all_rows if row.id in wanted]
+        else:
+            rows = all_rows
 
         built_agent = agent if agent is not None else build_agent(version)
     except Exception as exc:  # noqa: BLE001 — any setup failure becomes a FAILED run
@@ -177,25 +178,34 @@ async def execute_run(
             break
         tasks.append(asyncio.create_task(process(row)))
 
-    outcomes = await asyncio.gather(*tasks)
+    await asyncio.gather(*tasks)
 
+    # Derive terminal status and metrics from every persisted result, not just
+    # this batch's outcomes: a retry via ``only_row_ids`` must summarize the whole
+    # run, whose store now holds both the replaced rows and the untouched ones.
+    persisted = await asyncio.to_thread(store.list_results, run_id)
+    any_error = any(result.error is not None for result in persisted)
+
+    if cancelled:
+        status = RunStatus.CANCELLED
+    elif any_error:
+        status = RunStatus.COMPLETED_WITH_ERRORS
+    else:
+        status = RunStatus.COMPLETED
+
+    # A cancelled run's partial agreement would misrepresent the dataset, so
+    # metrics are computed only for terminal states that ran to completion.
     metrics: dict | None = None
-    if want_agreement:
+    if want_agreement and not cancelled:
+        label_by_row = {row.id: _label_value(row) for row in all_rows}
         pairs = [
-            (o.predicted, o.label_value)
-            for o in outcomes
-            if o.success and o.label_value is not None
+            (result.score_value, label_by_row.get(result.row_id))
+            for result in persisted
+            if result.error is None and label_by_row.get(result.row_id) is not None
         ]
         if pairs:
             labels = version.score_labels if version.score_kind is ScoreKind.CATEGORICAL else None
             metrics = compute_metrics(pairs, version.score_kind, labels)
-
-    if cancelled:
-        status = RunStatus.CANCELLED
-    elif any(not o.success for o in outcomes):
-        status = RunStatus.COMPLETED_WITH_ERRORS
-    else:
-        status = RunStatus.COMPLETED
 
     finished = await asyncio.to_thread(
         store.update_run_status,
@@ -240,7 +250,7 @@ async def _score_row(
             latency_ms=latency_ms,
             usage=_usage_dict(result.usage),
         )
-        return _Outcome(row.id, True, score, label_value)
+        return _Outcome(row.id, True, score)
     except Exception as exc:  # noqa: BLE001 — a row failure is recorded, never fatal
         latency_ms = int((time.perf_counter() - start) * 1000)
         await asyncio.to_thread(
@@ -251,4 +261,4 @@ async def _score_row(
             error=str(exc),
             latency_ms=latency_ms,
         )
-        return _Outcome(row.id, False, None, label_value)
+        return _Outcome(row.id, False, None)

@@ -277,7 +277,9 @@ async def test_only_row_ids_replaces_results(store: Store) -> None:
     rows = store.list_rows(dataset.id)
     retry_ids = [rows[0].id, rows[2].id]
 
-    await execute_run(store, run.id, agent=constant_agent(version), only_row_ids=retry_ids)
+    retried = await execute_run(
+        store, run.id, agent=constant_agent(version), only_row_ids=retry_ids
+    )
 
     second = store.list_results(run.id)
     # Count unchanged: the two rows were replaced, not appended.
@@ -286,6 +288,47 @@ async def test_only_row_ids_replaces_results(store: Store) -> None:
     # The two retried rows have brand-new result records.
     replaced = {r.id for r in second if r.row_id in set(retry_ids)}
     assert replaced.isdisjoint(first_ids)
+    # Status and metrics summarize the whole run, not just the retried subset.
+    assert retried.status is RunStatus.COMPLETED
+    assert retried.metrics is not None
+    assert retried.metrics["n"] == 5
+    assert retried.metrics["accuracy"] == pytest.approx(3 / 5)
+
+
+@pytest.mark.anyio
+async def test_retry_fixes_failed_row_updates_run_summary(store: Store) -> None:
+    version = make_version(store)
+    dataset = make_dataset(store, ["pass", "pass", "pass", "pass", "pass"])
+    run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=1)
+
+    calls = [0]
+
+    def failing_third(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        calls[0] += 1
+        if calls[0] == 3:
+            raise RuntimeError("boom on third row")
+        name = info.output_tools[0].name
+        return ModelResponse(parts=[ToolCallPart(tool_name=name, args={"verdict": "pass"})])
+
+    first = await execute_run(
+        store,
+        run.id,
+        agent=Agent(FunctionModel(failing_third), output_type=build_output_model(version)),
+    )
+    assert first.status is RunStatus.COMPLETED_WITH_ERRORS
+    assert first.metrics["n"] == 4
+
+    failed_row_id = store.failed_result_row_ids(run.id)[0]
+
+    # Retry only the previously failed row; it now succeeds. The run summary must
+    # reflect all five rows, not just the one re-executed.
+    retried = await execute_run(
+        store, run.id, agent=constant_agent(version), only_row_ids=[failed_row_id]
+    )
+    assert retried.status is RunStatus.COMPLETED
+    assert retried.metrics is not None
+    assert retried.metrics["n"] == 5
+    assert len([r for r in store.list_results(run.id) if r.error is not None]) == 0
 
 
 # -- Events -------------------------------------------------------------------
