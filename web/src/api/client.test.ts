@@ -35,6 +35,7 @@ describe("api", () => {
     const error = await api("/api/evaluators").catch((e) => e);
 
     expect(error).toBeInstanceOf(ApiError);
+    if (!(error instanceof ApiError)) throw error;
     expect(error.type).toBe("ConfigError");
     expect(error.status).toBe(422);
     expect(error.message).toBe("score_field is invalid");
@@ -51,6 +52,7 @@ describe("api", () => {
     const error = await api("/api/runs").catch((e) => e);
 
     expect(error).toBeInstanceOf(ApiError);
+    if (!(error instanceof ApiError)) throw error;
     expect(error.status).toBe(500);
     expect(typeof error.message).toBe("string");
     expect(error.message.length).toBeGreaterThan(0);
