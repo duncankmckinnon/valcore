@@ -112,8 +112,9 @@ export const datasets = {
     const suffix = query.toString();
     return api<RowsPage>(`/api/datasets/${id}/rows${suffix ? `?${suffix}` : ""}`);
   },
-  patchRow: (id: string, rowId: string, data: RowPatch) =>
-    api<DatasetRow>(`/api/datasets/${id}/rows/${rowId}`, { method: "PATCH", ...jsonBody(data) }),
+  // The API patches rows by row id alone; there is no dataset-id path segment.
+  patchRow: (rowId: string, data: RowPatch) =>
+    api<DatasetRow>(`/api/datasets/rows/${rowId}`, { method: "PATCH", ...jsonBody(data) }),
   stats: (id: string) => api<DatasetStats>(`/api/datasets/${id}/stats`),
 };
 

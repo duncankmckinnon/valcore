@@ -83,7 +83,7 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
       const snapshot = rows;
       setRows((prev) => prev.map((r) => (r.id === rowId ? optimistic(r) : r)));
       try {
-        const updated = await datasets.patchRow(datasetId, rowId, patch);
+        const updated = await datasets.patchRow(rowId, patch);
         setRows((prev) => prev.map((r) => (r.id === rowId ? updated : r)));
         onChange?.();
       } catch (err) {
@@ -91,7 +91,7 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
         setError(err);
       }
     },
-    [rows, datasetId, onChange],
+    [rows, onChange],
   );
 
   const acceptSuggestion = useCallback(
@@ -119,7 +119,11 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
 
   const clearLabel = useCallback(
     (row: DatasetRow) => {
-      applyPatch(row.id, { label: null }, (r) => ({ ...r, label: null, label_source: null }));
+      applyPatch(row.id, { clear_label: true }, (r) => ({
+        ...r,
+        label: null,
+        label_source: null,
+      }));
     },
     [applyPatch],
   );
@@ -215,8 +219,11 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
         />
       );
     }
+    // Keyed on the current value so an optimistic rollback remounts the input with
+    // the reverted value rather than leaving the failed edit on screen.
     return (
       <input
+        key={current === null ? "" : String(current)}
         className="select"
         type="number"
         aria-label="Label"
@@ -306,6 +313,7 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
                 <td>{source ? <Badge tone={SOURCE_TONE[source]}>{source}</Badge> : null}</td>
                 <td>
                   <input
+                    key={row.note ?? ""}
                     className="select"
                     aria-label="Note"
                     defaultValue={row.note ?? ""}

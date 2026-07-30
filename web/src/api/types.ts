@@ -97,6 +97,7 @@ export interface RowPatch {
   label?: string | number | null;
   note?: string | null;
   accept_suggestion?: boolean;
+  clear_label?: boolean;
 }
 
 export interface DatasetStats {

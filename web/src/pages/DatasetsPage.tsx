@@ -126,14 +126,16 @@ function GenerateForm({ onCreated }: { onCreated: (datasetId: string) => void })
   const [error, setError] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  const columns = columnsText
+    .split(",")
+    .map((column) => column.trim())
+    .filter(Boolean);
+  const canSubmit = name.trim() !== "" && description.trim() !== "" && columns.length > 0;
+
   async function submit() {
     setSubmitting(true);
     setError(null);
     try {
-      const columns = columnsText
-        .split(",")
-        .map((column) => column.trim())
-        .filter(Boolean);
       const created = await datasets.generate({
         name: name.trim(),
         description: description.trim(),
@@ -186,7 +188,7 @@ function GenerateForm({ onCreated }: { onCreated: (datasetId: string) => void })
       </label>
       <LabelSchemaEditor value={schema} onChange={setSchema} />
       <div className="form-actions">
-        <Button onClick={submit} disabled={submitting || !description.trim()}>
+        <Button onClick={submit} disabled={submitting || !canSubmit}>
           {submitting ? <Spinner /> : "Generate"}
         </Button>
       </div>

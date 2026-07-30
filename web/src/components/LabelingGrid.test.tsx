@@ -89,7 +89,7 @@ describe("LabelingGrid", () => {
     fireEvent.keyDown(window, { key: "a" });
 
     await waitFor(() =>
-      expect(patchMock).toHaveBeenCalledWith("d1", "r1", { accept_suggestion: true }),
+      expect(patchMock).toHaveBeenCalledWith("r1", { accept_suggestion: true }),
     );
   });
 
@@ -102,7 +102,7 @@ describe("LabelingGrid", () => {
 
     fireEvent.keyDown(window, { key: "1" });
 
-    await waitFor(() => expect(patchMock).toHaveBeenCalledWith("d1", "r1", { label: "good" }));
+    await waitFor(() => expect(patchMock).toHaveBeenCalledWith("r1", { label: "good" }));
   });
 
   it("clears the label when 'u' is pressed", async () => {
@@ -116,7 +116,7 @@ describe("LabelingGrid", () => {
 
     fireEvent.keyDown(window, { key: "u" });
 
-    await waitFor(() => expect(patchMock).toHaveBeenCalledWith("d1", "r1", { label: null }));
+    await waitFor(() => expect(patchMock).toHaveBeenCalledWith("r1", { clear_label: true }));
   });
 
   it("rolls the optimistic update back and shows an error when patchRow fails", async () => {
