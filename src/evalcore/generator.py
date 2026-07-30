@@ -1,0 +1,190 @@
+"""Agents that generate and refine evaluator configurations from natural language."""
+
+from collections.abc import Callable
+
+from pydantic import BaseModel
+from pydantic_ai import Agent
+
+from evalcore.errors import ConfigError
+from evalcore.models import (
+    VALID_CAPABILITIES,
+    CapabilitySpec,
+    EvaluatorVersion,
+    OutputField,
+    ScoreKind,
+    validate_version,
+)
+from evalcore.settings import get_settings
+
+try:
+    from evalcore.tools import tool_names
+except ImportError:  # tool registry not yet available in this checkout
+
+    def tool_names() -> list[str]:
+        """Fallback returning no registry tools when tools.py is absent."""
+        return []
+
+
+class GeneratedConfig(BaseModel):
+    """Complete evaluator version config produced by the generator."""
+
+    name: str
+    version_name: str
+    instructions: str
+    prompt_template: str
+    required_columns: list[str]
+    output_fields: list[OutputField]
+    score_field: str
+    score_kind: ScoreKind
+    score_labels: list[str] | None = None
+    score_minimum: float | None = None
+    score_maximum: float | None = None
+    capabilities: list[CapabilitySpec]
+    tools: list[str]
+    rationale: str
+
+
+class RefinedConfig(BaseModel):
+    """A full evaluator config plus a description of what a refinement changed."""
+
+    config: GeneratedConfig
+    changed_fields: list[str]
+    summary: str
+
+
+def _field_rules() -> str:
+    """Return the shared config-design rules injected into both agents' instructions."""
+    return (
+        "Design rules:\n"
+        "- `instructions` is a rubric-style system prompt for an LLM judge. State explicit "
+        "scoring criteria, define every label explicitly, and instruct the judge to explain "
+        "its reasoning before assigning a score.\n"
+        "- `output_fields` is an ordered list. Place an explanation/reasoning field BEFORE the "
+        "score field so the judge reasons before committing to a score.\n"
+        "- Default to a categorical score with 3-5 clearly-defined labels unless the criteria "
+        "explicitly call for a numeric score.\n"
+        "- For a categorical score, the score field must be an enum whose `enum_values` exactly "
+        "equal `score_labels`, and `score_kind` must be 'categorical'. For a numeric score the "
+        "score field must be an int or float, `score_kind` must be 'numeric', and `score_labels` "
+        "must be null.\n"
+        "- `score_field` must name one of the `output_fields`.\n"
+        "- List every column the judge needs in `required_columns`, and reference EVERY one of "
+        "them in `prompt_template` as a `{column}` placeholder.\n"
+        "- `prompt_template` is the per-row user prompt; use only `{column}` placeholders drawn "
+        "from `required_columns`.\n"
+        f"- Enable the `CodeMode` capability by default. Enable `SubAgents` and/or `Planning` "
+        "only for genuinely multi-criteria rubrics. Leave `FileSystem` and `Shell` off unless "
+        "the criteria explicitly require inspecting files or running commands. Use only "
+        f"capabilities from: {sorted(VALID_CAPABILITIES)}.\n"
+        f"- Select only tools the criteria actually need, from: {tool_names()}. Never invent a "
+        "tool or capability that is not in these lists."
+    )
+
+
+def build_generator_agent(model: str | None = None) -> Agent[None, GeneratedConfig]:
+    """Build the agent that turns natural-language criteria into a complete config."""
+    instructions = (
+        "You design LLM-as-judge evaluators. Given natural-language criteria, produce a "
+        "complete, valid evaluator configuration.\n\n"
+        f"{_field_rules()}\n\n"
+        "Use `rationale` to briefly explain why you chose this schema, scoring, capabilities, "
+        "and tools."
+    )
+    return Agent(
+        model or get_settings().default_model,
+        output_type=GeneratedConfig,
+        name="evaluator_generator",
+        instructions=instructions,
+    )
+
+
+def build_refiner_agent(model: str | None = None) -> Agent[None, RefinedConfig]:
+    """Build the agent that applies a change request to an existing config."""
+    instructions = (
+        "You revise an existing evaluator configuration given a natural-language change "
+        "request. Return the COMPLETE updated configuration in `config` — every field, not a "
+        "patch. In `changed_fields`, list exactly the names of the `GeneratedConfig` fields "
+        "whose values you altered: no more, no fewer. Use `summary` for a one-line description "
+        "of the change.\n\n"
+        f"{_field_rules()}"
+    )
+    return Agent(
+        model or get_settings().default_model,
+        output_type=RefinedConfig,
+        name="evaluator_refiner",
+        instructions=instructions,
+    )
+
+
+def _validate(config: GeneratedConfig, model: str) -> None:
+    """Raise ConfigError if the generated config would not pass store validation."""
+    version = EvaluatorVersion(
+        evaluator_id="",
+        version_name=config.version_name,
+        model=model,
+        instructions=config.instructions,
+        prompt_template=config.prompt_template,
+        required_columns=config.required_columns,
+        output_fields=[f.model_dump() for f in config.output_fields],
+        score_field=config.score_field,
+        score_kind=config.score_kind,
+        score_labels=config.score_labels,
+        score_minimum=config.score_minimum,
+        score_maximum=config.score_maximum,
+        capabilities=[c.model_dump() for c in config.capabilities],
+        tools=config.tools,
+    )
+    validate_version(version)
+
+
+async def _produce[T: BaseModel](
+    agent: Agent[None, T],
+    prompt: str,
+    model: str,
+    extract: Callable[[T], GeneratedConfig],
+) -> T:
+    """Run the agent, then validate its config; on ConfigError retry exactly once."""
+    result = await agent.run(prompt)
+    try:
+        _validate(extract(result.output), model)
+    except ConfigError as exc:
+        retry_prompt = (
+            f"{prompt}\n\nThe previous configuration was invalid: {exc}\n"
+            "Return a corrected, complete configuration."
+        )
+        result = await agent.run(retry_prompt)
+        _validate(extract(result.output), model)
+    return result.output
+
+
+async def generate_config(
+    criteria: str,
+    *,
+    columns: list[str] | None = None,
+    model: str | None = None,
+    agent: Agent | None = None,
+) -> GeneratedConfig:
+    """Generate a complete evaluator config from natural-language criteria."""
+    resolved_model = model or get_settings().default_model
+    agent = agent or build_generator_agent(resolved_model)
+    prompt = f"Criteria:\n{criteria}"
+    if columns:
+        prompt += f"\n\nAvailable dataset columns: {columns}"
+    return await _produce(agent, prompt, resolved_model, lambda out: out)
+
+
+async def refine_config(
+    current: GeneratedConfig,
+    instruction: str,
+    *,
+    model: str | None = None,
+    agent: Agent | None = None,
+) -> RefinedConfig:
+    """Apply a natural-language change request to an existing evaluator config."""
+    resolved_model = model or get_settings().default_model
+    agent = agent or build_refiner_agent(resolved_model)
+    prompt = (
+        f"Current configuration:\n{current.model_dump_json(indent=2)}\n\n"
+        f"Change request:\n{instruction}"
+    )
+    return await _produce(agent, prompt, resolved_model, lambda out: out.config)
