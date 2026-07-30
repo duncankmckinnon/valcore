@@ -6,11 +6,12 @@ import json
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 from pydantic import BaseModel, ConfigDict
 
 from api.deps import get_store
 from evalcore.datagen import generate_rows
+from evalcore.errors import ContractError
 from evalcore.models import LabelSchema, LabelSource, ScoreKind
 from evalcore.store import Store
 
@@ -127,10 +128,7 @@ def _parse_csv(text: str, label_column: str | None) -> tuple[list[str], list[dic
     reader = csv.DictReader(io.StringIO(text))
     header = reader.fieldnames or []
     if label_column is not None and label_column not in header:
-        raise HTTPException(
-            status_code=422,
-            detail=f"label_column {label_column!r} is not one of the columns {header}.",
-        )
+        raise ContractError(f"label_column {label_column!r} is not one of the columns {header}.")
     columns = [name for name in header if name != label_column]
     prepared = [_prepare_row(dict(record), columns, label_column) for record in reader]
     return columns, prepared
@@ -146,9 +144,9 @@ def _parse_jsonl(text: str, label_column: str | None) -> tuple[list[str], list[d
         try:
             record = json.loads(line)
         except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=422, detail=f"Invalid JSON line: {exc}.") from exc
+            raise ContractError(f"Invalid JSON line: {exc}.") from exc
         if not isinstance(record, dict):
-            raise HTTPException(status_code=422, detail="Every JSONL record must be an object.")
+            raise ContractError("Every JSONL record must be an object.")
         records.append(record)
 
     keys: list[str] = []
@@ -211,9 +209,8 @@ async def upload_dataset(
     """Create a dataset from an uploaded CSV or JSONL file."""
     contents = await file.read()
     if len(contents) > _MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"File exceeds the {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB upload limit.",
+        raise ContractError(
+            f"File exceeds the {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB upload limit."
         )
 
     text = contents.decode("utf-8-sig")
@@ -223,12 +220,10 @@ async def upload_dataset(
     elif filename.endswith((".jsonl", ".json")):
         columns, prepared = _parse_jsonl(text, label_column)
     else:
-        raise HTTPException(
-            status_code=422, detail="Unsupported file type; upload a .csv or .jsonl file."
-        )
+        raise ContractError("Unsupported file type; upload a .csv or .jsonl file.")
 
     if not prepared:
-        raise HTTPException(status_code=422, detail="File contains no data rows.")
+        raise ContractError("File contains no data rows.")
 
     schema_dict = _parse_label_schema(label_schema)
     dataset = store.create_dataset(
@@ -245,11 +240,11 @@ def _parse_label_schema(raw: str | None) -> dict:
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=422, detail=f"Invalid label_schema JSON: {exc}.") from exc
+        raise ContractError(f"Invalid label_schema JSON: {exc}.") from exc
     try:
         return LabelSchema.model_validate(parsed).model_dump(mode="json")
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=f"Invalid label_schema: {exc}.") from exc
+        raise ContractError(f"Invalid label_schema: {exc}.") from exc
 
 
 @router.post("/{id}/rows")
@@ -264,7 +259,7 @@ async def append_rows(id: str, body: RowsAppend, store: StoreDep) -> dict[str, i
 async def generate_dataset(body: DatasetGenerate, store: StoreDep) -> DatasetCreatedOut:
     """Generate a dataset and its rows with suggested labels."""
     if body.count > _MAX_GENERATE_COUNT:
-        raise HTTPException(status_code=422, detail=f"count may not exceed {_MAX_GENERATE_COUNT}.")
+        raise ContractError(f"count may not exceed {_MAX_GENERATE_COUNT}.")
 
     dataset = store.create_dataset(
         name=body.name,
@@ -310,7 +305,7 @@ async def patch_row(row_id: str, body: RowPatch, store: StoreDep) -> RowOut:
 
     if body.accept_suggestion:
         if row.suggested_label is None:
-            raise HTTPException(status_code=422, detail="Row has no suggested label to accept.")
+            raise ContractError("Row has no suggested label to accept.")
         updates["label"] = row.suggested_label
         updates["label_source"] = LabelSource.ACCEPTED
 
@@ -324,9 +319,8 @@ async def patch_row(row_id: str, body: RowPatch, store: StoreDep) -> RowOut:
         dataset = store.get_dataset(row.dataset_id)
         schema = LabelSchema.model_validate(dataset.label_schema)
         if not _label_matches_schema(body.label, schema):
-            raise HTTPException(
-                status_code=422,
-                detail=f"Label {body.label!r} is not valid for this dataset's label schema.",
+            raise ContractError(
+                f"Label {body.label!r} is not valid for this dataset's label schema."
             )
         updates["label"] = {"value": body.label}
         updates["label_source"] = LabelSource.MANUAL

@@ -280,6 +280,17 @@ async def export_version(vid: str, store: StoreDep) -> ExportResponse:
 # -- Generation & refinement --------------------------------------------------
 
 
+@router.post("/generate", response_model=GeneratedConfig)
+async def generate(body: GenerateRequest) -> GeneratedConfig:
+    """Generate an editable config draft from criteria without persisting anything.
+
+    Used by the 'new evaluator' flow, which generates a draft before the evaluator
+    exists, so no id is required. Calls an LLM and can take tens of seconds; the UI
+    presents the returned config as an editable draft saved as a version separately.
+    """
+    return await generator.generate_config(body.criteria, columns=body.columns)
+
+
 @router.post("/{id}/generate", response_model=GeneratedConfig)
 async def generate_version(id: str, body: GenerateRequest, store: StoreDep) -> GeneratedConfig:
     """Generate an editable config draft from criteria without persisting it.
