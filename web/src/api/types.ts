@@ -140,6 +140,63 @@ export interface RunResult {
   error: string | null;
 }
 
+// A run result joined with its row's data and human label, as returned by
+// `GET /api/runs/{id}/results`.
+export interface ResultRow {
+  result_id: string;
+  row_id: string;
+  idx: number;
+  data: Record<string, unknown>;
+  output: Record<string, unknown> | null;
+  score_value: string | number | null;
+  agreement: boolean | number | null;
+  error: string | null;
+  latency_ms: number | null;
+  label: string | number | null;
+}
+
+export interface ResultsPage {
+  results: ResultRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+// One dataset row scored by both compared runs, with the human label.
+export interface CompareRow {
+  row_id: string;
+  idx: number;
+  data: Record<string, unknown>;
+  output_a: Record<string, unknown> | null;
+  output_b: Record<string, unknown> | null;
+  score_a: string | number | null;
+  score_b: string | number | null;
+  label: string | number | null;
+  disagree: boolean;
+}
+
+export interface CompareOut {
+  run_a: Run;
+  run_b: Run;
+  metrics_delta: Record<string, number>;
+  rows: CompareRow[];
+}
+
+// A normalized run progress event as delivered by `runs.streamEvents`. The
+// discriminating `type` mirrors the SSE event name; the remaining fields are the
+// event payload (e.g. `completed` on `status`, `total` on `started`).
+export interface RunStreamEvent {
+  type: "status" | "started" | "row" | "progress" | "finished" | "error";
+  status?: RunStatus;
+  completed?: number;
+  total?: number;
+  row_id?: string;
+  success?: boolean;
+  score_value?: string | number | null;
+  metrics?: Record<string, unknown> | null;
+  error?: string;
+}
+
 export interface GeneratedConfig {
   name: string;
   version_name: string;

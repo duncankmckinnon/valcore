@@ -13,8 +13,10 @@ import type {
   RefinedConfig,
   RowPatch,
   RowsPage,
+  CompareOut,
+  ResultsPage,
   Run,
-  RunResult,
+  RunStreamEvent,
 } from "./types";
 
 export class ApiError extends Error {
@@ -127,20 +129,45 @@ export const runs = {
     dataset_id: string;
     concurrency?: number;
   }) => api<Run>("/api/runs", { method: "POST", ...jsonBody(data) }),
-  results: (id: string) => api<RunResult[]>(`/api/runs/${id}/results`),
+  results: (
+    id: string,
+    params?: { only_disagreements?: boolean; only_errors?: boolean; limit?: number; offset?: number },
+  ) => {
+    const query = new URLSearchParams();
+    if (params?.only_disagreements) query.set("only_disagreements", "true");
+    if (params?.only_errors) query.set("only_errors", "true");
+    if (params?.limit !== undefined) query.set("limit", String(params.limit));
+    if (params?.offset !== undefined) query.set("offset", String(params.offset));
+    const suffix = query.toString();
+    return api<ResultsPage>(`/api/runs/${id}/results${suffix ? `?${suffix}` : ""}`);
+  },
   cancel: (id: string) => api<Run>(`/api/runs/${id}/cancel`, { method: "POST" }),
   retryFailed: (id: string) => api<Run>(`/api/runs/${id}/retry-failed`, { method: "POST" }),
   compare: (a: string, b: string) =>
-    api<Record<string, unknown>>(`/api/runs/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`),
-  streamEvents: (runId: string, onEvent: (event: Record<string, unknown>) => void): (() => void) => {
+    api<CompareOut>(`/api/runs/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`),
+  // The API streams *named* SSE events (`status`, `started`, `row`, `finished`, ...),
+  // so we attach a listener per name and fold the event name into the payload as
+  // `type`. `onmessage` alone would silently miss every named event.
+  streamEvents: (runId: string, onEvent: (event: RunStreamEvent) => void): (() => void) => {
     const source = new EventSource(`/api/runs/${runId}/events`);
-    source.onmessage = (message) => {
-      try {
-        onEvent(JSON.parse(message.data));
-      } catch {
-        // Ignore malformed SSE payloads rather than tearing down the stream.
-      }
-    };
+    const types: RunStreamEvent["type"][] = [
+      "status",
+      "started",
+      "row",
+      "progress",
+      "finished",
+      "error",
+    ];
+    for (const type of types) {
+      source.addEventListener(type, (message) => {
+        try {
+          const payload = JSON.parse((message as MessageEvent).data);
+          onEvent({ type, ...payload });
+        } catch {
+          // Ignore malformed SSE payloads rather than tearing down the stream.
+        }
+      });
+    }
     return () => source.close();
   },
 };

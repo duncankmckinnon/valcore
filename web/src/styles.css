@@ -365,3 +365,141 @@ kbd {
   padding: 1px 6px;
   font-family: ui-monospace, monospace;
 }
+
+/* -- Runs ------------------------------------------------------------------- */
+
+.run-progress {
+  margin: 16px 0;
+}
+
+.run-progress-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.progress-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.progress-bar {
+  height: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.tick-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+}
+
+.tick-list li {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg);
+}
+
+.tick-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+.tick-error .tick-dot {
+  background: var(--danger);
+}
+
+.tick-error {
+  color: var(--danger);
+}
+
+.run-launcher .field {
+  margin-bottom: 14px;
+}
+
+/* -- Metrics ---------------------------------------------------------------- */
+
+.metrics-panel {
+  margin: 16px 0;
+}
+
+.metrics-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.metric-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.metric-value {
+  font-size: 20px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.confusion-matrix th,
+.confusion-matrix td {
+  text-align: center;
+}
+
+.confusion-cell {
+  font-variant-numeric: tabular-nums;
+}
+
+/* -- Results & compare ------------------------------------------------------ */
+
+.results-toolbar,
+.compare-selectors {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.compare-deltas {
+  align-items: flex-start;
+}
+
+.compare-output {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
