@@ -77,10 +77,10 @@ describe("resource helpers", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse({ id: "r1" }));
 
-    await datasets.patchRow("d1", "r1", { note: "off" });
+    await datasets.patchRow("r1", { note: "off" });
 
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("/api/datasets/d1/rows/r1");
+    expect(url).toBe("/api/datasets/rows/r1");
     expect(init?.method).toBe("PATCH");
   });
 });

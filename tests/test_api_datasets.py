@@ -296,6 +296,20 @@ async def test_patch_note_only_leaves_label_untouched(
     assert body["label_source"] is None
 
 
+@pytest.mark.anyio
+async def test_clear_label_removes_label_and_source(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    _, row_ids = _seed_rows(store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p"}}])
+    await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"label": "good"})
+
+    resp = await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"clear_label": True})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["label"] is None
+    assert body["label_source"] is None
+
+
 # -- Pagination --------------------------------------------------------------
 
 

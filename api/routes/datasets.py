@@ -54,6 +54,7 @@ class RowPatch(BaseModel):
     label: str | float | None = None
     note: str | None = None
     accept_suggestion: bool = False
+    clear_label: bool = False
 
 
 class DatasetOut(BaseModel):
@@ -312,6 +313,12 @@ async def patch_row(row_id: str, body: RowPatch, store: StoreDep) -> RowOut:
             raise HTTPException(status_code=422, detail="Row has no suggested label to accept.")
         updates["label"] = row.suggested_label
         updates["label_source"] = LabelSource.ACCEPTED
+
+    # A null ``label`` is indistinguishable from an omitted one, so clearing needs an
+    # explicit flag rather than relying on ``label=None``.
+    if body.clear_label:
+        updates["label"] = None
+        updates["label_source"] = None
 
     if body.label is not None:
         dataset = store.get_dataset(row.dataset_id)

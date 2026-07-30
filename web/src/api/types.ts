@@ -86,6 +86,32 @@ export interface DatasetRow {
   note: string | null;
 }
 
+export interface RowsPage {
+  rows: DatasetRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface RowPatch {
+  label?: string | number | null;
+  note?: string | null;
+  accept_suggestion?: boolean;
+  clear_label?: boolean;
+}
+
+export interface DatasetStats {
+  total: number;
+  labeled: number;
+  unlabeled: number;
+  label_distribution: Record<string, number>;
+}
+
+export interface DatasetCreated {
+  dataset: Dataset;
+  row_count: number;
+}
+
 export interface Run {
   id: string;
   created_at: string;
