@@ -1,6 +1,7 @@
 """FastAPI application factory: CORS, exception handlers, health/config, routers, static SPA."""
 
 import importlib
+from importlib.resources import files as _package_files
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -20,8 +21,6 @@ from evalcore.models import VALID_CAPABILITIES
 from evalcore.settings import MODEL_CATALOG
 from evalcore.tools import tool_names
 
-_DIST_DIR = Path(__file__).resolve().parent.parent / "web" / "dist"
-
 _STATUS_BY_ERROR: tuple[tuple[type[EvalCoreError], int], ...] = (
     (NotFoundError, 404),
     (ContractError, 422),
@@ -29,6 +28,23 @@ _STATUS_BY_ERROR: tuple[tuple[type[EvalCoreError], int], ...] = (
     (FrozenVersionError, 409),
     (EvalCoreError, 400),
 )
+
+
+def _resolve_dist_dir() -> Path | None:
+    """Locate the built SPA: packaged assets first, then a repo checkout, else nothing."""
+    try:
+        packaged = _package_files("evalcore") / "web_dist"
+        if packaged.is_dir():
+            return Path(str(packaged))
+    except (ModuleNotFoundError, FileNotFoundError):
+        pass
+
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "web" / "dist"
+        if candidate.is_dir():
+            return candidate
+
+    return None
 
 
 def _error_response(status_code: int, exc: Exception) -> JSONResponse:
@@ -90,7 +106,8 @@ def create_app() -> FastAPI:
 
     _include_routers(app)
 
-    if _DIST_DIR.is_dir():
-        app.mount("/", StaticFiles(directory=_DIST_DIR, html=True), name="spa")
+    dist_dir = _resolve_dist_dir()
+    if dist_dir:
+        app.mount("/", StaticFiles(directory=dist_dir, html=True), name="spa")
 
     return app
