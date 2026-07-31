@@ -69,9 +69,15 @@ def test_create_engine_enables_pragmas(tmp_path: Path) -> None:
         assert conn.exec_driver_sql("PRAGMA journal_mode").scalar().lower() == "wal"
 
 
-def test_create_engine_uses_settings_db_path_when_none() -> None:
+def test_create_engine_uses_settings_db_path_when_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EVALCORE_HOME", str(tmp_path / "home"))
+    from evalcore import settings
+
+    settings.get_settings.cache_clear()
     engine = create_engine(None)
-    assert "evalcore.db" in str(engine.url)
+    assert "eval-core.db" in str(engine.url)
 
 
 def test_session_scope_rolls_back_on_error(store: Store) -> None:

@@ -6,10 +6,19 @@ imports from here and never constructs or parses model strings itself.
 
 import functools
 from pathlib import Path
+from typing import Any
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
+from pydantic.fields import FieldInfo
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
+from evalcore.config import load_config
 from evalcore.errors import ConfigError
+from evalcore.paths import default_db_path
 
 GATEWAY_ROUTES: tuple[str, ...] = (
     "gateway/anthropic",
@@ -29,15 +38,63 @@ MODEL_CATALOG: list[str] = [
 ]
 
 
+class _TomlConfigSource(PydanticBaseSettingsSource):
+    """Settings source backed by ``config.toml``, sitting below the env source.
+
+    Maps the config file's keys onto ``Settings`` fields: ``model`` ->
+    ``default_model``, ``concurrency`` -> ``default_concurrency``, and ``db_path``
+    passes through unchanged.
+    """
+
+    def __init__(self, settings_cls: type[BaseSettings]) -> None:
+        super().__init__(settings_cls)
+        cfg = load_config()
+        mapped: dict[str, Any] = {}
+        if cfg.db_path is not None:
+            mapped["db_path"] = cfg.db_path
+        if cfg.model is not None:
+            mapped["default_model"] = cfg.model
+        if cfg.concurrency is not None:
+            mapped["default_concurrency"] = cfg.concurrency
+        self._values = mapped
+
+    def get_field_value(self, field: FieldInfo, field_name: str) -> tuple[Any, str, bool]:
+        return self._values.get(field_name), field_name, False
+
+    def __call__(self) -> dict[str, Any]:
+        return dict(self._values)
+
+
 class Settings(BaseSettings):
-    """Runtime configuration read from the environment (prefix ``EVALCORE_``)."""
+    """Runtime configuration.
+
+    Resolution order (highest precedence first): explicit argument, ``EVALCORE_*``
+    environment variable, ``config.toml``, then the built-in default.
+    """
 
     model_config = SettingsConfigDict(env_prefix="EVALCORE_")
 
-    db_path: Path = Path("evalcore.db")
+    db_path: Path = Field(default_factory=default_db_path)
     default_model: str = "gateway/anthropic:claude-sonnet-5"
     default_concurrency: int = 8
     logfire_enabled: bool = False
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            _TomlConfigSource(settings_cls),
+            file_secret_settings,
+        )
 
 
 @functools.lru_cache
