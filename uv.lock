@@ -409,6 +409,7 @@ name = "eval-core"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "click" },
     { name = "fastapi" },
     { name = "pydantic-ai" },
     { name = "pydantic-ai-harness", extra = ["code-mode"] },
@@ -429,6 +430,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "click" },
     { name = "fastapi" },
     { name = "pydantic-ai", specifier = ">=2.19,<3" },
     { name = "pydantic-ai-harness", extras = ["code-mode"], specifier = ">=0.12,<1" },

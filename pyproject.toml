@@ -11,7 +11,11 @@ dependencies = [
     "uvicorn[standard]",
     "python-multipart",
     "pydantic-settings",
+    "click",
 ]
+
+[project.scripts]
+eval-core = "evalcore.cli:main"
 
 [dependency-groups]
 dev = [
