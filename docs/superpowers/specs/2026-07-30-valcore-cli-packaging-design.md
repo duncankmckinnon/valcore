@@ -151,7 +151,7 @@ dependencies.
 class Valcore < Formula
   desc "Develop, improve, and run agentic evaluations locally"
   homepage "https://github.com/duncankmckinnon/valcore"
-  url "https://github.com/duncankmckinnon/valcore/archive/refs/tags/v0.1.0.tar.gz"
+  url "https://files.pythonhosted.org/packages/source/v/valcore/valcore-0.1.0.tar.gz"
   sha256 "<computed at release>"
   license "Apache-2.0"
 
@@ -207,8 +207,14 @@ GitHub Actions, triggered on `v*` tags:
 2. copy `web/dist` → `src/valcore/web_dist/`
 3. `uv build`
 4. publish to PyPI via trusted publishing (no stored token)
-5. compute the sha256 of the GitHub source tarball and open a PR against the tap bumping `url`
-   and `sha256`
+5. hash the **PyPI sdist** — the exact file the formula's `url` downloads — emit the ready-to-paste
+   `url`/`sha256` stanza to the job summary, then re-download the published sdist and assert its
+   hash matches before the job is allowed to succeed
+
+The formula points at `files.pythonhosted.org`, not a GitHub tag archive. PyPI artifacts are
+immutable, so the hash stays valid forever; GitHub's generated archives are regenerated on demand
+and have changed bytes before. This also matches the `wbcli` and `thrdi` formulas already in the
+tap. The sdist carries `packaging/valcore.sh`, which is all the formula installs.
 
 Step 5 opens a PR rather than pushing, so a bad release never auto-publishes a formula.
 

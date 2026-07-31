@@ -59,20 +59,41 @@ jobs:
       - name: Publish to PyPI (trusted publishing)
         uses: pypa/gh-action-pypi-publish@release/v1
 
-      - name: Record the source tarball sha256 in the job summary
+      - name: Emit the Homebrew formula stanza in the job summary
         run: |
+          # The formula downloads the PyPI sdist, so hash exactly that file.
+          # These bytes are what the publish step uploaded, and PyPI artifacts
+          # are immutable -- so this sha256 stays valid forever.
           tarball=$(ls dist/*.tar.gz)
           sha=$(sha256sum "$tarball" | cut -d' ' -f1)
+          version="${GITHUB_REF_NAME#v}"
+          url="https://files.pythonhosted.org/packages/source/v/valcore/valcore-${version}.tar.gz"
           {
-            echo "## Release artifacts"
+            echo "## Homebrew formula stanza"
             echo ""
-            echo "Source tarball: \`$(basename "$tarball")\`"
+            echo "Paste into \`Formula/valcore.rb\` in duncankmckinnon/homebrew-tap:"
             echo ""
-            echo "sha256:"
-            echo ""
+            echo '```ruby'
+            echo "  url \"${url}\""
+            echo "  sha256 \"${sha}\""
             echo '```'
-            echo "$sha"
-            echo '```'
             echo ""
-            echo "Open the Homebrew tap formula PR by hand with this sha256; the release does not auto-publish a formula."
+            echo "The release does not auto-publish a formula; open that PR by hand."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify the published sdist matches the hash we emitted
+        run: |
+          # Guards against publishing a formula stanza that brew cannot verify.
+          version="${GITHUB_REF_NAME#v}"
+          url="https://files.pythonhosted.org/packages/source/v/valcore/valcore-${version}.tar.gz"
+          local_sha=$(sha256sum dist/*.tar.gz | cut -d' ' -f1)
+          for attempt in 1 2 3 4 5; do
+            remote_sha=$(curl -sfL "$url" | sha256sum | cut -d' ' -f1) && break
+            echo "sdist not visible on PyPI yet (attempt ${attempt}); waiting…"
+            sleep 15
+          done
+          if [ "$remote_sha" != "$local_sha" ]; then
+            echo "::error::published sdist sha256 ($remote_sha) != built sdist ($local_sha)"
+            exit 1
+          fi
+          echo "published sdist matches: $local_sha"
