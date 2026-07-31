@@ -3,12 +3,12 @@
 import httpx
 import pytest
 
-from api.deps import get_store
-from api.main import create_app
-from evalcore import generator
-from evalcore.generator import GeneratedConfig, RefinedConfig
-from evalcore.models import ScoreKind
-from evalcore.store import Store, create_engine, init_db
+from valcore import generator
+from valcore.api.deps import get_store
+from valcore.api.main import create_app
+from valcore.generator import GeneratedConfig, RefinedConfig
+from valcore.models import ScoreKind
+from valcore.store import Store, create_engine, init_db
 
 
 @pytest.fixture

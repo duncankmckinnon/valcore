@@ -10,7 +10,7 @@ export default function Layout() {
   return (
     <div className="layout">
       <nav className="nav">
-        <div className="nav-brand">eval-core</div>
+        <div className="nav-brand">valcore</div>
         {NAV.map((item) => (
           <NavLink
             key={item.to}

@@ -10,8 +10,8 @@ from pydantic import BaseModel, model_validator
 from sqlalchemy import Column
 from sqlmodel import JSON, Field, SQLModel
 
-from evalcore import settings
-from evalcore.errors import ConfigError, ContractError
+from valcore import settings
+from valcore.errors import ConfigError, ContractError
 
 
 class ScoreKind(str, Enum):

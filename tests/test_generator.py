@@ -12,8 +12,8 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from evalcore.errors import ConfigError
-from evalcore.generator import (
+from valcore.errors import ConfigError
+from valcore.generator import (
     GeneratedConfig,
     RefinedConfig,
     generate_config,

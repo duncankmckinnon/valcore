@@ -3,9 +3,9 @@
 from pydantic import BaseModel
 from pydantic_ai import Agent
 
-from evalcore import settings
-from evalcore.errors import ConfigError
-from evalcore.models import LabelSchema, ScoreKind
+from valcore import settings
+from valcore.errors import ConfigError
+from valcore.models import LabelSchema, ScoreKind
 
 _INSTRUCTIONS = (
     "You generate synthetic evaluation dataset rows for testing LLM judges. "

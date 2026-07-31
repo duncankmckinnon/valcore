@@ -5,11 +5,11 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 
-from api.deps import get_store
-from api.main import create_app
-from evalcore.datagen import GeneratedRow
-from evalcore.models import LabelSource
-from evalcore.store import Store, create_engine, init_db
+from valcore.api.deps import get_store
+from valcore.api.main import create_app
+from valcore.datagen import GeneratedRow
+from valcore.models import LabelSource
+from valcore.store import Store, create_engine, init_db
 
 CATEGORICAL_SCHEMA = {"kind": "categorical", "labels": ["good", "bad"]}
 NUMERIC_SCHEMA = {"kind": "numeric", "minimum": 0, "maximum": 5}
@@ -161,7 +161,7 @@ async def test_generate_persists_rows_with_generated_source(
             for i in range(count)
         ]
 
-    monkeypatch.setattr("api.routes.datasets.generate_rows", fake_generate_rows)
+    monkeypatch.setattr("valcore.api.routes.datasets.generate_rows", fake_generate_rows)
 
     resp = await client.post(
         "/api/datasets/generate",

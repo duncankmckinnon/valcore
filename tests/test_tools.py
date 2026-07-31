@@ -4,8 +4,8 @@ import inspect
 
 import pytest
 
-from evalcore.errors import ConfigError
-from evalcore.tools import (
+from valcore.errors import ConfigError
+from valcore.tools import (
     TOOL_REGISTRY,
     get_tools,
     json_extract,

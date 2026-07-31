@@ -5,14 +5,14 @@ import asyncio
 import httpx
 import pytest
 
-from api.events import EventBus
-from api.main import create_app
-from evalcore.errors import (
+from valcore.api.events import EventBus
+from valcore.api.main import create_app
+from valcore.errors import (
     ConfigError,
     ContractError,
-    EvalCoreError,
     FrozenVersionError,
     NotFoundError,
+    ValcoreError,
 )
 
 
@@ -51,10 +51,10 @@ async def test_config_populated() -> None:
         (ContractError("mismatch"), 422, "ContractError"),
         (ConfigError("bad config"), 422, "ConfigError"),
         (FrozenVersionError("frozen"), 409, "FrozenVersionError"),
-        (EvalCoreError("generic"), 400, "EvalCoreError"),
+        (ValcoreError("generic"), 400, "ValcoreError"),
     ],
 )
-async def test_exception_mapping(error: EvalCoreError, status: int, type_name: str) -> None:
+async def test_exception_mapping(error: ValcoreError, status: int, type_name: str) -> None:
     app = create_app()
 
     @app.get("/boom")

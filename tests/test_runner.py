@@ -11,11 +11,11 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from evalcore.errors import ContractError
-from evalcore.factory import build_output_model
-from evalcore.models import LabelSource, RunKind, RunStatus, ScoreKind
-from evalcore.runner import RunEvent, execute_run
-from evalcore.store import Store, create_engine, init_db
+from valcore.errors import ContractError
+from valcore.factory import build_output_model
+from valcore.models import LabelSource, RunKind, RunStatus, ScoreKind
+from valcore.runner import RunEvent, execute_run
+from valcore.store import Store, create_engine, init_db
 
 CATEGORICAL_SCHEMA = {"kind": "categorical", "labels": ["pass", "fail"]}
 

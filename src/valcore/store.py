@@ -1,4 +1,4 @@
-"""SQLite persistence for eval-core entities."""
+"""SQLite persistence for valcore entities."""
 
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -9,9 +9,9 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, func, select
 from sqlmodel import create_engine as _sqlmodel_create_engine
 
-from evalcore import settings
-from evalcore.errors import FrozenVersionError, NotFoundError
-from evalcore.models import (
+from valcore import settings
+from valcore.errors import FrozenVersionError, NotFoundError
+from valcore.models import (
     Dataset,
     DatasetRow,
     Evaluator,
@@ -72,7 +72,7 @@ def _require[T: SQLModel](session: Session, model: type[T], id: str) -> T:
 
 
 class Store:
-    """Synchronous CRUD access to eval-core entities backed by SQLite."""
+    """Synchronous CRUD access to valcore entities backed by SQLite."""
 
     def __init__(self, engine: Engine) -> None:
         self.engine = engine

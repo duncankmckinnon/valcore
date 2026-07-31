@@ -3,8 +3,8 @@
 import pytest
 from pydantic import ValidationError
 
-from evalcore.errors import ConfigError, ContractError
-from evalcore.models import (
+from valcore.errors import ConfigError, ContractError
+from valcore.models import (
     Dataset,
     EvaluatorVersion,
     FieldType,

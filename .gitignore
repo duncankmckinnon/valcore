@@ -221,3 +221,10 @@ __marimo__/
 .workbench/*
 
 docs/superpowers/*
+
+# valcore local state
+valcore.db
+valcore.db-shm
+valcore.db-wal
+valcore.db*
+web/dist/

@@ -8,8 +8,8 @@ import math
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 
-from evalcore.errors import ConfigError
-from evalcore.models import ScoreKind
+from valcore.errors import ConfigError
+from valcore.models import ScoreKind
 
 
 @dataclass

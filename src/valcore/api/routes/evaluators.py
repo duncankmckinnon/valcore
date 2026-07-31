@@ -6,13 +6,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict
 
-from api.deps import get_store
-from evalcore import generator
-from evalcore.errors import FrozenVersionError
-from evalcore.export import render_script
-from evalcore.generator import GeneratedConfig, RefinedConfig
-from evalcore.models import CapabilitySpec, OutputField, ScoreKind
-from evalcore.store import Store
+from valcore import generator
+from valcore.api.deps import get_store
+from valcore.errors import FrozenVersionError
+from valcore.export import render_script
+from valcore.generator import GeneratedConfig, RefinedConfig
+from valcore.models import CapabilitySpec, OutputField, ScoreKind
+from valcore.store import Store
 
 router = APIRouter(prefix="/api/evaluators", tags=["evaluators"])
 

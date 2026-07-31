@@ -1,4 +1,4 @@
-# eval-core — Design
+# valcore — Design
 
 **Date:** 2026-07-26
 **Status:** Approved, ready for implementation planning
@@ -36,11 +36,11 @@ the guardrails this design relies on (`FileSystem(root_dir=, allowed_patterns=)`
 
 ## Architecture
 
-Library core with a thin web layer. `evalcore` imports nothing from FastAPI.
+Library core with a thin web layer. `valcore` imports nothing from FastAPI.
 
 ```
-eval-core/
-  src/evalcore/
+valcore/
+  src/valcore/
     models.py      Evaluator, EvaluatorVersion, Dataset, DatasetRow, Run, RunResult
     factory.py     build_agent(version) -> pydantic_ai.Agent
     tools.py       row-inspection tool registry
@@ -60,7 +60,7 @@ actually ran, so `factory.build_agent` and `export.render_script` consume the sa
 `EvaluatorVersion` and are tested against each other. The library boundary also makes the whole
 engine testable without an HTTP server, and leaves a CLI possible later at no cost.
 
-Runtime: single SQLite file (`evalcore.db`); `uv run eval-core` serves the API and the built SPA on
+Runtime: single SQLite file (`valcore.db`); `uv run valcore` serves the API and the built SPA on
 `127.0.0.1`; `web/` runs its own dev server during development.
 
 ## Data model
