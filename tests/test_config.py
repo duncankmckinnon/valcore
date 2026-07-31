@@ -7,22 +7,22 @@ from pathlib import Path
 
 import pytest
 
-from evalcore import settings
-from evalcore.config import (
+from valcore import settings
+from valcore.config import (
     FileConfig,
     apply_gateway_key,
     load_config,
     save_config,
     set_key,
 )
-from evalcore.paths import config_path, default_db_path, home_dir
+from valcore.paths import config_path, default_db_path, home_dir
 
 
 @pytest.fixture(autouse=True)
 def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point EVALCORE_HOME at a tmp dir and clear the settings cache."""
+    """Point VALCORE_HOME at a tmp dir and clear the settings cache."""
     root = tmp_path / "home"
-    monkeypatch.setenv("EVALCORE_HOME", str(root))
+    monkeypatch.setenv("VALCORE_HOME", str(root))
     settings.get_settings.cache_clear()
     yield root
     settings.get_settings.cache_clear()
@@ -118,7 +118,7 @@ def test_db_path_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.Settings().db_path == Path("/tmp/from-toml.db")
 
     # env beats TOML.
-    monkeypatch.setenv("EVALCORE_DB_PATH", "/tmp/from-env.db")
+    monkeypatch.setenv("VALCORE_DB_PATH", "/tmp/from-env.db")
     settings.get_settings.cache_clear()
     assert settings.Settings().db_path == Path("/tmp/from-env.db")
 
@@ -134,8 +134,8 @@ def test_model_and_concurrency_precedence(monkeypatch: pytest.MonkeyPatch) -> No
     assert resolved.default_concurrency == 2
 
     # env beats TOML.
-    monkeypatch.setenv("EVALCORE_DEFAULT_MODEL", "gateway/google:gemini-2.5-pro")
-    monkeypatch.setenv("EVALCORE_DEFAULT_CONCURRENCY", "16")
+    monkeypatch.setenv("VALCORE_DEFAULT_MODEL", "gateway/google:gemini-2.5-pro")
+    monkeypatch.setenv("VALCORE_DEFAULT_CONCURRENCY", "16")
     settings.get_settings.cache_clear()
     from_env = settings.Settings()
     assert from_env.default_model == "gateway/google:gemini-2.5-pro"

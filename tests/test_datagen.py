@@ -5,8 +5,8 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from evalcore.datagen import GeneratedDataset, generate_rows
-from evalcore.models import LabelSchema, ScoreKind
+from valcore.datagen import GeneratedDataset, generate_rows
+from valcore.models import LabelSchema, ScoreKind
 
 
 def _batch_model(batches: list[list[dict]], calls: list[int]) -> FunctionModel:

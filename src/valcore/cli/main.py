@@ -1,8 +1,8 @@
-"""The ``eval-core`` command: a thin click shell over the existing library.
+"""The ``valcore`` command: a thin click shell over the existing library.
 
-Every command resolves state through :class:`~evalcore.store.Store` directly; the
+Every command resolves state through :class:`~valcore.store.Store` directly; the
 CLI never talks to the API over HTTP, so ``run`` works whether or not ``serve`` is
-up. Domain failures (:class:`~evalcore.errors.EvalCoreError`) are caught at the
+up. Domain failures (:class:`~valcore.errors.ValcoreError`) are caught at the
 group boundary and printed as ``error: <message>`` to stderr with exit code 1;
 unexpected exceptions traceback normally so bugs stay reportable.
 """
@@ -16,27 +16,27 @@ from pathlib import Path
 
 import click
 
-from evalcore.cli.output import emit
-from evalcore.cli.resolve import resolve_dataset, resolve_evaluator, resolve_version
-from evalcore.config import apply_gateway_key, load_config, save_config, set_key
-from evalcore.errors import ContractError, EvalCoreError
-from evalcore.export import render_script
-from evalcore.models import Run, RunKind, RunStatus
-from evalcore.paths import config_path
-from evalcore.runner import RunEvent, execute_run
-from evalcore.settings import get_settings
-from evalcore.store import Store, create_engine, init_db
+from valcore.cli.output import emit
+from valcore.cli.resolve import resolve_dataset, resolve_evaluator, resolve_version
+from valcore.config import apply_gateway_key, load_config, save_config, set_key
+from valcore.errors import ContractError, ValcoreError
+from valcore.export import render_script
+from valcore.models import Run, RunKind, RunStatus
+from valcore.paths import config_path
+from valcore.runner import RunEvent, execute_run
+from valcore.settings import get_settings
+from valcore.store import Store, create_engine, init_db
 
-_LOCAL_DB = Path("evalcore.db")
+_LOCAL_DB = Path("valcore.db")
 
 
-class _EvalCoreGroup(click.Group):
+class _ValcoreGroup(click.Group):
     """Group that renders domain errors uniformly and exits 1."""
 
     def invoke(self, ctx: click.Context) -> object:
         try:
             return super().invoke(ctx)
-        except EvalCoreError as exc:
+        except ValcoreError as exc:
             click.echo(f"error: {exc}", err=True)
             ctx.exit(1)
 
@@ -48,7 +48,7 @@ def _store(ctx: click.Context) -> Store:
     return Store(engine)
 
 
-@click.group(cls=_EvalCoreGroup)
+@click.group(cls=_ValcoreGroup)
 @click.option(
     "--db",
     "db",
@@ -76,8 +76,8 @@ def cli(ctx: click.Context, db: Path | None) -> None:
 
 @cli.command()
 def version() -> None:
-    """Print the installed eval-core version."""
-    click.echo(package_version("eval-core"))
+    """Print the installed valcore version."""
+    click.echo(package_version("valcore"))
 
 
 # -- serve --------------------------------------------------------------------
@@ -88,14 +88,14 @@ def version() -> None:
 @click.option("--host", default="127.0.0.1", help="Host to bind.")
 @click.option("--no-browser", is_flag=True, help="Do not open a browser.")
 def serve(port: int | None, host: str, no_browser: bool) -> None:
-    """Serve the eval-core web app and API."""
+    """Serve the valcore web app and API."""
     import uvicorn
 
-    from evalcore.api.main import create_app
+    from valcore.api.main import create_app
 
     resolved_port = port if port is not None else (load_config().port or 8000)
     url = f"http://{host}:{resolved_port}"
-    click.echo(f"Serving eval-core at {url}", err=True)
+    click.echo(f"Serving valcore at {url}", err=True)
 
     if not no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
@@ -244,7 +244,7 @@ def run(
 
     finished = asyncio.run(_drive_run(store, created.id, watch))
     if finished.status is RunStatus.FAILED:
-        raise EvalCoreError(finished.error or "Run failed.")
+        raise ValcoreError(finished.error or "Run failed.")
 
     _emit_run(store, finished, as_json)
 
@@ -268,7 +268,7 @@ def run(
 
 @cli.group()
 def config() -> None:
-    """Read and write the eval-core config file."""
+    """Read and write the valcore config file."""
 
 
 @config.command("set-key")

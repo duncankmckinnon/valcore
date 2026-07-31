@@ -5,8 +5,8 @@ from collections.abc import Callable
 from pydantic import BaseModel
 from pydantic_ai import Agent
 
-from evalcore.errors import ConfigError
-from evalcore.models import (
+from valcore.errors import ConfigError
+from valcore.models import (
     VALID_CAPABILITIES,
     CapabilitySpec,
     EvaluatorVersion,
@@ -14,10 +14,10 @@ from evalcore.models import (
     ScoreKind,
     validate_version,
 )
-from evalcore.settings import get_settings
+from valcore.settings import get_settings
 
 try:
-    from evalcore.tools import tool_names
+    from valcore.tools import tool_names
 except ImportError:  # tool registry not yet available in this checkout
 
     def tool_names() -> list[str]:

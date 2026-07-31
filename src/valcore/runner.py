@@ -17,10 +17,10 @@ from pydantic_ai import Agent
 from pydantic_ai.usage import RunUsage
 from sqlmodel import select
 
-from evalcore.errors import ContractError
-from evalcore.factory import build_agent, extract_score, render_prompt
-from evalcore.metrics import compute_metrics
-from evalcore.models import (
+from valcore.errors import ContractError
+from valcore.factory import build_agent, extract_score, render_prompt
+from valcore.metrics import compute_metrics
+from valcore.models import (
     DatasetRow,
     EvaluatorVersion,
     Run,
@@ -30,7 +30,7 @@ from evalcore.models import (
     ScoreKind,
     check_dataset_compatibility,
 )
-from evalcore.store import Store, session_scope
+from valcore.store import Store, session_scope
 
 
 @dataclass

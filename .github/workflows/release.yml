@@ -36,8 +36,8 @@ jobs:
 
       - name: Stage the built SPA inside the package
         run: |
-          mkdir -p src/evalcore/web_dist
-          cp -r web/dist/* src/evalcore/web_dist/
+          mkdir -p src/valcore/web_dist
+          cp -r web/dist/* src/valcore/web_dist/
 
       - name: Build the wheel and sdist
         run: uv build
@@ -46,15 +46,15 @@ jobs:
         run: |
           contents=$(unzip -l dist/*.whl)
           echo "$contents"
-          if ! echo "$contents" | grep -q "evalcore/api/"; then
-            echo "::error::wheel is missing evalcore/api/ — the API layer did not ship"
+          if ! echo "$contents" | grep -q "valcore/api/"; then
+            echo "::error::wheel is missing valcore/api/ — the API layer did not ship"
             exit 1
           fi
-          if ! echo "$contents" | grep -q "evalcore/web_dist/index.html"; then
-            echo "::error::wheel is missing evalcore/web_dist/index.html — the UI did not ship"
+          if ! echo "$contents" | grep -q "valcore/web_dist/index.html"; then
+            echo "::error::wheel is missing valcore/web_dist/index.html — the UI did not ship"
             exit 1
           fi
-          echo "wheel contains both evalcore/api/ and evalcore/web_dist/index.html"
+          echo "wheel contains both valcore/api/ and valcore/web_dist/index.html"
 
       - name: Publish to PyPI (trusted publishing)
         uses: pypa/gh-action-pypi-publish@release/v1

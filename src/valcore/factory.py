@@ -7,8 +7,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, create_model
 from pydantic_ai import Agent
 
-from evalcore.errors import ConfigError, ContractError
-from evalcore.models import (
+from valcore.errors import ConfigError, ContractError
+from valcore.models import (
     CapabilitySpec,
     EvaluatorVersion,
     FieldType,
@@ -16,7 +16,7 @@ from evalcore.models import (
     parse_output_fields,
     validate_version,
 )
-from evalcore.tools import get_tools
+from valcore.tools import get_tools
 
 _SCALAR_TYPES: dict[FieldType, type] = {
     FieldType.STR: str,

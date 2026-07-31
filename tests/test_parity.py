@@ -14,8 +14,8 @@ from typing import Any
 import pytest
 from pydantic_ai import Agent
 
-from evalcore import export, factory
-from evalcore.models import EvaluatorVersion, ScoreKind
+from valcore import export, factory
+from valcore.models import EvaluatorVersion, ScoreKind
 
 # --- private-attribute helpers (pydantic-ai 2.19) -------------------------------
 # pydantic-ai does not expose static instructions, the function-tool names, or the

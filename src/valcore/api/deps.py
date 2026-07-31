@@ -2,8 +2,8 @@
 
 import functools
 
-from evalcore.settings import get_settings
-from evalcore.store import Store, create_engine, init_db
+from valcore.settings import get_settings
+from valcore.store import Store, create_engine, init_db
 
 
 @functools.lru_cache

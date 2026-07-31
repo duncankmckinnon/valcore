@@ -1,4 +1,4 @@
-"""TOML config layer stored at ``~/.eval-core/config.toml``.
+"""TOML config layer stored at ``~/.valcore/config.toml``.
 
 Read with the stdlib :mod:`tomllib`; written by hand (five keys does not justify
 a TOML-writing dependency). ``apply_gateway_key`` is the single bridge between the
@@ -14,7 +14,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from evalcore.paths import config_path
+from valcore.paths import config_path
 
 _GATEWAY_KEY_ENV = "PYDANTIC_AI_GATEWAY_API_KEY"
 

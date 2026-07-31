@@ -16,9 +16,9 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
-from evalcore.config import load_config
-from evalcore.errors import ConfigError
-from evalcore.paths import default_db_path
+from valcore.config import load_config
+from valcore.errors import ConfigError
+from valcore.paths import default_db_path
 
 GATEWAY_ROUTES: tuple[str, ...] = (
     "gateway/anthropic",
@@ -68,11 +68,11 @@ class _TomlConfigSource(PydanticBaseSettingsSource):
 class Settings(BaseSettings):
     """Runtime configuration.
 
-    Resolution order (highest precedence first): explicit argument, ``EVALCORE_*``
+    Resolution order (highest precedence first): explicit argument, ``VALCORE_*``
     environment variable, ``config.toml``, then the built-in default.
     """
 
-    model_config = SettingsConfigDict(env_prefix="EVALCORE_")
+    model_config = SettingsConfigDict(env_prefix="VALCORE_")
 
     db_path: Path = Field(default_factory=default_db_path)
     default_model: str = "gateway/anthropic:claude-sonnet-5"

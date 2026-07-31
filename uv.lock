@@ -405,7 +405,7 @@ wheels = [
 ]
 
 [[package]]
-name = "eval-core"
+name = "valcore"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

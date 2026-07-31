@@ -222,9 +222,9 @@ __marimo__/
 
 docs/superpowers/*
 
-# eval-core local state
-evalcore.db
-evalcore.db-shm
-evalcore.db-wal
-eval-core.db*
+# valcore local state
+valcore.db
+valcore.db-shm
+valcore.db-wal
+valcore.db*
 web/dist/

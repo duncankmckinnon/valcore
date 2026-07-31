@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from evalcore.errors import FrozenVersionError, NotFoundError
-from evalcore.models import (
+from valcore.errors import FrozenVersionError, NotFoundError
+from valcore.models import (
     DatasetRow,
     EvaluatorVersion,
     LabelSource,
@@ -15,7 +15,7 @@ from evalcore.models import (
     RunStatus,
     ScoreKind,
 )
-from evalcore.store import Store, create_engine, init_db, session_scope
+from valcore.store import Store, create_engine, init_db, session_scope
 
 
 @pytest.fixture
@@ -72,12 +72,12 @@ def test_create_engine_enables_pragmas(tmp_path: Path) -> None:
 def test_create_engine_uses_settings_db_path_when_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("EVALCORE_HOME", str(tmp_path / "home"))
-    from evalcore import settings
+    monkeypatch.setenv("VALCORE_HOME", str(tmp_path / "home"))
+    from valcore import settings
 
     settings.get_settings.cache_clear()
     engine = create_engine(None)
-    assert "eval-core.db" in str(engine.url)
+    assert "valcore.db" in str(engine.url)
 
 
 def test_session_scope_rolls_back_on_error(store: Store) -> None:
@@ -144,7 +144,7 @@ def test_create_version_advances_active_pointer(store: Store) -> None:
 
 
 def test_create_version_invalid_config_raises(store: Store) -> None:
-    from evalcore.errors import ConfigError
+    from valcore.errors import ConfigError
 
     evaluator = store.create_evaluator("e")
     with pytest.raises(ConfigError):

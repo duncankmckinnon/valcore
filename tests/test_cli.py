@@ -1,9 +1,9 @@
-"""Tests for the ``eval-core`` CLI.
+"""Tests for the ``valcore`` CLI.
 
-No network and no real home directory: ``EVALCORE_HOME`` is pointed at ``tmp_path``
+No network and no real home directory: ``VALCORE_HOME`` is pointed at ``tmp_path``
 by the autouse fixture in ``conftest.py``, the store is a fresh ``tmp_path`` SQLite
 DB, and agent behavior is driven by a ``FunctionModel`` injected via a monkeypatch
-of ``evalcore.runner.build_agent``.
+of ``valcore.runner.build_agent``.
 """
 
 import json
@@ -15,12 +15,12 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from evalcore.cli.main import cli
-from evalcore.cli.resolve import resolve_dataset, resolve_evaluator, resolve_version
-from evalcore.errors import ContractError, NotFoundError
-from evalcore.factory import build_output_model
-from evalcore.models import LabelSource, ScoreKind
-from evalcore.store import Store, create_engine, init_db
+from valcore.cli.main import cli
+from valcore.cli.resolve import resolve_dataset, resolve_evaluator, resolve_version
+from valcore.errors import ContractError, NotFoundError
+from valcore.factory import build_output_model
+from valcore.models import LabelSource, ScoreKind
+from valcore.store import Store, create_engine, init_db
 
 CATEGORICAL_SCHEMA = {"kind": "categorical", "labels": ["pass", "fail"]}
 
@@ -102,7 +102,7 @@ def runner() -> CliRunner:
 def test_version(runner, db_path):
     result = _invoke(runner, db_path, "version")
     assert result.exit_code == 0
-    assert result.output.strip() == package_version("eval-core")
+    assert result.output.strip() == package_version("valcore")
 
 
 # -- list ---------------------------------------------------------------------
@@ -193,7 +193,7 @@ def test_resolve_version_none_errors_without_active(store):
 
 
 def test_run_happy_path_writes_results(runner, store, db_path, monkeypatch):
-    monkeypatch.setattr("evalcore.runner.build_agent", _constant_agent_builder("pass"))
+    monkeypatch.setattr("valcore.runner.build_agent", _constant_agent_builder("pass"))
     result = _invoke(runner, db_path, "run", "judge", "cases")
     assert result.exit_code == 0
     runs = store.list_runs()
@@ -202,7 +202,7 @@ def test_run_happy_path_writes_results(runner, store, db_path, monkeypatch):
 
 
 def test_run_json_stdout_is_pure_json(runner, store, db_path, monkeypatch):
-    monkeypatch.setattr("evalcore.runner.build_agent", _constant_agent_builder("pass"))
+    monkeypatch.setattr("valcore.runner.build_agent", _constant_agent_builder("pass"))
     result = _invoke(runner, db_path, "run", "judge", "cases", "--json")
     assert result.exit_code == 0
     # Progress went to stderr; stdout alone must parse as JSON and carry metrics.
@@ -212,7 +212,7 @@ def test_run_json_stdout_is_pure_json(runner, store, db_path, monkeypatch):
 
 
 def test_run_progress_goes_to_stderr(runner, store, db_path, monkeypatch):
-    monkeypatch.setattr("evalcore.runner.build_agent", _constant_agent_builder("pass"))
+    monkeypatch.setattr("valcore.runner.build_agent", _constant_agent_builder("pass"))
     result = _invoke(runner, db_path, "run", "judge", "cases", "--json")
     assert result.exit_code == 0
     assert "4/4" in result.stderr
@@ -222,14 +222,14 @@ def test_run_progress_goes_to_stderr(runner, store, db_path, monkeypatch):
 
 def test_run_min_accuracy_above_exits_2(runner, store, db_path, monkeypatch):
     # Two "pass" labels of four rows: always-pass agent achieves accuracy 0.5.
-    monkeypatch.setattr("evalcore.runner.build_agent", _constant_agent_builder("pass"))
+    monkeypatch.setattr("valcore.runner.build_agent", _constant_agent_builder("pass"))
     result = _invoke(runner, db_path, "run", "judge", "cases", "--min-accuracy", "0.9")
     assert result.exit_code == 2
     assert "below" in result.stderr
 
 
 def test_run_min_accuracy_below_exits_0(runner, store, db_path, monkeypatch):
-    monkeypatch.setattr("evalcore.runner.build_agent", _constant_agent_builder("pass"))
+    monkeypatch.setattr("valcore.runner.build_agent", _constant_agent_builder("pass"))
     result = _invoke(runner, db_path, "run", "judge", "cases", "--min-accuracy", "0.1")
     assert result.exit_code == 0
 
@@ -277,18 +277,18 @@ def test_config_get_show_key_reveals(runner, db_path):
     assert "sk-secret-1234" in result.output
 
 
-# -- ./evalcore.db startup notice --------------------------------------------
+# -- ./valcore.db startup notice --------------------------------------------
 
 
 def test_local_db_notice_appears_and_leaves_file(runner, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    local = tmp_path / "evalcore.db"
+    local = tmp_path / "valcore.db"
     local.write_bytes(b"legacy sqlite bytes")
     resolved = tmp_path / "elsewhere.db"
 
     result = runner.invoke(cli, ["--db", str(resolved), "list", "evaluators"])
     assert result.exit_code == 0
-    assert "evalcore.db" in result.stderr
+    assert "valcore.db" in result.stderr
     # The file is never moved or copied.
     assert local.read_bytes() == b"legacy sqlite bytes"
 
@@ -298,7 +298,7 @@ def test_no_notice_when_local_db_absent(runner, tmp_path, monkeypatch):
     resolved = tmp_path / "elsewhere.db"
     result = runner.invoke(cli, ["--db", str(resolved), "list", "evaluators"])
     assert result.exit_code == 0
-    assert "evalcore.db exists" not in result.stderr
+    assert "valcore.db exists" not in result.stderr
 
 
 # -- error handling -----------------------------------------------------------

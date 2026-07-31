@@ -8,9 +8,9 @@ nothing matching raises :class:`NotFoundError` naming what was searched.
 
 from collections.abc import Callable, Sequence
 
-from evalcore.errors import ContractError, NotFoundError
-from evalcore.models import Dataset, Evaluator, EvaluatorVersion
-from evalcore.store import Store
+from valcore.errors import ContractError, NotFoundError
+from valcore.models import Dataset, Evaluator, EvaluatorVersion
+from valcore.store import Store
 
 _MIN_PREFIX = 4
 

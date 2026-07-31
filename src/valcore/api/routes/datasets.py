@@ -9,11 +9,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from pydantic import BaseModel, ConfigDict
 
-from evalcore.api.deps import get_store
-from evalcore.datagen import generate_rows
-from evalcore.errors import ContractError
-from evalcore.models import LabelSchema, LabelSource, ScoreKind
-from evalcore.store import Store
+from valcore.api.deps import get_store
+from valcore.datagen import generate_rows
+from valcore.errors import ContractError
+from valcore.models import LabelSchema, LabelSource, ScoreKind
+from valcore.store import Store
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 

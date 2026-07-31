@@ -3,8 +3,8 @@
 import pytest
 from pydantic import ValidationError
 
-from evalcore.export import render_script
-from evalcore.models import EvaluatorVersion, ScoreKind
+from valcore.export import render_script
+from valcore.models import EvaluatorVersion, ScoreKind
 
 
 def _make_version(**overrides: object) -> EvaluatorVersion:
@@ -115,11 +115,11 @@ def test_rendered_script_execs(factory) -> None:
 
 
 @pytest.mark.parametrize("factory", ALL_VERSIONS.values(), ids=ALL_VERSIONS.keys())
-def test_no_evalcore_import(factory) -> None:
-    """The exported script never imports from the evalcore library."""
+def test_no_valcore_import(factory) -> None:
+    """The exported script never imports from the valcore library."""
     src = render_script(factory())
-    assert "import evalcore" not in src
-    assert "from evalcore" not in src
+    assert "import valcore" not in src
+    assert "from valcore" not in src
 
 
 def test_categorical_output_model_validation() -> None:
@@ -171,7 +171,7 @@ def test_selected_tool_source_present_unselected_absent() -> None:
 
 
 def test_tool_source_execs_and_is_callable() -> None:
-    """Copied tool source is verbatim and runnable without any evalcore dependency."""
+    """Copied tool source is verbatim and runnable without any valcore dependency."""
     ns = _exec_script(render_script(_tools_version()))
     assert ns["regex_search"]("a1b2c3", r"\d") == ["1", "2", "3"]
     assert ns["word_count"]("one two three") == 3

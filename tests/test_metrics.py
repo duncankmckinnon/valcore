@@ -2,13 +2,13 @@
 
 import pytest
 
-from evalcore.errors import ConfigError
-from evalcore.metrics import (
+from valcore.errors import ConfigError
+from valcore.metrics import (
     categorical_metrics,
     compute_metrics,
     numeric_metrics,
 )
-from evalcore.models import ScoreKind
+from valcore.models import ScoreKind
 
 
 def test_three_label_confusion_hand_computed() -> None:

@@ -5,15 +5,15 @@ from pydantic import BaseModel, ValidationError
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 
-from evalcore.errors import ConfigError, ContractError
-from evalcore.factory import (
+from valcore.errors import ConfigError, ContractError
+from valcore.factory import (
     build_agent,
     build_capabilities,
     build_output_model,
     extract_score,
     render_prompt,
 )
-from evalcore.models import CapabilitySpec, EvaluatorVersion, ScoreKind
+from valcore.models import CapabilitySpec, EvaluatorVersion, ScoreKind
 
 
 @pytest.fixture

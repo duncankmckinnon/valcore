@@ -1,5 +1,5 @@
 // Renders a run's agreement metrics. The kind is inferred from the shape emitted by
-// `evalcore.metrics`: categorical metrics carry a `confusion` matrix, numeric ones
+// `valcore.metrics`: categorical metrics carry a `confusion` matrix, numeric ones
 // carry `mae`/`rmse`. No charting library — the confusion matrix is a shaded table.
 
 import type { ReactNode } from "react";

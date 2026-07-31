@@ -7,7 +7,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from evalcore.errors import ConfigError
+from valcore.errors import ConfigError
 
 _MAX_PATTERN_LEN = 500
 

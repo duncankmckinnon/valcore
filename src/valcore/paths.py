@@ -1,6 +1,6 @@
-"""Filesystem locations for eval-core state, all rooted at ``~/.eval-core``.
+"""Filesystem locations for valcore state, all rooted at ``~/.valcore``.
 
-``EVALCORE_HOME`` overrides the root so tests and CI never touch a real home
+``VALCORE_HOME`` overrides the root so tests and CI never touch a real home
 directory. Directories are created with mode ``0700``; an existing directory is
 left as-is and its permissions are never widened.
 """
@@ -18,12 +18,12 @@ def _ensure_dir(path: Path) -> Path:
 
 
 def home_dir() -> Path:
-    """Return the eval-core home directory, creating it ``0700`` on first call.
+    """Return the valcore home directory, creating it ``0700`` on first call.
 
-    Uses ``$EVALCORE_HOME`` when set, otherwise ``~/.eval-core``.
+    Uses ``$VALCORE_HOME`` when set, otherwise ``~/.valcore``.
     """
-    env = os.environ.get("EVALCORE_HOME")
-    root = Path(env) if env else Path.home() / ".eval-core"
+    env = os.environ.get("VALCORE_HOME")
+    root = Path(env) if env else Path.home() / ".valcore"
     return _ensure_dir(root)
 
 
@@ -34,7 +34,7 @@ def config_path() -> Path:
 
 def default_db_path() -> Path:
     """Return the default SQLite database path under the home directory."""
-    return home_dir() / "eval-core.db"
+    return home_dir() / "valcore.db"
 
 
 def logs_dir() -> Path:

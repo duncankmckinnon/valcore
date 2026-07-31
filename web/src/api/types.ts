@@ -1,5 +1,5 @@
 // TypeScript mirrors of the API DTOs. These are kept in lockstep with the SQLModel
-// entities and Pydantic schemas in `src/evalcore/` and `api/`.
+// entities and Pydantic schemas in `src/valcore/` and `api/`.
 
 export type ScoreKind = "categorical" | "numeric";
 export type LabelSource = "manual" | "accepted" | "generated";

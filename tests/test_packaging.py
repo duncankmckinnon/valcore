@@ -5,8 +5,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from evalcore.api import main
-from evalcore.api.main import _resolve_dist_dir, create_app
+from valcore.api import main
+from valcore.api.main import _resolve_dist_dir, create_app
 
 
 def _client(app) -> httpx.AsyncClient:
@@ -38,7 +38,7 @@ def test_resolver_falls_back_to_repo_checkout(
     repo = tmp_path / "checkout"
     dist = repo / "web" / "dist"
     dist.mkdir(parents=True)
-    monkeypatch.setattr(main, "__file__", str(repo / "src" / "evalcore" / "api" / "main.py"))
+    monkeypatch.setattr(main, "__file__", str(repo / "src" / "valcore" / "api" / "main.py"))
 
     assert _resolve_dist_dir() == dist
 
@@ -73,11 +73,11 @@ async def test_app_mounts_spa_when_index_present(
     packaged = tmp_path / "pkg"
     web_dist = packaged / "web_dist"
     web_dist.mkdir(parents=True)
-    (web_dist / "index.html").write_text("<!doctype html><title>eval-core</title>")
+    (web_dist / "index.html").write_text("<!doctype html><title>valcore</title>")
     _patch_resources(monkeypatch, packaged)
 
     app = create_app()
     async with _client(app) as client:
         response = await client.get("/")
     assert response.status_code == 200
-    assert "eval-core" in response.text
+    assert "valcore" in response.text
