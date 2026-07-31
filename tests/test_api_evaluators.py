@@ -3,9 +3,9 @@
 import httpx
 import pytest
 
-from api.deps import get_store
-from api.main import create_app
 from evalcore import generator
+from evalcore.api.deps import get_store
+from evalcore.api.main import create_app
 from evalcore.generator import GeneratedConfig, RefinedConfig
 from evalcore.models import ScoreKind
 from evalcore.store import Store, create_engine, init_db

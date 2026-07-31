@@ -221,3 +221,10 @@ __marimo__/
 .workbench/*
 
 docs/superpowers/*
+
+# eval-core local state
+evalcore.db
+evalcore.db-shm
+evalcore.db-wal
+eval-core.db*
+web/dist/
