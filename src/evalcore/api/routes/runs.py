@@ -1,7 +1,7 @@
 """Run lifecycle routes: start, stream, inspect, cancel, retry, and compare runs.
 
 Runs execute in the background as ``asyncio`` tasks whose progress is fanned out to
-SSE subscribers over the process-wide :data:`api.events.bus`. A module-level registry
+SSE subscribers over the process-wide :data:`evalcore.api.events.bus`. A module-level registry
 of in-flight tasks lets cancellation be honored and lets the app await them on shutdown.
 """
 
@@ -16,8 +16,8 @@ from pydantic import BaseModel, ConfigDict
 from pydantic_ai import Agent
 from sse_starlette.sse import EventSourceResponse
 
-from api.deps import get_store
-from api.events import bus
+from evalcore.api.deps import get_store
+from evalcore.api.events import bus
 from evalcore.errors import ContractError
 from evalcore.models import EvaluatorVersion, RunKind, RunStatus
 from evalcore.runner import RunEvent, execute_run

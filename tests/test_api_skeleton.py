@@ -5,8 +5,8 @@ import asyncio
 import httpx
 import pytest
 
-from api.events import EventBus
-from api.main import create_app
+from evalcore.api.events import EventBus
+from evalcore.api.main import create_app
 from evalcore.errors import (
     ConfigError,
     ContractError,

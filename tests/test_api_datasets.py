@@ -5,8 +5,8 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 
-from api.deps import get_store
-from api.main import create_app
+from evalcore.api.deps import get_store
+from evalcore.api.main import create_app
 from evalcore.datagen import GeneratedRow
 from evalcore.models import LabelSource
 from evalcore.store import Store, create_engine, init_db
@@ -161,7 +161,7 @@ async def test_generate_persists_rows_with_generated_source(
             for i in range(count)
         ]
 
-    monkeypatch.setattr("api.routes.datasets.generate_rows", fake_generate_rows)
+    monkeypatch.setattr("evalcore.api.routes.datasets.generate_rows", fake_generate_rows)
 
     resp = await client.post(
         "/api/datasets/generate",

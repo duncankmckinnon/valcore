@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.dtos import ErrorBody, ErrorResponse
+from evalcore.api.dtos import ErrorBody, ErrorResponse
 from evalcore.errors import (
     ConfigError,
     ContractError,
@@ -54,7 +54,7 @@ def _include_routers(app: FastAPI) -> None:
     """Discover and mount resource routers, tolerating ones that do not exist yet."""
     for module_name in ("evaluators", "datasets", "runs"):
         try:
-            module = importlib.import_module(f"api.routes.{module_name}")
+            module = importlib.import_module(f"evalcore.api.routes.{module_name}")
         except ImportError:
             continue
         app.include_router(module.router)

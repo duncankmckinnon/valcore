@@ -14,9 +14,9 @@ from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
-from api.deps import get_store
-from api.main import create_app
-from api.routes.runs import get_agent_factory
+from evalcore.api.deps import get_store
+from evalcore.api.main import create_app
+from evalcore.api.routes.runs import get_agent_factory
 from evalcore.factory import build_output_model
 from evalcore.models import LabelSource, RunKind, RunStatus, ScoreKind
 from evalcore.store import Store, create_engine, init_db

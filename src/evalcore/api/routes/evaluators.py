@@ -6,8 +6,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict
 
-from api.deps import get_store
 from evalcore import generator
+from evalcore.api.deps import get_store
 from evalcore.errors import FrozenVersionError
 from evalcore.export import render_script
 from evalcore.generator import GeneratedConfig, RefinedConfig
