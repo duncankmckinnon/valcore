@@ -5,6 +5,7 @@ import asyncio
 import httpx
 import pytest
 
+from valcore.api import main
 from valcore.api.events import EventBus
 from valcore.api.main import create_app
 from valcore.errors import (
@@ -14,6 +15,18 @@ from valcore.errors import (
     NotFoundError,
     ValcoreError,
 )
+
+
+@pytest.fixture
+def no_spa(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Build apps with no SPA mounted, regardless of whether web/dist was built.
+
+    ``create_app`` mounts ``StaticFiles`` at ``/`` when the SPA exists, and that
+    catch-all shadows any route registered after the app is built. Tests that
+    attach a route post-hoc must pin this off, or they pass only on machines
+    where ``npm run build`` has never run.
+    """
+    monkeypatch.setattr(main, "_resolve_dist_dir", lambda: None)
 
 
 def _client(app) -> httpx.AsyncClient:
@@ -54,7 +67,9 @@ async def test_config_populated() -> None:
         (ValcoreError("generic"), 400, "ValcoreError"),
     ],
 )
-async def test_exception_mapping(error: ValcoreError, status: int, type_name: str) -> None:
+async def test_exception_mapping(
+    error: ValcoreError, status: int, type_name: str, no_spa: None
+) -> None:
     app = create_app()
 
     @app.get("/boom")
@@ -68,7 +83,7 @@ async def test_exception_mapping(error: ValcoreError, status: int, type_name: st
 
 
 @pytest.mark.anyio
-async def test_app_starts_without_spa_dist() -> None:
+async def test_app_starts_without_spa_dist(no_spa: None) -> None:
     app = create_app()
     routes = {getattr(route, "path", None) for route in app.routes}
     assert "/api/health" in routes
