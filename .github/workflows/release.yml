@@ -9,11 +9,29 @@ jobs:
   build-and-publish:
     runs-on: ubuntu-latest
     permissions:
+      # Declaring any permissions block replaces the default set, so contents:
+      # read must be listed explicitly -- actions/checkout cannot clone a
+      # private repo without it, and reports the failure as "Repository not
+      # found" rather than as a permission error.
+      contents: read
       # Required for PyPI trusted publishing (OIDC). No API token is stored.
       id-token: write
     steps:
       - name: Check out the tagged commit
         uses: actions/checkout@v4
+
+      - name: Verify the tag matches the packaged version
+        run: |
+          # uv build takes the version from pyproject.toml while the formula URL
+          # is derived from the tag. If they disagree, the emitted stanza points
+          # at a file that was never published -- fail here, not after publishing.
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version=$(grep -m1 '^version' pyproject.toml | cut -d'"' -f2)
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} implies version ${tag_version}, but pyproject.toml declares ${pkg_version}. Bump pyproject.toml or retag."
+            exit 1
+          fi
+          echo "tag and package version agree: ${pkg_version}"
 
       - name: Set up Node 20
         uses: actions/setup-node@v4
