@@ -151,7 +151,7 @@ dependencies.
 class Valcore < Formula
   desc "Develop, improve, and run agentic evaluations locally"
   homepage "https://github.com/duncankmckinnon/valcore"
-  url "https://files.pythonhosted.org/packages/source/v/valcore/valcore-0.1.0.tar.gz"
+  url "https://files.pythonhosted.org/packages/source/v/valcore/valcore-0.0.1.tar.gz"
   sha256 "<computed at release>"
   license "Apache-2.0"
 
