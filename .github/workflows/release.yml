@@ -1,0 +1,78 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      # Required for PyPI trusted publishing (OIDC). No API token is stored.
+      id-token: write
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build the SPA
+        run: |
+          cd web
+          npm ci
+          npm run build
+
+      - name: Stage the built SPA inside the package
+        run: |
+          mkdir -p src/evalcore/web_dist
+          cp -r web/dist/* src/evalcore/web_dist/
+
+      - name: Build the wheel and sdist
+        run: uv build
+
+      - name: Verify the wheel ships the API and the built UI
+        run: |
+          contents=$(unzip -l dist/*.whl)
+          echo "$contents"
+          if ! echo "$contents" | grep -q "evalcore/api/"; then
+            echo "::error::wheel is missing evalcore/api/ — the API layer did not ship"
+            exit 1
+          fi
+          if ! echo "$contents" | grep -q "evalcore/web_dist/index.html"; then
+            echo "::error::wheel is missing evalcore/web_dist/index.html — the UI did not ship"
+            exit 1
+          fi
+          echo "wheel contains both evalcore/api/ and evalcore/web_dist/index.html"
+
+      - name: Publish to PyPI (trusted publishing)
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Record the source tarball sha256 in the job summary
+        run: |
+          tarball=$(ls dist/*.tar.gz)
+          sha=$(sha256sum "$tarball" | cut -d' ' -f1)
+          {
+            echo "## Release artifacts"
+            echo ""
+            echo "Source tarball: \`$(basename "$tarball")\`"
+            echo ""
+            echo "sha256:"
+            echo ""
+            echo '```'
+            echo "$sha"
+            echo '```'
+            echo ""
+            echo "Open the Homebrew tap formula PR by hand with this sha256; the release does not auto-publish a formula."
+          } >> "$GITHUB_STEP_SUMMARY"
