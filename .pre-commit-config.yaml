@@ -1,0 +1,47 @@
+# Ruff and pytest run as `local` hooks rather than via the astral-sh/ruff-pre-commit
+# mirror. The mirror pins its own ruff revision, which then drifts from the one in
+# uv.lock -- and the failure mode is subtle: pre-commit passes locally while CI's
+# ruff disagrees. Shelling out to `uv run` keeps exactly one ruff and one pytest,
+# the ones this project already locks.
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      # Kept off the commit stage deliberately: the suite is fast but not
+      # instant, and a slow `git commit` is how people learn to pass --no-verify.
+      - id: pytest
+        name: pytest
+        entry: uv run pytest -q
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-push]

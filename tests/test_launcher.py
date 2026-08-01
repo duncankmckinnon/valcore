@@ -82,7 +82,7 @@ def test_first_run_provisions_venv(env: dict[str, str]) -> None:
     assert oct(home.stat().st_mode & 0o777) == "0o700"
 
     log = _log(env)
-    assert "venv --python 3.12" in log
+    assert "venv --python >=3.11" in log
     assert f"pip install --python {home}/venv/bin/python valcore==0.1.0" in log
 
     stamp = home / "venv" / ".version"
@@ -116,7 +116,7 @@ def test_stale_stamp_triggers_reprovision(env: dict[str, str]) -> None:
     assert second.returncode == 0, second.stderr
 
     log = _log(env)
-    assert "venv --python 3.12" in log
+    assert "venv --python >=3.11" in log
     assert "pip install" in log
     assert stamp.read_text() == "0.1.0"
 
