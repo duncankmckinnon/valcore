@@ -3,6 +3,7 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TypeVar
 
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
@@ -63,7 +64,10 @@ def session_scope(engine: Engine) -> Iterator[Session]:
         session.close()
 
 
-def _require[T: SQLModel](session: Session, model: type[T], id: str) -> T:
+_Entity = TypeVar("_Entity", bound=SQLModel)
+
+
+def _require(session: Session, model: type[_Entity], id: str) -> _Entity:
     """Return the row with ``id`` or raise NotFoundError."""
     entity = session.get(model, id)
     if entity is None:

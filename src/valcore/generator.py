@@ -1,6 +1,7 @@
 """Agents that generate and refine evaluator configurations from natural language."""
 
 from collections.abc import Callable
+from typing import TypeVar
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
@@ -137,12 +138,15 @@ def _validate(config: GeneratedConfig, model: str) -> None:
     validate_version(version)
 
 
-async def _produce[T: BaseModel](
-    agent: Agent[None, T],
+_Output = TypeVar("_Output", bound=BaseModel)
+
+
+async def _produce(
+    agent: Agent[None, _Output],
     prompt: str,
     model: str,
-    extract: Callable[[T], GeneratedConfig],
-) -> T:
+    extract: Callable[[_Output], GeneratedConfig],
+) -> _Output:
     """Run the agent, then validate its config; on ConfigError retry exactly once."""
     result = await agent.run(prompt)
     try:

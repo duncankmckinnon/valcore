@@ -7,6 +7,7 @@ nothing matching raises :class:`NotFoundError` naming what was searched.
 """
 
 from collections.abc import Callable, Sequence
+from typing import TypeVar
 
 from valcore.errors import ContractError, NotFoundError
 from valcore.models import Dataset, Evaluator, EvaluatorVersion
@@ -14,13 +15,15 @@ from valcore.store import Store
 
 _MIN_PREFIX = 4
 
+T = TypeVar("T")
 
-def _candidate_line[T](entity: T, id_of: Callable[[T], str], name_of: Callable[[T], str]) -> str:
+
+def _candidate_line(entity: T, id_of: Callable[[T], str], name_of: Callable[[T], str]) -> str:
     """Format one ambiguity candidate as ``<id-prefix>  <name>``."""
     return f"{id_of(entity)[:8]}  {name_of(entity)}"
 
 
-def _resolve[T](
+def _resolve(
     entities: Sequence[T],
     ref: str,
     kind: str,
