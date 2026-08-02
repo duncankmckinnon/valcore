@@ -1,7 +1,5 @@
 """Tests for pure dataset shape migration functions."""
 
-import pytest
-
 from valcore.models import DatasetRow, LabelSchema, ScoreKind
 from valcore.schema_migration import (
     apply_column_changes,
@@ -63,6 +61,16 @@ class TestLabelMatchesSchema:
     def test_numeric_float_in_range(self) -> None:
         assert label_matches_schema(2.5, numeric_schema(0, 10)) is True
 
+    def test_numeric_only_minimum_bound(self) -> None:
+        assert label_matches_schema(5, numeric_schema(minimum=0)) is True
+        assert label_matches_schema(-1, numeric_schema(minimum=0)) is False
+        assert label_matches_schema(1_000, numeric_schema(minimum=0)) is True
+
+    def test_numeric_only_maximum_bound(self) -> None:
+        assert label_matches_schema(5, numeric_schema(maximum=10)) is True
+        assert label_matches_schema(11, numeric_schema(maximum=10)) is False
+        assert label_matches_schema(-1_000, numeric_schema(maximum=10)) is True
+
 
 class TestApplyColumnChanges:
     """Rename, backfill, and prune of a row's data dict."""
@@ -98,6 +106,12 @@ class TestApplyColumnChanges:
         data = {"a": 1}
         apply_column_changes(data, {"a": "b"}, ["b", "c"])
         assert data == {"a": 1}
+
+    def test_rename_of_absent_key_backfills_target(self) -> None:
+        # An old name that isn't in ``data`` produces no value; the target column,
+        # being in ``columns``, is still backfilled to None.
+        result = apply_column_changes({"a": 1}, {"missing": "y"}, ["a", "y"])
+        assert result == {"a": 1, "y": None}
 
     def test_empty_columns_yields_empty(self) -> None:
         assert apply_column_changes({"a": 1, "b": 2}, {}, []) == {}
