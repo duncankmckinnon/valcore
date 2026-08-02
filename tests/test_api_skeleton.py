@@ -121,6 +121,27 @@ async def test_error_without_detail_omits_detail_field(no_spa: None) -> None:
     assert response.json() == {"error": {"type": "ConfigError", "message": "bad config"}}
 
 
+@pytest.mark.anyio
+async def test_detail_with_zero_count_is_still_emitted(no_spa: None) -> None:
+    app = create_app()
+
+    @app.get("/boom")
+    async def boom() -> None:
+        raise ReferencedError("referenced", detail={"run_count": 0})
+
+    async with _client(app) as client:
+        response = await client.get("/boom")
+    assert response.status_code == 409
+    # A non-empty detail must survive the ``or None`` guard even when its values are falsy.
+    assert response.json() == {
+        "error": {
+            "type": "ReferencedError",
+            "message": "referenced",
+            "detail": {"run_count": 0},
+        }
+    }
+
+
 def test_valcore_error_positional_message_still_works() -> None:
     assert str(ConfigError("boom")) == "boom"
 
