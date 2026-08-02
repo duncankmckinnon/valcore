@@ -11,8 +11,10 @@ from valcore.api.main import create_app
 from valcore.errors import (
     ConfigError,
     ContractError,
+    DestructiveChangeError,
     FrozenVersionError,
     NotFoundError,
+    ReferencedError,
     ValcoreError,
 )
 
@@ -64,6 +66,8 @@ async def test_config_populated() -> None:
         (ContractError("mismatch"), 422, "ContractError"),
         (ConfigError("bad config"), 422, "ConfigError"),
         (FrozenVersionError("frozen"), 409, "FrozenVersionError"),
+        (ReferencedError("referenced"), 409, "ReferencedError"),
+        (DestructiveChangeError("destructive"), 409, "DestructiveChangeError"),
         (ValcoreError("generic"), 400, "ValcoreError"),
     ],
 )
@@ -80,6 +84,55 @@ async def test_exception_mapping(
         response = await client.get("/boom")
     assert response.status_code == status
     assert response.json() == {"error": {"type": type_name, "message": str(error)}}
+
+
+@pytest.mark.anyio
+async def test_error_response_includes_detail_payload(no_spa: None) -> None:
+    app = create_app()
+
+    @app.get("/boom")
+    async def boom() -> None:
+        raise ReferencedError("still referenced", detail={"run_count": 4})
+
+    async with _client(app) as client:
+        response = await client.get("/boom")
+    assert response.status_code == 409
+    assert response.json() == {
+        "error": {
+            "type": "ReferencedError",
+            "message": "still referenced",
+            "detail": {"run_count": 4},
+        }
+    }
+
+
+@pytest.mark.anyio
+async def test_error_without_detail_omits_detail_field(no_spa: None) -> None:
+    app = create_app()
+
+    @app.get("/boom")
+    async def boom() -> None:
+        raise ConfigError("bad config")
+
+    async with _client(app) as client:
+        response = await client.get("/boom")
+    assert response.status_code == 422
+    # Existing envelope stays byte-identical: no null or empty detail leaks in.
+    assert response.json() == {"error": {"type": "ConfigError", "message": "bad config"}}
+
+
+def test_valcore_error_positional_message_still_works() -> None:
+    assert str(ConfigError("boom")) == "boom"
+
+
+def test_valcore_error_detail_defaults_to_empty_dict() -> None:
+    assert ConfigError("boom").detail == {}
+
+
+def test_valcore_error_carries_detail_payload() -> None:
+    error = ReferencedError("still referenced", detail={"run_count": 4})
+    assert error.detail == {"run_count": 4}
+    assert str(error) == "still referenced"
 
 
 @pytest.mark.anyio
