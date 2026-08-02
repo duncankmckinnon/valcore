@@ -11,12 +11,19 @@ from sqlmodel import Session, SQLModel, func, select
 from sqlmodel import create_engine as _sqlmodel_create_engine
 
 from valcore import settings
-from valcore.errors import FrozenVersionError, NotFoundError
+from valcore.errors import (
+    ContractError,
+    DestructiveChangeError,
+    FrozenVersionError,
+    NotFoundError,
+    ReferencedError,
+)
 from valcore.models import (
     Dataset,
     DatasetRow,
     Evaluator,
     EvaluatorVersion,
+    LabelSchema,
     LabelSource,
     Run,
     RunKind,
@@ -24,6 +31,7 @@ from valcore.models import (
     RunStatus,
     validate_version,
 )
+from valcore.schema_migration import apply_column_changes, invalid_label_ids
 
 
 def create_engine(db_path: Path | str | None = None) -> Engine:
@@ -75,6 +83,16 @@ def _require(session: Session, model: type[_Entity], id: str) -> _Entity:
     return entity
 
 
+def _raise_referenced(runs: list[Run], noun: str) -> None:
+    """Raise ReferencedError naming the runs that block a delete."""
+    run_ids = [run.id for run in runs]
+    plural = "run" if len(run_ids) == 1 else "runs"
+    raise ReferencedError(
+        f"{len(run_ids)} {plural} reference this {noun}; delete them first.",
+        detail={"run_count": len(run_ids), "run_ids": run_ids},
+    )
+
+
 class Store:
     """Synchronous CRUD access to valcore entities backed by SQLite."""
 
@@ -100,10 +118,29 @@ class Store:
         with session_scope(self.engine) as session:
             return list(session.exec(select(Evaluator).order_by(Evaluator.created_at)))
 
-    def delete_evaluator(self, id: str) -> None:
-        """Delete an evaluator and all of its versions."""
+    def update_evaluator(self, id: str, **fields: object) -> Evaluator:
+        """Update mutable fields on an evaluator."""
         with session_scope(self.engine) as session:
             evaluator = _require(session, Evaluator, id)
+            for key, value in fields.items():
+                setattr(evaluator, key, value)
+            session.add(evaluator)
+            return evaluator
+
+    def delete_evaluator(self, id: str) -> None:
+        """Delete an evaluator and all of its versions, unless runs reference it."""
+        with session_scope(self.engine) as session:
+            evaluator = _require(session, Evaluator, id)
+            version_ids = list(
+                session.exec(select(EvaluatorVersion.id).where(EvaluatorVersion.evaluator_id == id))
+            )
+            runs = (
+                session.exec(select(Run).where(Run.version_id.in_(version_ids))).all()
+                if version_ids
+                else []
+            )
+            if runs:
+                _raise_referenced(runs, "evaluator")
             versions = session.exec(
                 select(EvaluatorVersion).where(EvaluatorVersion.evaluator_id == id)
             )
@@ -160,6 +197,25 @@ class Store:
             session.add(version)
             return version
 
+    def delete_version(self, id: str) -> None:
+        """Delete a version, repointing the evaluator's active version if needed."""
+        with session_scope(self.engine) as session:
+            version = _require(session, EvaluatorVersion, id)
+            runs = session.exec(select(Run).where(Run.version_id == id)).all()
+            if runs:
+                _raise_referenced(runs, "version")
+            evaluator = session.get(Evaluator, version.evaluator_id)
+            session.delete(version)
+            session.flush()
+            if evaluator is not None and evaluator.active_version_id == id:
+                survivor = session.exec(
+                    select(EvaluatorVersion)
+                    .where(EvaluatorVersion.evaluator_id == evaluator.id)
+                    .order_by(EvaluatorVersion.created_at.desc())
+                ).first()
+                evaluator.active_version_id = survivor.id if survivor is not None else None
+                session.add(evaluator)
+
     # -- Datasets -------------------------------------------------------------
 
     def create_dataset(
@@ -190,10 +246,72 @@ class Store:
         with session_scope(self.engine) as session:
             return list(session.exec(select(Dataset).order_by(Dataset.created_at)))
 
-    def delete_dataset(self, id: str) -> None:
-        """Delete a dataset and all of its rows."""
+    def update_dataset(
+        self,
+        id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        columns: list[str] | None = None,
+        column_renames: dict[str, str] | None = None,
+        label_schema: dict | None = None,
+        force: bool = False,
+    ) -> Dataset:
+        """Update a dataset's metadata and shape, migrating its rows."""
         with session_scope(self.engine) as session:
             dataset = _require(session, Dataset, id)
+            if name is not None:
+                dataset.name = name
+            if description is not None:
+                dataset.description = description
+
+            renames = column_renames or {}
+            for key in renames:
+                if key not in dataset.columns:
+                    raise ContractError(
+                        f"Cannot rename unknown column {key!r}.",
+                        detail={"column": key},
+                    )
+
+            if columns is not None or column_renames is not None:
+                final_columns = (
+                    columns
+                    if columns is not None
+                    else [renames.get(col, col) for col in dataset.columns]
+                )
+                rows = session.exec(select(DatasetRow).where(DatasetRow.dataset_id == id)).all()
+                for row in rows:
+                    row.data = apply_column_changes(row.data, renames, final_columns)
+                    session.add(row)
+                dataset.columns = final_columns
+
+            if label_schema is not None:
+                schema = LabelSchema.model_validate(label_schema)
+                rows = session.exec(select(DatasetRow).where(DatasetRow.dataset_id == id)).all()
+                invalid = invalid_label_ids(rows, schema)
+                if invalid and not force:
+                    raise DestructiveChangeError(
+                        f"{len(invalid)} labels would become invalid under the new schema.",
+                        detail={"invalid_label_count": len(invalid)},
+                    )
+                invalid_ids = set(invalid)
+                for row in rows:
+                    if row.id in invalid_ids:
+                        row.label = None
+                        row.label_source = None
+                        session.add(row)
+                dataset.label_schema = label_schema
+
+            session.add(dataset)
+            return dataset
+
+    def delete_dataset(self, id: str) -> None:
+        """Delete a dataset and all of its rows, unless runs reference it."""
+        with session_scope(self.engine) as session:
+            dataset = _require(session, Dataset, id)
+            runs = session.exec(select(Run).where(Run.dataset_id == id)).all()
+            if runs:
+                _raise_referenced(runs, "dataset")
             rows = session.exec(select(DatasetRow).where(DatasetRow.dataset_id == id))
             for row in rows:
                 session.delete(row)
@@ -246,6 +364,12 @@ class Store:
                 setattr(row, key, value)
             session.add(row)
             return row
+
+    def delete_row(self, id: str) -> None:
+        """Delete a single dataset row."""
+        with session_scope(self.engine) as session:
+            row = _require(session, DatasetRow, id)
+            session.delete(row)
 
     def set_label(
         self,
@@ -360,6 +484,26 @@ class Store:
                     select(RunResult)
                     .where(RunResult.run_id == run_id)
                     .order_by(RunResult.created_at)
+                )
+            )
+
+    def runs_for_versions(self, version_ids: list[str]) -> list[Run]:
+        """Return every run whose version is in ``version_ids``."""
+        if not version_ids:
+            return []
+        with session_scope(self.engine) as session:
+            return list(
+                session.exec(
+                    select(Run).where(Run.version_id.in_(version_ids)).order_by(Run.created_at)
+                )
+            )
+
+    def runs_for_dataset(self, dataset_id: str) -> list[Run]:
+        """Return every run against a dataset."""
+        with session_scope(self.engine) as session:
+            return list(
+                session.exec(
+                    select(Run).where(Run.dataset_id == dataset_id).order_by(Run.created_at)
                 )
             )
 
