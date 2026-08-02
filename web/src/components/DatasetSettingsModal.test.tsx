@@ -153,4 +153,32 @@ describe("DatasetSettingsModal", () => {
     expect(screen.queryByRole("button", { name: "Save anyway" })).toBeNull();
     expect(props.onClose).not.toHaveBeenCalled();
   });
+
+  it("sends an empty patch and closes when nothing changed", async () => {
+    updateMock.mockResolvedValue(madeDataset());
+    const props = renderModal();
+
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(updateMock).toHaveBeenCalledOnce());
+    const [id, body] = updateMock.mock.calls[0];
+    expect(id).toBe("d1");
+    expect(body).toEqual({});
+    await waitFor(() => expect(props.onClose).toHaveBeenCalled());
+    expect(props.onSaved).toHaveBeenCalledWith(madeDataset());
+  });
+
+  it("treats an emptied column with an original name as a removal, not a rename", async () => {
+    updateMock.mockResolvedValue(madeDataset());
+    renderModal();
+
+    const first = screen.getByLabelText("Column 1");
+    await userEvent.clear(first);
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(updateMock).toHaveBeenCalledOnce());
+    const [, body] = updateMock.mock.calls[0];
+    expect(body.columns).toEqual(["answer"]);
+    expect(body.column_renames).toBeUndefined();
+  });
 });
