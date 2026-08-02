@@ -1,5 +1,7 @@
-// Detail view for a single evaluator: a version selector across the top, the VersionEditor
-// below, and the Export / Run actions.
+// Detail view for a single evaluator: an editable title, a version selector across the top,
+// the VersionEditor below, and the Export / Run / delete actions. A "New version" button and
+// the zero-version state both drop into a client-side draft, so an evaluator created from
+// scratch is immediately usable without generating anything.
 
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -8,7 +10,7 @@ import type { EvaluatorVersion } from "../api/types";
 import { ExportModal } from "../components/ExportModal";
 import type { AppConfig } from "../components/VersionEditor";
 import { VersionEditor } from "../components/VersionEditor";
-import { Badge, Button, ErrorBanner, Select, Spinner } from "../components/ui";
+import { Badge, Button, ConfirmDialog, ErrorBanner, Select, Spinner } from "../components/ui";
 
 type EvaluatorDetailData = {
   id: string;
@@ -27,9 +29,24 @@ export default function EvaluatorDetail({ id }: EvaluatorDetailProps) {
   const [detail, setDetail] = useState<EvaluatorDetailData | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // The draft is a client-side sentinel rather than a magic version id, so it can never
+  // collide with a real one (see plan: unsaveable empty version).
+  const [draft, setDraft] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
+
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleValue, setTitleValue] = useState("");
+  const [editingDescription, setEditingDescription] = useState(false);
+  const [descriptionValue, setDescriptionValue] = useState("");
+
+  const [deleteVersionOpen, setDeleteVersionOpen] = useState(false);
+  const [deleteVersionBusy, setDeleteVersionBusy] = useState(false);
+  const [deleteVersionError, setDeleteVersionError] = useState<unknown>(null);
+  const [deleteEvaluatorOpen, setDeleteEvaluatorOpen] = useState(false);
+  const [deleteEvaluatorBusy, setDeleteEvaluatorBusy] = useState(false);
+  const [deleteEvaluatorError, setDeleteEvaluatorError] = useState<unknown>(null);
 
   const load = useCallback(
     async (preferVersionId?: string) => {
@@ -70,70 +87,231 @@ export default function EvaluatorDetail({ id }: EvaluatorDetailProps) {
   }
 
   const selected = detail.versions.find((version) => version.id === selectedId) ?? null;
+  // An evaluator with no versions has nowhere else to go, so it opens straight into the draft.
+  const showDraft = draft || detail.versions.length === 0;
+
+  const commitTitle = async () => {
+    setEditingTitle(false);
+    const next = titleValue.trim();
+    if (next === "" || next === detail.name) {
+      return;
+    }
+    try {
+      await evaluators.update(detail.id, { name: next });
+      setDetail((current) => (current ? { ...current, name: next } : current));
+    } catch (err) {
+      setError(err);
+    }
+  };
+
+  const commitDescription = async () => {
+    setEditingDescription(false);
+    const next = descriptionValue.trim();
+    if (next === detail.description) {
+      return;
+    }
+    try {
+      await evaluators.update(detail.id, { description: next });
+      setDetail((current) => (current ? { ...current, description: next } : current));
+    } catch (err) {
+      setError(err);
+    }
+  };
+
+  const confirmDeleteVersion = async () => {
+    if (!selected) {
+      return;
+    }
+    setDeleteVersionBusy(true);
+    setDeleteVersionError(null);
+    try {
+      await evaluators.deleteVersion(detail.id, selected.id);
+      setDeleteVersionOpen(false);
+      await load();
+    } catch (err) {
+      // A ReferencedError is rendered by ConfirmDialog from this error prop; keep the
+      // dialog open so the user sees the blocking run count.
+      setDeleteVersionError(err);
+    } finally {
+      setDeleteVersionBusy(false);
+    }
+  };
+
+  const confirmDeleteEvaluator = async () => {
+    setDeleteEvaluatorBusy(true);
+    setDeleteEvaluatorError(null);
+    try {
+      await evaluators.remove(detail.id);
+      navigate("/evaluators");
+    } catch (err) {
+      setDeleteEvaluatorError(err);
+    } finally {
+      setDeleteEvaluatorBusy(false);
+    }
+  };
 
   return (
     <section className="evaluator-detail">
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
       <div className="detail-header">
         <div>
-          <h1>{detail.name}</h1>
-          <p className="detail-description">{detail.description}</p>
+          {editingTitle ? (
+            <input
+              className="editable-title-input"
+              aria-label="Evaluator name"
+              autoFocus
+              value={titleValue}
+              onChange={(event) => setTitleValue(event.target.value)}
+              onBlur={() => void commitTitle()}
+            />
+          ) : (
+            <h1
+              className="editable-title"
+              onClick={() => {
+                setTitleValue(detail.name);
+                setEditingTitle(true);
+              }}
+            >
+              {detail.name}
+            </h1>
+          )}
+          {editingDescription ? (
+            <input
+              className="editable-title-input"
+              aria-label="Description"
+              autoFocus
+              value={descriptionValue}
+              onChange={(event) => setDescriptionValue(event.target.value)}
+              onBlur={() => void commitDescription()}
+            />
+          ) : (
+            <p
+              className="detail-description editable-title"
+              onClick={() => {
+                setDescriptionValue(detail.description);
+                setEditingDescription(true);
+              }}
+            >
+              {detail.description || "Add a description…"}
+            </p>
+          )}
         </div>
-        <Button variant="secondary" onClick={() => navigate("/evaluators")}>
-          Back
-        </Button>
+        <div className="detail-header-actions">
+          <Button variant="danger" onClick={() => setDeleteEvaluatorOpen(true)}>
+            Delete evaluator
+          </Button>
+          <Button variant="secondary" onClick={() => navigate("/evaluators")}>
+            Back
+          </Button>
+        </div>
       </div>
 
-      {detail.versions.length === 0 ? (
-        <p>No versions yet.</p>
-      ) : (
-        <>
-          <div className="version-bar">
-            <Select
-              aria-label="Version"
-              value={selectedId ?? ""}
-              options={detail.versions.map((version) => ({
-                value: version.id,
-                label: `${version.version_name}${version.frozen ? " (frozen)" : ""}`,
-              }))}
-              onChange={(event) => setSelectedId(event.target.value)}
-            />
-            {selected?.frozen && <Badge tone="warning">Frozen</Badge>}
-            {selected?.id === detail.active_version_id && <Badge tone="success">Active</Badge>}
-            <div className="version-bar-actions">
-              <Button variant="secondary" onClick={() => setExporting(true)} disabled={!selected}>
-                Export
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={() => navigate("/runs")}
-                disabled={!selected}
-              >
-                Run
-              </Button>
-            </div>
+      {detail.versions.length > 0 && (
+        <div className="version-bar">
+          <Select
+            aria-label="Version"
+            value={selectedId ?? ""}
+            options={detail.versions.map((version) => ({
+              value: version.id,
+              label: `${version.version_name}${version.frozen ? " (frozen)" : ""}`,
+            }))}
+            onChange={(event) => {
+              setDraft(false);
+              setSelectedId(event.target.value);
+            }}
+          />
+          {!showDraft && selected?.frozen && <Badge tone="warning">Frozen</Badge>}
+          {!showDraft && selected?.id === detail.active_version_id && (
+            <Badge tone="success">Active</Badge>
+          )}
+          <div className="version-bar-actions">
+            <Button variant="secondary" onClick={() => setDraft(true)}>
+              New version
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => setExporting(true)}
+              disabled={showDraft || !selected}
+            >
+              Export
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => setDeleteVersionOpen(true)}
+              disabled={showDraft || !selected}
+            >
+              Delete version
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => navigate("/runs")}
+              disabled={showDraft || !selected}
+            >
+              Run
+            </Button>
           </div>
-
-          {selected && (
-            <VersionEditor
-              key={selected.id}
-              version={selected}
-              config={config}
-              evaluatorName={detail.name}
-              onSaved={(version) => void load(version.id)}
-            />
-          )}
-
-          {selected && exporting && (
-            <ExportModal
-              open={exporting}
-              evaluatorId={detail.id}
-              versionId={selected.id}
-              onClose={() => setExporting(false)}
-            />
-          )}
-        </>
+        </div>
       )}
+
+      {showDraft ? (
+        <VersionEditor
+          key="draft"
+          version={null}
+          evaluatorId={detail.id}
+          config={config}
+          evaluatorName={detail.name}
+          onSaved={(version) => {
+            setDraft(false);
+            void load(version.id);
+          }}
+        />
+      ) : (
+        selected && (
+          <VersionEditor
+            key={selected.id}
+            version={selected}
+            evaluatorId={detail.id}
+            config={config}
+            evaluatorName={detail.name}
+            onSaved={(version) => void load(version.id)}
+          />
+        )
+      )}
+
+      {!showDraft && selected && exporting && (
+        <ExportModal
+          open={exporting}
+          evaluatorId={detail.id}
+          versionId={selected.id}
+          onClose={() => setExporting(false)}
+        />
+      )}
+
+      <ConfirmDialog
+        open={deleteVersionOpen}
+        title="Delete version"
+        message={`Delete version ${selected?.version_name ?? ""}? This cannot be undone.`}
+        busy={deleteVersionBusy}
+        error={deleteVersionError}
+        onConfirm={() => void confirmDeleteVersion()}
+        onClose={() => {
+          setDeleteVersionOpen(false);
+          setDeleteVersionError(null);
+        }}
+      />
+
+      <ConfirmDialog
+        open={deleteEvaluatorOpen}
+        title="Delete evaluator"
+        message={`Delete ${detail.name}? This deletes all of its versions.`}
+        busy={deleteEvaluatorBusy}
+        error={deleteEvaluatorError}
+        onConfirm={() => void confirmDeleteEvaluator()}
+        onClose={() => {
+          setDeleteEvaluatorOpen(false);
+          setDeleteEvaluatorError(null);
+        }}
+      />
     </section>
   );
 }
