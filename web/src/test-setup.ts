@@ -22,6 +22,17 @@ expect.extend({
         `expected element text ${pass ? "not " : ""}to contain "${expected}" (got "${text}")`,
     };
   },
+  toHaveAttribute(received: unknown, name: string, expected?: string) {
+    const element = received instanceof HTMLElement ? received : null;
+    const actual = element?.getAttribute(name) ?? null;
+    const pass = actual !== null && (expected === undefined || actual === expected);
+    return {
+      pass,
+      message: () =>
+        `expected element ${pass ? "not " : ""}to have attribute "${name}"` +
+        (expected === undefined ? "" : ` with value "${expected}" (got "${actual}")`),
+    };
+  },
 });
 
 declare module "vitest" {
@@ -30,10 +41,12 @@ declare module "vitest" {
   interface Assertion<T = any> {
     toBeDisabled(): T;
     toHaveTextContent(expected: string): T;
+    toHaveAttribute(name: string, expected?: string): T;
   }
   interface AsymmetricMatchersContaining {
     toBeDisabled(): void;
     toHaveTextContent(expected: string): void;
+    toHaveAttribute(name: string, expected?: string): void;
   }
 }
 
