@@ -59,7 +59,14 @@ export default function EvaluatorDetail({ id }: EvaluatorDetailProps) {
           if (preferred && data.versions.some((version) => version.id === preferred)) {
             return preferred;
           }
-          return data.versions[0]?.id ?? null;
+          // When the preferred selection is gone (e.g. it was just deleted), fall to the
+          // newest survivor rather than whichever the API happens to list first.
+          const newest = data.versions.reduce<EvaluatorVersion | null>(
+            (latest, version) =>
+              !latest || version.created_at > latest.created_at ? version : latest,
+            null,
+          );
+          return newest?.id ?? null;
         });
       } catch (err) {
         setError(err);

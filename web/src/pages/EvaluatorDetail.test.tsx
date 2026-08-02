@@ -168,11 +168,23 @@ describe("EvaluatorDetail: delete version", () => {
       .mockResolvedValueOnce(
         makeDetail({
           active_version_id: "v1",
-          versions: [makeVersion({ id: "v1" }), makeVersion({ id: "v2", version_name: "v2" })],
+          versions: [
+            makeVersion({ id: "v1", created_at: "2026-07-01T00:00:00Z" }),
+            makeVersion({ id: "v2", version_name: "v2", created_at: "2026-07-02T00:00:00Z" }),
+            makeVersion({ id: "v3", version_name: "v3", created_at: "2026-07-03T00:00:00Z" }),
+          ],
         }),
       )
+      // The API lists versions oldest-first, so the reload returns v2 before v3. The page
+      // must still land on v3, the newest survivor, rather than versions[0].
       .mockResolvedValueOnce(
-        makeDetail({ active_version_id: "v2", versions: [makeVersion({ id: "v2" })] }),
+        makeDetail({
+          active_version_id: "v1",
+          versions: [
+            makeVersion({ id: "v2", version_name: "v2", created_at: "2026-07-02T00:00:00Z" }),
+            makeVersion({ id: "v3", version_name: "v3", created_at: "2026-07-03T00:00:00Z" }),
+          ],
+        }),
       );
     vi.mocked(evaluators.deleteVersion).mockResolvedValue(undefined);
     const user = userEvent.setup();
@@ -186,7 +198,7 @@ describe("EvaluatorDetail: delete version", () => {
       expect(evaluators.deleteVersion).toHaveBeenCalledWith("e1", "v1"),
     );
     expect(evaluators.get).toHaveBeenCalledTimes(2);
-    expect(await screen.findByText("Editing version v2")).toBeTruthy();
+    expect(await screen.findByText("Editing version v3")).toBeTruthy();
   });
 
   it("keeps the dialog open and shows the run count when deleteVersion is referenced", async () => {
