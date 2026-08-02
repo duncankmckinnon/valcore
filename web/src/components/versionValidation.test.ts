@@ -266,4 +266,41 @@ describe("validateVersion", () => {
       expect(errors.prompt_template).toBeUndefined();
     });
   });
+
+  // Supplementary cases beyond the plan that exercise the mirror's edge logic.
+  describe("edge cases", () => {
+    it("flags null score_labels for a categorical enum score field", () => {
+      // Python compares `score_labels != enum_values`; null never equals the value list.
+      const errors = validateVersion(categoricalDraft({ score_labels: null }));
+      expect(errors).toHaveProperty("score_labels");
+    });
+
+    it("returns {} for a valid int-typed numeric score field", () => {
+      const errors = validateVersion(
+        numericDraft({
+          output_fields: [
+            field({ name: "rating", type: "int", enum_values: null, minimum: 1, maximum: 5 }),
+          ],
+        }),
+      );
+      expect(errors).toEqual({});
+    });
+
+    it("accumulates independent errors across fields", () => {
+      const errors = validateVersion(
+        categoricalDraft({ version_name: "", model: "", required_columns: [], prompt_template: "" }),
+      );
+      expect(errors).toHaveProperty("version_name");
+      expect(errors).toHaveProperty("model");
+      expect(errors).toHaveProperty("required_columns");
+    });
+
+    it("does not run score checks while output_fields are invalid", () => {
+      // With empty output_fields, score_field cannot resolve, but the plan keys the problem
+      // to output_fields alone rather than doubling up on score_field.
+      const errors = validateVersion(categoricalDraft({ output_fields: [] }));
+      expect(errors).toHaveProperty("output_fields");
+      expect(errors.score_field).toBeUndefined();
+    });
+  });
 });
