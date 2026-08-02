@@ -1,7 +1,7 @@
 import { expect } from "vitest";
 
-// jest-dom is not a dependency; the component suite only needs `toBeDisabled`, so
-// provide a minimal matcher rather than pulling in the whole package.
+// jest-dom is not a dependency; the component suite only needs a couple of DOM
+// matchers, so provide minimal versions rather than pulling in the whole package.
 expect.extend({
   toBeDisabled(received: unknown) {
     const disabled =
@@ -13,6 +13,15 @@ expect.extend({
       message: () => `expected element ${disabled ? "not " : ""}to be disabled`,
     };
   },
+  toHaveTextContent(received: unknown, expected: string) {
+    const text = received instanceof HTMLElement ? (received.textContent ?? "") : "";
+    const pass = text.includes(expected);
+    return {
+      pass,
+      message: () =>
+        `expected element text ${pass ? "not " : ""}to contain "${expected}" (got "${text}")`,
+    };
+  },
 });
 
 declare module "vitest" {
@@ -20,9 +29,11 @@ declare module "vitest" {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   interface Assertion<T = any> {
     toBeDisabled(): T;
+    toHaveTextContent(expected: string): T;
   }
   interface AsymmetricMatchersContaining {
     toBeDisabled(): void;
+    toHaveTextContent(expected: string): void;
   }
 }
 
