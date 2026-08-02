@@ -1,3 +1,31 @@
+import { expect } from "vitest";
+
+// jest-dom is not a dependency; the component suite only needs `toBeDisabled`, so
+// provide a minimal matcher rather than pulling in the whole package.
+expect.extend({
+  toBeDisabled(received: unknown) {
+    const disabled =
+      received instanceof HTMLElement &&
+      "disabled" in received &&
+      (received as HTMLButtonElement).disabled === true;
+    return {
+      pass: disabled,
+      message: () => `expected element ${disabled ? "not " : ""}to be disabled`,
+    };
+  },
+});
+
+declare module "vitest" {
+  // The type parameter must match vitest's own `Assertion` declaration exactly.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  interface Assertion<T = any> {
+    toBeDisabled(): T;
+  }
+  interface AsymmetricMatchersContaining {
+    toBeDisabled(): void;
+  }
+}
+
 // jsdom (v25) ships Blob/File without the standard async read helpers that the
 // upload flow relies on (Blob.text). Polyfill them so component tests can exercise
 // client-side file parsing the same way a real browser would.
