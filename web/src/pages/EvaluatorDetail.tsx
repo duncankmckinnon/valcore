@@ -119,6 +119,7 @@ export default function EvaluatorDetail({ id }: EvaluatorDetailProps) {
               key={selected.id}
               version={selected}
               config={config}
+              evaluatorId={detail.id}
               evaluatorName={detail.name}
               onSaved={(version) => void load(version.id)}
             />

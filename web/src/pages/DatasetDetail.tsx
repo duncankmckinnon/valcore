@@ -1,10 +1,12 @@
-// Detail view for a single dataset: a stats header over the labeling grid.
+// Detail view for a single dataset: a stats header over the labeling grid, with
+// Edit (shape/settings) and Delete actions in the header.
 
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { datasets } from "../api/client";
 import type { Dataset, DatasetStats } from "../api/types";
-import { ErrorBanner, Spinner } from "../components/ui";
+import { Button, ConfirmDialog, ErrorBanner, Spinner } from "../components/ui";
+import DatasetSettingsModal from "../components/DatasetSettingsModal";
 import LabelingGrid from "../components/LabelingGrid";
 
 type Props = {
@@ -12,9 +14,14 @@ type Props = {
 };
 
 export default function DatasetDetail({ datasetId }: Props) {
+  const navigate = useNavigate();
   const [dataset, setDataset] = useState<Dataset | null>(null);
   const [stats, setStats] = useState<DatasetStats | null>(null);
   const [error, setError] = useState<unknown>(null);
+  const [editing, setEditing] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<unknown>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -45,16 +52,60 @@ export default function DatasetDetail({ datasetId }: Props) {
     refreshStats();
   }, [refreshStats]);
 
+  function onSaved(updated: Dataset) {
+    setEditing(false);
+    // Replace the local shape so the grid headers and label controls re-render,
+    // then refresh the counts a migration may have changed.
+    setDataset(updated);
+    refreshStats();
+  }
+
+  async function confirmDelete() {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await datasets.remove(datasetId);
+      navigate("/datasets");
+    } catch (err) {
+      // A ReferencedError keeps the dialog open with the run count in view.
+      setDeleteError(err);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   if (error) return <ErrorBanner error={error} />;
   if (!dataset) return <Spinner />;
+
+  // Remount the grid whenever the dataset's shape changes so it refetches rows
+  // (e.g. after a column migration or a cleared label schema).
+  const gridKey = JSON.stringify([dataset.columns, dataset.label_schema]);
 
   return (
     <section>
       <div className="detail-breadcrumb">
         <Link to="/datasets">Datasets</Link> / {dataset.name}
       </div>
-      <h1>{dataset.name}</h1>
-      {dataset.description && <p className="muted">{dataset.description}</p>}
+      <div className="detail-header">
+        <div>
+          <h1>{dataset.name}</h1>
+          {dataset.description && <p className="muted">{dataset.description}</p>}
+        </div>
+        <div className="form-actions">
+          <Button variant="secondary" onClick={() => setEditing(true)}>
+            Edit
+          </Button>
+          <Button
+            variant="danger"
+            onClick={() => {
+              setDeleteError(null);
+              setConfirmingDelete(true);
+            }}
+          >
+            Delete dataset
+          </Button>
+        </div>
+      </div>
 
       {stats && (
         <div className="stats-header">
@@ -81,10 +132,28 @@ export default function DatasetDetail({ datasetId }: Props) {
       )}
 
       <LabelingGrid
+        key={gridKey}
         datasetId={datasetId}
         columns={dataset.columns}
         schema={dataset.label_schema}
         onChange={refreshStats}
+      />
+
+      <DatasetSettingsModal
+        open={editing}
+        dataset={dataset}
+        onSaved={onSaved}
+        onClose={() => setEditing(false)}
+      />
+
+      <ConfirmDialog
+        open={confirmingDelete}
+        title="Delete dataset"
+        message={`Delete "${dataset.name}"? This cannot be undone.`}
+        busy={deleting}
+        error={deleteError}
+        onConfirm={confirmDelete}
+        onClose={() => setConfirmingDelete(false)}
       />
     </section>
   );
