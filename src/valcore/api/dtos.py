@@ -13,6 +13,7 @@ class ErrorBody(BaseModel):
 
     type: str
     message: str
+    detail: dict | None = None
 
 
 class ErrorResponse(BaseModel):

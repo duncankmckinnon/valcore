@@ -13,8 +13,10 @@ from valcore.api.dtos import ErrorBody, ErrorResponse
 from valcore.errors import (
     ConfigError,
     ContractError,
+    DestructiveChangeError,
     FrozenVersionError,
     NotFoundError,
+    ReferencedError,
     ValcoreError,
 )
 from valcore.models import VALID_CAPABILITIES
@@ -26,6 +28,8 @@ _STATUS_BY_ERROR: tuple[tuple[type[ValcoreError], int], ...] = (
     (ContractError, 422),
     (ConfigError, 422),
     (FrozenVersionError, 409),
+    (ReferencedError, 409),
+    (DestructiveChangeError, 409),
     (ValcoreError, 400),
 )
 
@@ -49,8 +53,14 @@ def _resolve_dist_dir() -> Path | None:
 
 def _error_response(status_code: int, exc: Exception) -> JSONResponse:
     """Render an exception into the uniform ``{"error": {type, message}}`` envelope."""
-    body = ErrorResponse(error=ErrorBody(type=type(exc).__name__, message=str(exc)))
-    return JSONResponse(status_code=status_code, content=body.model_dump())
+    body = ErrorResponse(
+        error=ErrorBody(
+            type=type(exc).__name__,
+            message=str(exc),
+            detail=getattr(exc, "detail", None) or None,
+        )
+    )
+    return JSONResponse(status_code=status_code, content=body.model_dump(exclude_none=True))
 
 
 def _register_exception_handlers(app: FastAPI) -> None:
