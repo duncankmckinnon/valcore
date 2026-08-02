@@ -4,14 +4,18 @@ import LabelingGrid from "./LabelingGrid";
 import type { DatasetRow, LabelSchema, RowsPage } from "../api/types";
 import { datasets } from "../api/client";
 
-vi.mock("../api/client", () => ({
-  datasets: {
-    rows: vi.fn(),
-    patchRow: vi.fn(),
-    addRows: vi.fn(),
-    deleteRow: vi.fn(),
-  },
-}));
+vi.mock("../api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/client")>();
+  return {
+    ...actual,
+    datasets: {
+      rows: vi.fn(),
+      patchRow: vi.fn(),
+      addRows: vi.fn(),
+      deleteRow: vi.fn(),
+    },
+  };
+});
 
 const rowsMock = vi.mocked(datasets.rows);
 const patchMock = vi.mocked(datasets.patchRow);
@@ -65,7 +69,7 @@ describe("LabelingGrid", () => {
 
     renderGrid();
 
-    expect(await screen.findByText("hello world")).toBeTruthy();
+    expect(await screen.findByDisplayValue("hello world")).toBeTruthy();
     expect(document.querySelector(".suggested-cell span")?.textContent).toBe("good");
     expect(screen.getByText("generated")).toBeTruthy();
   });
@@ -76,7 +80,7 @@ describe("LabelingGrid", () => {
     );
 
     renderGrid();
-    await screen.findByText("hello world");
+    await screen.findByDisplayValue("hello world");
 
     const focusedIndex = () => {
       const selected = document.querySelectorAll('tr[aria-selected="true"]');
@@ -96,7 +100,7 @@ describe("LabelingGrid", () => {
     patchMock.mockResolvedValue(makeRow({ label: { value: "good" }, label_source: "accepted" }));
 
     renderGrid();
-    await screen.findByText("hello world");
+    await screen.findByDisplayValue("hello world");
 
     fireEvent.keyDown(window, { key: "a" });
 
@@ -110,7 +114,7 @@ describe("LabelingGrid", () => {
     patchMock.mockResolvedValue(makeRow({ label: { value: "good" }, label_source: "manual" }));
 
     renderGrid();
-    await screen.findByText("hello world");
+    await screen.findByDisplayValue("hello world");
 
     fireEvent.keyDown(window, { key: "1" });
 
@@ -124,7 +128,7 @@ describe("LabelingGrid", () => {
     patchMock.mockResolvedValue(makeRow({ label: null, label_source: null }));
 
     renderGrid();
-    await screen.findByText("hello world");
+    await screen.findByDisplayValue("hello world");
 
     fireEvent.keyDown(window, { key: "u" });
 
@@ -138,7 +142,7 @@ describe("LabelingGrid", () => {
     patchMock.mockRejectedValue(new Error("save failed"));
 
     renderGrid();
-    await screen.findByText("hello world");
+    await screen.findByDisplayValue("hello world");
 
     const select = screen.getByLabelText("Label") as HTMLSelectElement;
     expect(select.value).toBe("good");
@@ -159,7 +163,7 @@ describe("LabelingGrid", () => {
     );
 
     renderGrid();
-    await screen.findByText("hello world");
+    await screen.findByDisplayValue("hello world");
     expect(rowsMock).toHaveBeenCalledWith("d1", { limit: 100, offset: 0 });
 
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
@@ -174,7 +178,7 @@ describe("LabelingGrid", () => {
     patchMock.mockResolvedValue(makeRow({ data: { text: "changed" } }));
 
     renderGrid();
-    await screen.findByText("hello world");
+    await screen.findByDisplayValue("hello world");
 
     const cell = screen.getByLabelText("text") as HTMLInputElement;
     fireEvent.change(cell, { target: { value: "changed" } });
@@ -189,7 +193,7 @@ describe("LabelingGrid", () => {
     rowsMock.mockResolvedValue(page([makeRow({ data: { text: "hello world" } })]));
 
     renderGrid();
-    await screen.findByText("hello world");
+    await screen.findByDisplayValue("hello world");
 
     const cell = screen.getByLabelText("text") as HTMLInputElement;
     fireEvent.blur(cell);
@@ -202,7 +206,7 @@ describe("LabelingGrid", () => {
     patchMock.mockRejectedValue(new Error("save failed"));
 
     renderGrid();
-    await screen.findByText("hello world");
+    await screen.findByDisplayValue("hello world");
 
     const cell = screen.getByLabelText("text") as HTMLInputElement;
     fireEvent.change(cell, { target: { value: "changed" } });
@@ -243,7 +247,7 @@ describe("LabelingGrid", () => {
     ]);
 
     renderGrid(SCHEMA, { onChange });
-    await screen.findByText("hello world");
+    await screen.findByDisplayValue("hello world");
 
     fireEvent.click(screen.getByRole("button", { name: "Add row" }));
 
@@ -270,7 +274,7 @@ describe("LabelingGrid", () => {
     deleteRowMock.mockResolvedValue(undefined);
 
     renderGrid(SCHEMA, { onChange });
-    await screen.findByText("hello world");
+    await screen.findByDisplayValue("hello world");
 
     fireEvent.click(screen.getByRole("button", { name: "Delete row 0" }));
 
@@ -290,7 +294,7 @@ describe("LabelingGrid", () => {
     patchMock.mockResolvedValue(makeRow({ label: { value: "good" }, label_source: "manual" }));
 
     renderGrid();
-    await screen.findByText("hello world");
+    await screen.findByDisplayValue("hello world");
 
     const focusedIndex = () => {
       const selected = document.querySelectorAll('tr[aria-selected="true"]');
@@ -313,7 +317,7 @@ describe("LabelingGrid", () => {
     );
 
     renderGrid();
-    await screen.findByText("hello world");
+    await screen.findByDisplayValue("hello world");
 
     const focusedIndex = () => {
       const selected = document.querySelectorAll('tr[aria-selected="true"]');

@@ -4,7 +4,6 @@
 // keyboard handler, and the shared optimistic-update path; this file is only the row.
 
 import { forwardRef } from "react";
-import type { CSSProperties } from "react";
 import type { DatasetRow, LabelSchema, LabelSource } from "../api/types";
 import { Badge, Button, Select } from "./ui";
 
@@ -30,21 +29,6 @@ const SOURCE_TONE: Record<LabelSource, "neutral" | "success" | "warning"> = {
   manual: "neutral",
   accepted: "success",
   generated: "warning",
-};
-
-// The editable input carries the cell's value, but an input's value is not part of
-// its text content, so the value is also mirrored in a visually-hidden node. That
-// keeps the cell discoverable by text queries without a second visible control.
-const VALUE_MIRROR: CSSProperties = {
-  position: "absolute",
-  width: 1,
-  height: 1,
-  padding: 0,
-  margin: -1,
-  overflow: "hidden",
-  clip: "rect(0 0 0 0)",
-  whiteSpace: "nowrap",
-  border: 0,
 };
 
 function scalar(value: unknown): string | number | null {
@@ -105,18 +89,15 @@ const LabelingRow = forwardRef<HTMLTableRowElement, LabelingRowProps>(function L
     }
 
     return (
-      <>
-        {display !== "" && <span style={VALUE_MIRROR}>{display}</span>}
-        <input
-          key={display}
-          className="cell-input"
-          aria-label={column}
-          defaultValue={display}
-          onBlur={(e) => {
-            if (e.target.value !== display) onSetCell(column, e.target.value);
-          }}
-        />
-      </>
+      <input
+        key={display}
+        className="cell-input"
+        aria-label={column}
+        defaultValue={display}
+        onBlur={(e) => {
+          if (e.target.value !== display) onSetCell(column, e.target.value);
+        }}
+      />
     );
   }
 

@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { datasets } from "../api/client";
 import type { DatasetRow, LabelSchema, RowPatch } from "../api/types";
 import LabelingRow from "./LabelingRow";
-import { Button, ErrorBanner, Modal, Spinner } from "./ui";
+import { Button, ConfirmDialog, ErrorBanner, Modal, Spinner } from "./ui";
 
 type Props = {
   datasetId: string;
@@ -74,7 +74,7 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
   useEffect(() => {
     if (!focusRowId) return;
     const el = containerRef.current?.querySelector<HTMLElement>(
-      `[data-row-id="${focusRowId}"] .cell-input, [data-row-id="${focusRowId}"] .cell-expand`,
+      `[data-row-id="${focusRowId}"] .cell-input`,
     );
     el?.focus();
     setFocusRowId(null);
@@ -226,6 +226,8 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
       await datasets.deleteRow(deleteTarget.id);
       setRows((prev) => prev.filter((r) => r.id !== deleteTarget.id));
       setTotal((t) => Math.max(0, t - 1));
+      // Keep focus in range: the deleted row may have been the last one.
+      setFocusedIdx((i) => Math.min(i, Math.max(0, rows.length - 2)));
       setDeleteTarget(null);
       onChange?.();
     } catch (err) {
@@ -314,33 +316,18 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
         </Button>
       </div>
 
-      <Modal
+      <ConfirmDialog
         open={deleteTarget !== null}
         title="Delete row"
+        message={`Delete row ${deleteTarget?.idx ?? ""}? This cannot be undone.`}
+        busy={deleteBusy}
+        error={deleteError}
+        onConfirm={confirmDelete}
         onClose={() => {
           setDeleteTarget(null);
           setDeleteError(null);
         }}
-      >
-        <p className="confirm-dialog-message">
-          Delete row {deleteTarget?.idx}? This cannot be undone.
-        </p>
-        <ErrorBanner error={deleteError} />
-        <div className="form-actions">
-          <Button
-            variant="secondary"
-            onClick={() => {
-              setDeleteTarget(null);
-              setDeleteError(null);
-            }}
-          >
-            Cancel
-          </Button>
-          <Button variant="danger" onClick={confirmDelete} disabled={deleteBusy}>
-            {deleteBusy ? <Spinner /> : "Delete"}
-          </Button>
-        </div>
-      </Modal>
+      />
 
       <Modal open={showHelp} title="Keyboard shortcuts" onClose={() => setShowHelp(false)}>
         <ul className="shortcut-list">
