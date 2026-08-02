@@ -1,12 +1,16 @@
 // The hand-labeling surface. A plain table wired for keyboard-driven labeling:
 // j/k move focus, a accepts the suggestion, 1-9 apply categorical labels, u clears,
 // ? shows help. Every change is saved immediately via patchRow with an optimistic
-// update that rolls back on failure.
+// update that rolls back on failure. Rows are hand-authorable: cells are editable,
+// an Add row control appends a blank row, and each row can be deleted.
+// Row rendering lives in LabelingRow; this file owns fetching, pagination, the
+// expanded set, the keyboard handler, applyPatch, and the add-row control.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { datasets } from "../api/client";
-import type { DatasetRow, LabelSchema, LabelSource, RowPatch } from "../api/types";
-import { Badge, Button, ErrorBanner, Modal, Select, Spinner } from "./ui";
+import type { DatasetRow, LabelSchema, RowPatch } from "../api/types";
+import LabelingRow from "./LabelingRow";
+import { Button, ErrorBanner, Modal, Spinner } from "./ui";
 
 type Props = {
   datasetId: string;
@@ -16,23 +20,6 @@ type Props = {
 };
 
 const PAGE_SIZE = 100;
-const CELL_TRUNCATE = 80;
-
-const SOURCE_TONE: Record<LabelSource, "neutral" | "success" | "warning"> = {
-  manual: "neutral",
-  accepted: "success",
-  generated: "warning",
-};
-
-function scalar(value: unknown): string | number | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value === "string" || typeof value === "number") return value;
-  return String(value);
-}
-
-function labelValue(label: Record<string, unknown> | null): string | number | null {
-  return label ? scalar(label.value) : null;
-}
 
 export default function LabelingGrid({ datasetId, columns, schema, onChange }: Props) {
   const [rows, setRows] = useState<DatasetRow[]>([]);
@@ -43,7 +30,12 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
   const [focusedIdx, setFocusedIdx] = useState(0);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [showHelp, setShowHelp] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<DatasetRow | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<unknown>(null);
+  const [focusRowId, setFocusRowId] = useState<string | null>(null);
   const focusedRef = useRef<HTMLTableRowElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -77,6 +69,16 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
       }
     }
   }, [focusedIdx]);
+
+  // Move keyboard focus into a freshly added row's first cell once it renders.
+  useEffect(() => {
+    if (!focusRowId) return;
+    const el = containerRef.current?.querySelector<HTMLElement>(
+      `[data-row-id="${focusRowId}"] .cell-input, [data-row-id="${focusRowId}"] .cell-expand`,
+    );
+    el?.focus();
+    setFocusRowId(null);
+  }, [focusRowId, rows]);
 
   const applyPatch = useCallback(
     async (rowId: string, patch: RowPatch, optimistic: (row: DatasetRow) => DatasetRow) => {
@@ -135,6 +137,16 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
     [applyPatch],
   );
 
+  const setCell = useCallback(
+    (row: DatasetRow, column: string, value: string) => {
+      applyPatch(row.id, { data: { [column]: value } }, (r) => ({
+        ...r,
+        data: { ...r.data, [column]: value },
+      }));
+    },
+    [applyPatch],
+  );
+
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
@@ -180,63 +192,47 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
     return () => window.removeEventListener("keydown", onKey);
   }, [rows, focusedIdx, schema, acceptSuggestion, clearLabel, setLabel]);
 
-  function toggleExpanded(key: string) {
+  const toggleExpanded = useCallback((key: string) => {
     setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
       return next;
     });
-  }
+  }, []);
 
-  function renderCell(row: DatasetRow, column: string) {
-    const key = `${row.id}:${column}`;
-    const text = scalar(row.data[column]);
-    const display = text === null ? "" : String(text);
-    const isLong = display.length > CELL_TRUNCATE;
-    const isOpen = expanded.has(key);
-    if (!isLong) return display;
-    return (
-      <button type="button" className="cell-expand" onClick={() => toggleExpanded(key)}>
-        {isOpen ? display : `${display.slice(0, CELL_TRUNCATE)}…`}
-      </button>
-    );
-  }
-
-  function renderLabelControl(row: DatasetRow) {
-    const current = labelValue(row.label);
-    if (schema.kind === "categorical") {
-      const options = [
-        { value: "", label: "—" },
-        ...(schema.labels ?? []).map((label) => ({ value: label, label })),
-      ];
-      return (
-        <Select
-          options={options}
-          aria-label="Label"
-          value={current === null ? "" : String(current)}
-          onChange={(e) => (e.target.value === "" ? clearLabel(row) : setLabel(row, e.target.value))}
-        />
-      );
+  async function addRow() {
+    const blank: Record<string, unknown> = {};
+    for (const column of columns) blank[column] = "";
+    try {
+      const created = await datasets.addRows(datasetId, [blank]);
+      setRows((prev) => [...prev, ...created]);
+      setTotal((t) => t + created.length);
+      if (created.length > 0) {
+        setFocusedIdx(rows.length);
+        setFocusRowId(created[0].id);
+      }
+      onChange?.();
+    } catch (err) {
+      setError(err);
     }
-    // Keyed on the current value so an optimistic rollback remounts the input with
-    // the reverted value rather than leaving the failed edit on screen.
-    return (
-      <input
-        key={current === null ? "" : String(current)}
-        className="select"
-        type="number"
-        aria-label="Label"
-        defaultValue={current === null ? "" : String(current)}
-        onBlur={(e) => {
-          if (e.target.value === "") clearLabel(row);
-          else setLabel(row, Number(e.target.value));
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-        }}
-      />
-    );
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      await datasets.deleteRow(deleteTarget.id);
+      setRows((prev) => prev.filter((r) => r.id !== deleteTarget.id));
+      setTotal((t) => Math.max(0, t - 1));
+      setDeleteTarget(null);
+      onChange?.();
+    } catch (err) {
+      setDeleteError(err);
+    } finally {
+      setDeleteBusy(false);
+    }
   }
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -245,7 +241,7 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
   if (loading) return <Spinner />;
 
   return (
-    <div className="labeling-grid">
+    <div className="labeling-grid" ref={containerRef}>
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
       <div className="labeling-toolbar">
@@ -270,63 +266,33 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, index) => {
-            const suggested = labelValue(row.suggested_label);
-            const source = row.label_source;
-            return (
-              <tr
-                key={row.id}
-                ref={index === focusedIdx ? focusedRef : null}
-                className={index === focusedIdx ? "row-focused" : undefined}
-                aria-selected={index === focusedIdx}
-                onClick={() => setFocusedIdx(index)}
-              >
-                {columns.map((column) => (
-                  <td key={column}>{renderCell(row, column)}</td>
-                ))}
-                <td>
-                  {suggested === null ? (
-                    <span className="muted">—</span>
-                  ) : (
-                    <div className="suggested-cell">
-                      <span>{String(suggested)}</span>
-                      {row.label_reasoning && (
-                        <button
-                          type="button"
-                          className="cell-expand"
-                          title={row.label_reasoning}
-                          onClick={() => toggleExpanded(`${row.id}:reasoning`)}
-                        >
-                          why?
-                        </button>
-                      )}
-                      {row.label_reasoning && expanded.has(`${row.id}:reasoning`) && (
-                        <div className="reasoning">{row.label_reasoning}</div>
-                      )}
-                      <Button variant="secondary" onClick={() => acceptSuggestion(row)}>
-                        Accept
-                      </Button>
-                    </div>
-                  )}
-                </td>
-                <td>{renderLabelControl(row)}</td>
-                <td>{source ? <Badge tone={SOURCE_TONE[source]}>{source}</Badge> : null}</td>
-                <td>
-                  <input
-                    key={row.note ?? ""}
-                    className="select"
-                    aria-label="Note"
-                    defaultValue={row.note ?? ""}
-                    onBlur={(e) => {
-                      if (e.target.value !== (row.note ?? "")) setNote(row, e.target.value);
-                    }}
-                  />
-                </td>
-              </tr>
-            );
-          })}
+          {rows.map((row, index) => (
+            <LabelingRow
+              key={row.id}
+              ref={index === focusedIdx ? focusedRef : null}
+              row={row}
+              columns={columns}
+              schema={schema}
+              focused={index === focusedIdx}
+              expanded={expanded}
+              onToggleExpanded={toggleExpanded}
+              onFocus={() => setFocusedIdx(index)}
+              onSetLabel={(value) => setLabel(row, value)}
+              onClearLabel={() => clearLabel(row)}
+              onAcceptSuggestion={() => acceptSuggestion(row)}
+              onSetNote={(note) => setNote(row, note)}
+              onSetCell={(column, value) => setCell(row, column, value)}
+              onDelete={() => setDeleteTarget(row)}
+            />
+          ))}
         </tbody>
       </table>
+
+      <div className="add-row-bar">
+        <Button variant="secondary" onClick={addRow}>
+          Add row
+        </Button>
+      </div>
 
       <div className="labeling-pagination">
         <Button
@@ -347,6 +313,34 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
           Next
         </Button>
       </div>
+
+      <Modal
+        open={deleteTarget !== null}
+        title="Delete row"
+        onClose={() => {
+          setDeleteTarget(null);
+          setDeleteError(null);
+        }}
+      >
+        <p className="confirm-dialog-message">
+          Delete row {deleteTarget?.idx}? This cannot be undone.
+        </p>
+        <ErrorBanner error={deleteError} />
+        <div className="form-actions">
+          <Button
+            variant="secondary"
+            onClick={() => {
+              setDeleteTarget(null);
+              setDeleteError(null);
+            }}
+          >
+            Cancel
+          </Button>
+          <Button variant="danger" onClick={confirmDelete} disabled={deleteBusy}>
+            {deleteBusy ? <Spinner /> : "Delete"}
+          </Button>
+        </div>
+      </Modal>
 
       <Modal open={showHelp} title="Keyboard shortcuts" onClose={() => setShowHelp(false)}>
         <ul className="shortcut-list">
