@@ -730,3 +730,71 @@ def test_delete_row_removes_one_leaves_rest(store: Store) -> None:
 def test_delete_row_missing_raises(store: Store) -> None:
     with pytest.raises(NotFoundError):
         store.delete_row("nope")
+
+
+# -- Manual authoring: additional interaction coverage -----------------------
+
+
+def test_update_dataset_columns_and_renames_together(store: Store) -> None:
+    """When both are given, renames apply, then rows are pruned to the final columns."""
+    ds_id, _ = _dataset_with_rows(store)
+    result = store.update_dataset(
+        ds_id,
+        columns=["prompt", "context"],
+        column_renames={"question": "prompt"},
+    )
+    assert result.columns == ["prompt", "context"]
+    rows = store.list_rows(ds_id)
+    assert [r.data["prompt"] for r in rows] == ["q1", "q2", "q3"]
+    for row in rows:
+        assert set(row.data) == {"prompt", "context"}
+        assert row.data["context"] is None
+        assert "question" not in row.data
+        assert "answer" not in row.data
+
+
+def test_update_dataset_force_clears_invalid_and_migrates_columns(store: Store) -> None:
+    """A single forced call may both migrate shape and clear the now-invalid labels."""
+    ds_id, rows = _narrowing_dataset(store)
+    narrowed = {"kind": "categorical", "labels": ["pass", "fail"]}
+
+    result = store.update_dataset(
+        ds_id,
+        column_renames={"question": "prompt"},
+        label_schema=narrowed,
+        force=True,
+    )
+    assert result.columns == ["prompt"]
+    assert result.label_schema == narrowed
+
+    persisted = {r.id: r for r in store.list_rows(ds_id)}
+    for row in persisted.values():
+        assert set(row.data) == {"prompt"}
+    assert persisted[rows[0].id].label == {"value": "pass"}
+    assert persisted[rows[1].id].label == {"value": "fail"}
+    assert persisted[rows[2].id].label is None
+    assert persisted[rows[2].id].label_source is None
+
+
+def test_update_dataset_name_only_leaves_shape_and_labels(store: Store) -> None:
+    """A metadata-only edit must not touch columns, rows, or labels."""
+    ds_id, rows = _narrowing_dataset(store)
+    result = store.update_dataset(ds_id, name="renamed")
+    assert result.name == "renamed"
+    assert result.columns == ["question"]
+    persisted = {r.id: r for r in store.list_rows(ds_id)}
+    assert persisted[rows[2].id].label == {"value": "maybe"}
+
+
+def test_delete_version_referenced_leaves_active_pointer(store: Store) -> None:
+    """A blocked version delete must not disturb the active pointer."""
+    evaluator = store.create_evaluator("e")
+    v1 = store.create_version(evaluator.id, **version_fields(version_name="v1"))
+    v2 = store.create_version(evaluator.id, **version_fields(version_name="v2"))
+    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
+    _run_referencing_version(store, v2.id, ds.id)
+
+    with pytest.raises(ReferencedError):
+        store.delete_version(v2.id)
+    assert store.get_version(v1.id).id == v1.id
+    assert store.get_evaluator(evaluator.id).active_version_id == v2.id
