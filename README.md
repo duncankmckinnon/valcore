@@ -31,7 +31,8 @@ valcore serve
 
 `serve` starts the web UI and API on <http://127.0.0.1:8000> and opens a browser
 (pass `--no-browser` to skip that, or `--port` to bind elsewhere). Author evaluators
-and datasets in the UI, then drive runs from the command line.
+and datasets in the UI, then drive runs from the command line. Both can be written by
+hand or generated from a description; a generated result is an editable draft either way.
 
 The gateway key is stored in `~/.valcore/config.toml` (mode `0600`) and exported to
 pydantic-ai as `PYDANTIC_AI_GATEWAY_API_KEY` when a command runs. An already-exported
