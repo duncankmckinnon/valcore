@@ -11,7 +11,7 @@ from valcore.api.deps import get_store
 from valcore.errors import FrozenVersionError
 from valcore.export import render_script
 from valcore.generator import GeneratedConfig, RefinedConfig
-from valcore.models import CapabilitySpec, OutputField, ScoreKind
+from valcore.models import CapabilitySpec, Evaluator, OutputField, ScoreKind
 from valcore.store import Store
 
 router = APIRouter(prefix="/api/evaluators", tags=["evaluators"])
@@ -27,6 +27,13 @@ class EvaluatorCreate(BaseModel):
 
     name: str
     description: str = ""
+
+
+class EvaluatorUpdate(BaseModel):
+    """Partial update for an evaluator's metadata."""
+
+    name: str | None = None
+    description: str | None = None
 
 
 class VersionCreate(BaseModel):
@@ -153,6 +160,21 @@ class ExportResponse(BaseModel):
 # -- Evaluators ---------------------------------------------------------------
 
 
+def _evaluator_summary(evaluator: Evaluator, store: Store) -> EvaluatorSummary:
+    """Build an EvaluatorSummary, resolving the active-version summary if present."""
+    active: VersionSummary | None = None
+    if evaluator.active_version_id is not None:
+        active = VersionSummary.model_validate(store.get_version(evaluator.active_version_id))
+    return EvaluatorSummary(
+        id=evaluator.id,
+        name=evaluator.name,
+        description=evaluator.description,
+        created_at=evaluator.created_at,
+        active_version_id=evaluator.active_version_id,
+        active_version=active,
+    )
+
+
 @router.get("", response_model=list[EvaluatorSummary])
 async def list_evaluators(store: StoreDep) -> list[EvaluatorSummary]:
     """List every evaluator alongside a summary of its active version."""
@@ -179,14 +201,14 @@ async def list_evaluators(store: StoreDep) -> list[EvaluatorSummary]:
 async def create_evaluator(body: EvaluatorCreate, store: StoreDep) -> EvaluatorSummary:
     """Create a new evaluator with no versions yet."""
     evaluator = store.create_evaluator(name=body.name, description=body.description)
-    return EvaluatorSummary(
-        id=evaluator.id,
-        name=evaluator.name,
-        description=evaluator.description,
-        created_at=evaluator.created_at,
-        active_version_id=evaluator.active_version_id,
-        active_version=None,
-    )
+    return _evaluator_summary(evaluator, store)
+
+
+@router.patch("/{id}", response_model=EvaluatorSummary)
+async def update_evaluator(id: str, body: EvaluatorUpdate, store: StoreDep) -> EvaluatorSummary:
+    """Update an evaluator's name or description."""
+    evaluator = store.update_evaluator(id, **body.model_dump(exclude_unset=True))
+    return _evaluator_summary(evaluator, store)
 
 
 @router.get("/{id}", response_model=EvaluatorDetail)
@@ -268,6 +290,12 @@ async def copy_version(vid: str, store: StoreDep) -> VersionRead:
     }
     draft = store.create_version(source.evaluator_id, **config)
     return VersionRead.model_validate(draft)
+
+
+@router.delete("/versions/{vid}", status_code=204)
+async def delete_version(vid: str, store: StoreDep) -> None:
+    """Delete an evaluator version, repointing the active version if needed."""
+    store.delete_version(vid)
 
 
 @router.get("/versions/{vid}/export", response_model=ExportResponse)
