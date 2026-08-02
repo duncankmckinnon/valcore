@@ -6,8 +6,11 @@ import type {
   DatasetCreated,
   DatasetRow,
   DatasetStats,
+  DatasetUpdate,
   Evaluator,
+  EvaluatorUpdate,
   EvaluatorVersion,
+  ExportResponse,
   GeneratedConfig,
   LabelSchema,
   RefinedConfig,
@@ -22,28 +25,37 @@ import type {
 export class ApiError extends Error {
   type: string;
   status: number;
+  detail: Record<string, unknown> | null;
 
-  constructor(message: string, type: string, status: number) {
+  constructor(
+    message: string,
+    type: string,
+    status: number,
+    detail: Record<string, unknown> | null = null,
+  ) {
     super(message);
     this.name = "ApiError";
     this.type = type;
     this.status = status;
+    this.detail = detail;
   }
 }
 
 async function parseError(response: Response): Promise<ApiError> {
   let type = "Error";
   let message = response.statusText || `Request failed with status ${response.status}`;
+  let detail: Record<string, unknown> | null = null;
   try {
     const body = await response.json();
     if (body && typeof body === "object" && body.error) {
       type = body.error.type ?? type;
       message = body.error.message ?? message;
+      detail = body.error.detail ?? null;
     }
   } catch {
     // Non-JSON error body (e.g. an HTML 500 page); fall back to the status text.
   }
-  return new ApiError(message, type, response.status);
+  return new ApiError(message, type, response.status, detail);
 }
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -74,22 +86,32 @@ export const evaluators = {
   get: (id: string) => api<Evaluator>(`/api/evaluators/${id}`),
   create: (data: { name: string; description?: string }) =>
     api<Evaluator>("/api/evaluators", { method: "POST", ...jsonBody(data) }),
+  update: (id: string, data: EvaluatorUpdate) =>
+    api<Evaluator>(`/api/evaluators/${id}`, { method: "PATCH", ...jsonBody(data) }),
   remove: (id: string) => api<void>(`/api/evaluators/${id}`, { method: "DELETE" }),
   createVersion: (id: string, data: Partial<EvaluatorVersion>) =>
     api<EvaluatorVersion>(`/api/evaluators/${id}/versions`, { method: "POST", ...jsonBody(data) }),
-  updateVersion: (id: string, versionId: string, data: Partial<EvaluatorVersion>) =>
-    api<EvaluatorVersion>(`/api/evaluators/${id}/versions/${versionId}`, {
+  // The version routes are keyed by version id alone; there is no evaluator-id
+  // segment. `id` is kept only so existing callers keep their arity.
+  updateVersion: (_id: string, versionId: string, data: Partial<EvaluatorVersion>) =>
+    api<EvaluatorVersion>(`/api/evaluators/versions/${versionId}`, {
       method: "PATCH",
       ...jsonBody(data),
     }),
-  copyVersion: (id: string, versionId: string) =>
-    api<EvaluatorVersion>(`/api/evaluators/${id}/versions/${versionId}/copy`, { method: "POST" }),
+  copyVersion: (_id: string, versionId: string) =>
+    api<EvaluatorVersion>(`/api/evaluators/versions/${versionId}/copy`, { method: "POST" }),
+  deleteVersion: (_id: string, versionId: string) =>
+    api<void>(`/api/evaluators/versions/${versionId}`, { method: "DELETE" }),
   generate: (data: { criteria: string; columns?: string[]; model?: string }) =>
     api<GeneratedConfig>("/api/evaluators/generate", { method: "POST", ...jsonBody(data) }),
   refine: (data: { config: GeneratedConfig; instruction: string; model?: string }) =>
     api<RefinedConfig>("/api/evaluators/refine", { method: "POST", ...jsonBody(data) }),
-  exportScript: (id: string, versionId: string) =>
-    api<string>(`/api/evaluators/${id}/versions/${versionId}/export`),
+  exportScript: async (_id: string, versionId: string) => {
+    const response = await api<ExportResponse>(
+      `/api/evaluators/versions/${versionId}/export`,
+    );
+    return response.source;
+  },
 };
 
 export const datasets = {
@@ -97,7 +119,13 @@ export const datasets = {
   get: (id: string) => api<Dataset>(`/api/datasets/${id}`),
   create: (data: Partial<Dataset>) =>
     api<Dataset>("/api/datasets", { method: "POST", ...jsonBody(data) }),
+  update: (id: string, data: DatasetUpdate) =>
+    api<Dataset>(`/api/datasets/${id}`, { method: "PATCH", ...jsonBody(data) }),
   remove: (id: string) => api<void>(`/api/datasets/${id}`, { method: "DELETE" }),
+  addRows: (id: string, rows: Record<string, unknown>[]) =>
+    api<DatasetRow[]>(`/api/datasets/${id}/rows`, { method: "POST", ...jsonBody({ rows }) }),
+  deleteRow: (rowId: string) =>
+    api<void>(`/api/datasets/rows/${rowId}`, { method: "DELETE" }),
   upload: (form: FormData) =>
     api<DatasetCreated>("/api/datasets/upload", { method: "POST", body: form }),
   generate: (data: {

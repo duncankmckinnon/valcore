@@ -7,6 +7,7 @@ import type {
   SelectHTMLAttributes,
   TextareaHTMLAttributes,
 } from "react";
+import { ApiError } from "../api/client";
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: "primary" | "secondary" | "danger";
@@ -127,5 +128,53 @@ export function Modal({ open, title, onClose, children }: ModalProps) {
         <div className="modal-body">{children}</div>
       </div>
     </div>
+  );
+}
+
+type ConfirmDialogProps = {
+  open: boolean;
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  busy?: boolean;
+  error?: unknown;
+  onConfirm: () => void;
+  onClose: () => void;
+};
+
+export function ConfirmDialog({
+  open,
+  title,
+  message,
+  confirmLabel = "Delete",
+  busy = false,
+  error,
+  onConfirm,
+  onClose,
+}: ConfirmDialogProps) {
+  // A ReferencedError means the delete is blocked by dependent runs; surface the
+  // count instead of the raw message and keep confirm disabled.
+  const referenced =
+    error instanceof ApiError && error.type === "ReferencedError" ? error : null;
+  const runCount = referenced ? Number(referenced.detail?.run_count ?? 0) : 0;
+  return (
+    <Modal open={open} title={title} onClose={onClose}>
+      <p className="confirm-dialog-message">{message}</p>
+      {referenced ? (
+        <p className="destructive-warning">
+          {runCount} runs depend on this. Delete them first.
+        </p>
+      ) : (
+        <ErrorBanner error={error} />
+      )}
+      <div className="form-actions">
+        <Button variant="secondary" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button variant="primary" onClick={onConfirm} disabled={busy || referenced !== null}>
+          {busy ? <Spinner /> : confirmLabel}
+        </Button>
+      </div>
+    </Modal>
   );
 }
