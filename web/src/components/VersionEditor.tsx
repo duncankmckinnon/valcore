@@ -1,6 +1,8 @@
-// The editable form for one evaluator version. When the version is frozen every input is
-// read-only and saving copies the version first (so a frozen version can never be mutated
-// in place). A refine box below the form turns a free-text instruction into a ConfigDiff.
+// The editable form for one evaluator version. A `null` version is an unsaved draft that
+// starts blank and saves through `createVersion`; a real version edits in place, copying
+// first when frozen so a frozen version is never mutated. `validateVersion` runs every
+// render to surface inline errors and gate Save before the server ever sees the payload.
+// The refine box and capability editors live in their own extracted components.
 
 import { useEffect, useMemo, useState } from "react";
 import { evaluators } from "../api/client";
@@ -11,8 +13,11 @@ import type {
   OutputField,
   ScoreKind,
 } from "../api/types";
-import { ConfigDiff } from "./ConfigDiff";
+import { CapabilitiesEditor } from "./CapabilitiesEditor";
 import { OutputFieldsEditor } from "./OutputFieldsEditor";
+import { RefinePanel } from "./RefinePanel";
+import { validateVersion } from "./versionValidation";
+import type { VersionErrors } from "./versionValidation";
 import { Badge, Button, ErrorBanner, Select, Spinner, TextArea } from "./ui";
 
 export type AppConfig = {
@@ -39,7 +44,8 @@ type FormState = {
 };
 
 type VersionEditorProps = {
-  version: EvaluatorVersion;
+  version: EvaluatorVersion | null;
+  evaluatorId: string;
   config: AppConfig;
   evaluatorName?: string;
   onSaved?: (version: EvaluatorVersion) => void;
@@ -64,6 +70,25 @@ function toForm(version: EvaluatorVersion): FormState {
   };
 }
 
+function blankForm(config: AppConfig): FormState {
+  return {
+    version_name: "",
+    notes: "",
+    model: config.models[0] ?? "",
+    instructions: "",
+    prompt_template: "",
+    required_columns: [],
+    output_fields: [],
+    score_field: "",
+    score_kind: "categorical",
+    score_labels: null,
+    score_minimum: null,
+    score_maximum: null,
+    capabilities: [],
+    tools: [],
+  };
+}
+
 /** Output fields whose type is compatible with a given score kind. */
 function compatibleFields(fields: OutputField[], kind: ScoreKind): OutputField[] {
   if (kind === "categorical") {
@@ -72,22 +97,44 @@ function compatibleFields(fields: OutputField[], kind: ScoreKind): OutputField[]
   return fields.filter((field) => field.type === "int" || field.type === "float");
 }
 
-export function VersionEditor({ version, config, evaluatorName, onSaved }: VersionEditorProps) {
-  const [form, setForm] = useState<FormState>(() => toForm(version));
+// Keep score_labels equal to the categorical score field's enum_values (numeric drops them),
+// so a config the user assembles through the form stays server-valid without a hidden knob.
+function syncScoreLabels(form: FormState): FormState {
+  if (form.score_kind !== "categorical") {
+    return { ...form, score_labels: null };
+  }
+  const field = form.output_fields.find((f) => f.name === form.score_field);
+  if (field && field.type === "enum") {
+    return { ...form, score_labels: field.enum_values };
+  }
+  return form;
+}
+
+export function VersionEditor({
+  version,
+  evaluatorId,
+  config,
+  evaluatorName,
+  onSaved,
+}: VersionEditorProps) {
+  const [form, setForm] = useState<FormState>(() =>
+    version ? toForm(version) : blankForm(config),
+  );
   const [error, setError] = useState<unknown>(null);
   const [saving, setSaving] = useState(false);
-  const [instruction, setInstruction] = useState("");
-  const [refining, setRefining] = useState(false);
-  const [diff, setDiff] = useState<{ config: GeneratedConfig; changed: string[] } | null>(null);
   const [columnDraft, setColumnDraft] = useState("");
 
   useEffect(() => {
-    setForm(toForm(version));
-    setDiff(null);
+    setForm(version ? toForm(version) : blankForm(config));
     setError(null);
+    // config is stable for the lifetime of an editor; only a version swap resets the form.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version]);
 
-  const frozen = version.frozen;
+  const frozen = version?.frozen ?? false;
+  const errors = validateVersion(form);
+  const hasErrors = Object.keys(errors).length > 0;
+
   const scoreFieldOptions = useMemo(
     () => compatibleFields(form.output_fields, form.score_kind),
     [form.output_fields, form.score_kind],
@@ -103,33 +150,8 @@ export function VersionEditor({ version, config, evaluatorName, onSaved }: Versi
       const score_field = compatible.some((field) => field.name === prev.score_field)
         ? prev.score_field
         : (compatible[0]?.name ?? "");
-      return { ...prev, score_kind: kind, score_field };
+      return syncScoreLabels({ ...prev, score_kind: kind, score_field });
     });
-  };
-
-  const capabilityConfig = (name: string): Record<string, unknown> | null => {
-    const found = form.capabilities.find((capability) => capability.name === name);
-    return found ? found.config : null;
-  };
-
-  const toggleCapability = (name: string, enabled: boolean) => {
-    setForm((prev) => ({
-      ...prev,
-      capabilities: enabled
-        ? [...prev.capabilities, { name, config: {} }]
-        : prev.capabilities.filter((capability) => capability.name !== name),
-    }));
-  };
-
-  const updateCapabilityConfig = (name: string, changes: Record<string, unknown>) => {
-    setForm((prev) => ({
-      ...prev,
-      capabilities: prev.capabilities.map((capability) =>
-        capability.name === name
-          ? { ...capability, config: { ...capability.config, ...changes } }
-          : capability,
-      ),
-    }));
   };
 
   const toggleTool = (name: string, enabled: boolean) => {
@@ -178,11 +200,16 @@ export function VersionEditor({ version, config, evaluatorName, onSaved }: Versi
     setError(null);
     const patch: Partial<EvaluatorVersion> = { ...form };
     try {
-      let target = version;
-      if (frozen) {
-        target = await evaluators.copyVersion(version.evaluator_id, version.id);
+      let result: EvaluatorVersion;
+      if (version === null) {
+        result = await evaluators.createVersion(evaluatorId, patch);
+      } else {
+        let target = version;
+        if (frozen) {
+          target = await evaluators.copyVersion(evaluatorId, version.id);
+        }
+        result = await evaluators.updateVersion(evaluatorId, target.id, patch);
       }
-      const result = await evaluators.updateVersion(target.evaluator_id, target.id, patch);
       onSaved?.(result);
     } catch (err) {
       setError(err);
@@ -191,25 +218,18 @@ export function VersionEditor({ version, config, evaluatorName, onSaved }: Versi
     }
   };
 
-  const handleRefine = async () => {
-    if (instruction.trim() === "") {
-      return;
-    }
-    setRefining(true);
-    setError(null);
-    try {
-      const refined = await evaluators.refine({ config: asConfig(), instruction });
-      setDiff({ config: refined.config, changed: refined.changed_fields });
-    } catch (err) {
-      setError(err);
-    } finally {
-      setRefining(false);
-    }
-  };
-
-  const applyDiff = (updates: Partial<GeneratedConfig>) => {
+  const applyRefine = (updates: Partial<GeneratedConfig>) => {
     setForm((prev) => ({ ...prev, ...updates }));
   };
+
+  const fieldError = (key: keyof VersionErrors) =>
+    errors[key] ? (
+      <span className="field-error" role="alert">
+        {errors[key]}
+      </span>
+    ) : null;
+
+  const saveLabel = version === null ? "Create version" : frozen ? "Save as new version" : "Save changes";
 
   return (
     <div className="version-editor">
@@ -230,6 +250,7 @@ export function VersionEditor({ version, config, evaluatorName, onSaved }: Versi
           readOnly={frozen}
           onChange={(event) => update("version_name", event.target.value)}
         />
+        {fieldError("version_name")}
       </label>
 
       <label className="field">
@@ -241,6 +262,7 @@ export function VersionEditor({ version, config, evaluatorName, onSaved }: Versi
           options={config.models.map((model) => ({ value: model, label: model }))}
           onChange={(event) => update("model", event.target.value)}
         />
+        {fieldError("model")}
       </label>
 
       <label className="field">
@@ -253,6 +275,7 @@ export function VersionEditor({ version, config, evaluatorName, onSaved }: Versi
           readOnly={frozen}
           onChange={(event) => update("instructions", event.target.value)}
         />
+        {fieldError("instructions")}
       </label>
 
       <label className="field">
@@ -263,6 +286,7 @@ export function VersionEditor({ version, config, evaluatorName, onSaved }: Versi
           readOnly={frozen}
           onChange={(event) => update("prompt_template", event.target.value)}
         />
+        {fieldError("prompt_template")}
       </label>
 
       <div className="field">
@@ -303,6 +327,7 @@ export function VersionEditor({ version, config, evaluatorName, onSaved }: Versi
             </Button>
           </div>
         )}
+        {fieldError("required_columns")}
       </div>
 
       <div className="field">
@@ -310,8 +335,9 @@ export function VersionEditor({ version, config, evaluatorName, onSaved }: Versi
         <OutputFieldsEditor
           fields={form.output_fields}
           readOnly={frozen}
-          onChange={(fields) => update("output_fields", fields)}
+          onChange={(fields) => setForm((prev) => syncScoreLabels({ ...prev, output_fields: fields }))}
         />
+        {fieldError("output_fields")}
       </div>
 
       <label className="field">
@@ -326,6 +352,7 @@ export function VersionEditor({ version, config, evaluatorName, onSaved }: Versi
           ]}
           onChange={(event) => setScoreKind(event.target.value as ScoreKind)}
         />
+        {fieldError("score_kind")}
       </label>
 
       <label className="field">
@@ -335,78 +362,22 @@ export function VersionEditor({ version, config, evaluatorName, onSaved }: Versi
           disabled={frozen}
           value={form.score_field}
           options={scoreFieldOptions.map((field) => ({ value: field.name, label: field.name }))}
-          onChange={(event) => update("score_field", event.target.value)}
+          onChange={(event) =>
+            setForm((prev) => syncScoreLabels({ ...prev, score_field: event.target.value }))
+          }
         />
+        {fieldError("score_field")}
+        {fieldError("score_labels")}
       </label>
 
       <div className="field">
         <span className="field-label">Capabilities</span>
-        {config.capabilities.map((name) => {
-          const capConfig = capabilityConfig(name);
-          const enabled = capConfig !== null;
-          return (
-            <div key={name} className="capability">
-              <label className="capability-toggle">
-                <input
-                  type="checkbox"
-                  checked={enabled}
-                  disabled={frozen}
-                  onChange={(event) => toggleCapability(name, event.target.checked)}
-                />
-                {name}
-              </label>
-              {enabled && name === "FileSystem" && (
-                <input
-                  className="input"
-                  aria-label="FileSystem root dir"
-                  placeholder="root dir"
-                  value={String(capConfig?.root_dir ?? "")}
-                  readOnly={frozen}
-                  onChange={(event) =>
-                    updateCapabilityConfig(name, { root_dir: event.target.value })
-                  }
-                />
-              )}
-              {enabled && name === "Shell" && (
-                <div className="capability-config">
-                  <input
-                    className="input"
-                    aria-label="Shell allowed commands"
-                    placeholder="allowed commands (comma separated)"
-                    value={((capConfig?.allowed_commands as string[]) ?? []).join(", ")}
-                    readOnly={frozen}
-                    onChange={(event) =>
-                      updateCapabilityConfig(name, {
-                        allowed_commands: event.target.value
-                          .split(",")
-                          .map((command) => command.trim())
-                          .filter((command) => command.length > 0),
-                      })
-                    }
-                  />
-                  <input
-                    className="input"
-                    type="number"
-                    aria-label="Shell timeout"
-                    placeholder="timeout (s)"
-                    value={
-                      capConfig && capConfig.default_timeout !== undefined
-                        ? String(capConfig.default_timeout)
-                        : ""
-                    }
-                    readOnly={frozen}
-                    onChange={(event) =>
-                      updateCapabilityConfig(name, {
-                        default_timeout:
-                          event.target.value === "" ? undefined : Number(event.target.value),
-                      })
-                    }
-                  />
-                </div>
-              )}
-            </div>
-          );
-        })}
+        <CapabilitiesEditor
+          available={config.capabilities}
+          value={form.capabilities}
+          readOnly={frozen}
+          onChange={(capabilities) => update("capabilities", capabilities)}
+        />
       </div>
 
       <div className="field">
@@ -427,31 +398,12 @@ export function VersionEditor({ version, config, evaluatorName, onSaved }: Versi
       </div>
 
       <div className="version-editor-actions">
-        <Button variant="primary" onClick={handleSave} disabled={saving}>
-          {saving ? <Spinner /> : frozen ? "Save as new version" : "Save changes"}
+        <Button variant="primary" onClick={handleSave} disabled={saving || hasErrors}>
+          {saving ? <Spinner /> : saveLabel}
         </Button>
       </div>
 
-      <div className="refine-box">
-        <span className="field-label">Refine</span>
-        <TextArea
-          aria-label="Refine instruction"
-          placeholder="Describe a change in plain language…"
-          value={instruction}
-          onChange={(event) => setInstruction(event.target.value)}
-        />
-        <Button variant="secondary" onClick={handleRefine} disabled={refining}>
-          {refining ? <Spinner /> : "Refine"}
-        </Button>
-        {diff && (
-          <ConfigDiff
-            current={asConfig()}
-            proposed={diff.config}
-            changedFields={diff.changed}
-            onApply={applyDiff}
-          />
-        )}
-      </div>
+      <RefinePanel config={asConfig()} onApply={applyRefine} />
     </div>
   );
 }
