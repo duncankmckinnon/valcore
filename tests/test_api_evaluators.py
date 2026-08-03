@@ -7,7 +7,7 @@ from valcore import generator
 from valcore.api.deps import get_store
 from valcore.api.main import create_app
 from valcore.generator import GeneratedConfig, RefinedConfig
-from valcore.models import ScoreKind
+from valcore.models import RunKind, ScoreKind
 from valcore.store import Store, create_engine, init_db
 
 
@@ -155,6 +155,182 @@ async def test_get_missing_evaluator_404(app) -> None:
         response = await client.get("/api/evaluators/does-not-exist")
     assert response.status_code == 404
     assert response.json()["error"]["type"] == "NotFoundError"
+
+
+# -- Evaluator rename ---------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_patch_evaluator_renames(app) -> None:
+    async with _client(app) as client:
+        created = await client.post(
+            "/api/evaluators", json={"name": "Quality", "description": "checks quality"}
+        )
+        eval_id = created.json()["id"]
+
+        patched = await client.patch(f"/api/evaluators/{eval_id}", json={"name": "renamed"})
+        assert patched.status_code == 200
+        assert patched.json()["name"] == "renamed"
+
+        # A subsequent GET reflects the new name.
+        detail = await client.get(f"/api/evaluators/{eval_id}")
+        assert detail.json()["name"] == "renamed"
+
+
+@pytest.mark.anyio
+async def test_patch_evaluator_description_only_leaves_name(app) -> None:
+    async with _client(app) as client:
+        created = await client.post(
+            "/api/evaluators", json={"name": "Quality", "description": "old"}
+        )
+        eval_id = created.json()["id"]
+
+        patched = await client.patch(
+            f"/api/evaluators/{eval_id}", json={"description": "new description"}
+        )
+        assert patched.status_code == 200
+        body = patched.json()
+        assert body["description"] == "new description"
+        assert body["name"] == "Quality"
+
+        detail = await client.get(f"/api/evaluators/{eval_id}")
+        assert detail.json()["name"] == "Quality"
+        assert detail.json()["description"] == "new description"
+
+
+@pytest.mark.anyio
+async def test_patch_evaluator_unknown_id_404(app) -> None:
+    async with _client(app) as client:
+        response = await client.patch("/api/evaluators/nope", json={"name": "x"})
+    assert response.status_code == 404
+    assert response.json()["error"]["type"] == "NotFoundError"
+
+
+# -- Version deletion ---------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_delete_version_removes_it(app) -> None:
+    async with _client(app) as client:
+        eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]
+        version = (
+            await client.post(f"/api/evaluators/{eval_id}/versions", json=_valid_version_body())
+        ).json()
+        vid = version["id"]
+
+        deleted = await client.delete(f"/api/evaluators/versions/{vid}")
+        assert deleted.status_code == 204
+
+        detail = await client.get(f"/api/evaluators/{eval_id}")
+        assert [v["id"] for v in detail.json()["versions"]] == []
+
+
+@pytest.mark.anyio
+async def test_delete_active_version_repoints(app) -> None:
+    async with _client(app) as client:
+        eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]
+
+        first = (
+            await client.post(f"/api/evaluators/{eval_id}/versions", json=_valid_version_body())
+        ).json()
+
+        second_body = _valid_version_body()
+        second_body["version_name"] = "v2"
+        second = (await client.post(f"/api/evaluators/{eval_id}/versions", json=second_body)).json()
+
+        # The newest version is active.
+        detail = await client.get(f"/api/evaluators/{eval_id}")
+        assert detail.json()["active_version_id"] == second["id"]
+
+        # Deleting the active version repoints to the surviving one.
+        deleted = await client.delete(f"/api/evaluators/versions/{second['id']}")
+        assert deleted.status_code == 204
+
+        detail = await client.get(f"/api/evaluators/{eval_id}")
+        assert detail.json()["active_version_id"] == first["id"]
+
+
+@pytest.mark.anyio
+async def test_delete_frozen_version_succeeds(app, store: Store) -> None:
+    async with _client(app) as client:
+        eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]
+        vid = (
+            await client.post(f"/api/evaluators/{eval_id}/versions", json=_valid_version_body())
+        ).json()["id"]
+
+        # Frozen means "not editable in place", not permanent: deletion is still allowed.
+        store.freeze_version(vid)
+
+        deleted = await client.delete(f"/api/evaluators/versions/{vid}")
+        assert deleted.status_code == 204
+
+        detail = await client.get(f"/api/evaluators/{eval_id}")
+        assert [v["id"] for v in detail.json()["versions"]] == []
+
+
+@pytest.mark.anyio
+async def test_delete_referenced_version_409(app, store: Store) -> None:
+    async with _client(app) as client:
+        eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]
+        vid = (
+            await client.post(f"/api/evaluators/{eval_id}/versions", json=_valid_version_body())
+        ).json()["id"]
+
+        dataset = store.create_dataset(
+            "ds", "", ["input", "output"], {"kind": "categorical", "labels": ["pass", "fail"]}
+        )
+        store.create_run(RunKind.VALIDATION, vid, dataset.id, concurrency=1)
+
+        conflict = await client.delete(f"/api/evaluators/versions/{vid}")
+        assert conflict.status_code == 409
+        error = conflict.json()["error"]
+        assert error["type"] == "ReferencedError"
+        assert error["detail"]["run_count"] == 1
+
+        # The version is still there.
+        detail = await client.get(f"/api/evaluators/{eval_id}")
+        assert [v["id"] for v in detail.json()["versions"]] == [vid]
+
+
+@pytest.mark.anyio
+async def test_delete_referenced_evaluator_409(app, store: Store) -> None:
+    async with _client(app) as client:
+        eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]
+        vid = (
+            await client.post(f"/api/evaluators/{eval_id}/versions", json=_valid_version_body())
+        ).json()["id"]
+
+        dataset = store.create_dataset(
+            "ds", "", ["input", "output"], {"kind": "categorical", "labels": ["pass", "fail"]}
+        )
+        store.create_run(RunKind.VALIDATION, vid, dataset.id, concurrency=1)
+
+        conflict = await client.delete(f"/api/evaluators/{eval_id}")
+        assert conflict.status_code == 409
+        assert conflict.json()["error"]["type"] == "ReferencedError"
+
+        # The evaluator still exists after the blocked delete.
+        detail = await client.get(f"/api/evaluators/{eval_id}")
+        assert detail.status_code == 200
+        assert detail.json()["id"] == eval_id
+
+
+@pytest.mark.anyio
+async def test_delete_version_not_shadowed_by_evaluator_route(app) -> None:
+    async with _client(app) as client:
+        eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]
+        vid = (
+            await client.post(f"/api/evaluators/{eval_id}/versions", json=_valid_version_body())
+        ).json()["id"]
+
+        # DELETE /versions/{vid} must hit the version route, not DELETE /{id}.
+        deleted = await client.delete(f"/api/evaluators/versions/{vid}")
+        assert deleted.status_code == 204
+
+        # The version is gone but its evaluator survives.
+        detail = await client.get(f"/api/evaluators/{eval_id}")
+        assert detail.status_code == 200
+        assert [v["id"] for v in detail.json()["versions"]] == []
 
 
 # -- Version freeze / patch / copy --------------------------------------------

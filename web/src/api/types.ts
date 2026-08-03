@@ -98,6 +98,7 @@ export interface RowPatch {
   note?: string | null;
   accept_suggestion?: boolean;
   clear_label?: boolean;
+  data?: Record<string, unknown>;
 }
 
 export interface DatasetStats {
@@ -220,9 +221,26 @@ export interface RefinedConfig {
   summary: string;
 }
 
+export interface ExportResponse {
+  source: string;
+}
+
 export interface ErrorBody {
-  error: {
-    type: string;
-    message: string;
-  };
+  type: string;
+  message: string;
+  detail?: Record<string, unknown> | null;
+}
+
+export interface DatasetUpdate {
+  name?: string;
+  description?: string;
+  columns?: string[];
+  column_renames?: Record<string, string>;
+  label_schema?: LabelSchema;
+  force?: boolean;
+}
+
+export interface EvaluatorUpdate {
+  name?: string;
+  description?: string;
 }

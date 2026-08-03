@@ -503,3 +503,117 @@ kbd {
   flex-direction: column;
   gap: 2px;
 }
+
+/* -- Manual authoring ------------------------------------------------------- */
+
+.mode-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.mode-tab {
+  padding: 6px 14px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.mode-tab-active {
+  background: var(--panel);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.cell-input,
+.cell-textarea {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  background: var(--panel);
+}
+
+.cell-textarea {
+  min-height: 48px;
+  resize: vertical;
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.row-delete {
+  background: none;
+  border: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 6px;
+}
+
+.add-row-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.field-error {
+  color: var(--danger);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.column-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.column-editor-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.destructive-warning {
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: #f8efd9;
+  color: var(--warning);
+  margin-bottom: 16px;
+}
+
+.editable-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: text;
+}
+
+.editable-title-input {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  background: var(--panel);
+}
+
+.confirm-dialog-message {
+  margin: 0 0 16px;
+}

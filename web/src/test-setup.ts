@@ -1,3 +1,55 @@
+import { expect } from "vitest";
+
+// jest-dom is not a dependency; the component suite only needs a couple of DOM
+// matchers, so provide minimal versions rather than pulling in the whole package.
+expect.extend({
+  toBeDisabled(received: unknown) {
+    const disabled =
+      received instanceof HTMLElement &&
+      "disabled" in received &&
+      (received as HTMLButtonElement).disabled === true;
+    return {
+      pass: disabled,
+      message: () => `expected element ${disabled ? "not " : ""}to be disabled`,
+    };
+  },
+  toHaveTextContent(received: unknown, expected: string) {
+    const text = received instanceof HTMLElement ? (received.textContent ?? "") : "";
+    const pass = text.includes(expected);
+    return {
+      pass,
+      message: () =>
+        `expected element text ${pass ? "not " : ""}to contain "${expected}" (got "${text}")`,
+    };
+  },
+  toHaveAttribute(received: unknown, name: string, expected?: string) {
+    const element = received instanceof HTMLElement ? received : null;
+    const actual = element?.getAttribute(name) ?? null;
+    const pass = actual !== null && (expected === undefined || actual === expected);
+    return {
+      pass,
+      message: () =>
+        `expected element ${pass ? "not " : ""}to have attribute "${name}"` +
+        (expected === undefined ? "" : ` with value "${expected}" (got "${actual}")`),
+    };
+  },
+});
+
+declare module "vitest" {
+  // The type parameter must match vitest's own `Assertion` declaration exactly.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  interface Assertion<T = any> {
+    toBeDisabled(): T;
+    toHaveTextContent(expected: string): T;
+    toHaveAttribute(name: string, expected?: string): T;
+  }
+  interface AsymmetricMatchersContaining {
+    toBeDisabled(): void;
+    toHaveTextContent(expected: string): void;
+    toHaveAttribute(name: string, expected?: string): void;
+  }
+}
+
 // jsdom (v25) ships Blob/File without the standard async read helpers that the
 // upload flow relies on (Blob.text). Polyfill them so component tests can exercise
 // client-side file parsing the same way a real browser would.

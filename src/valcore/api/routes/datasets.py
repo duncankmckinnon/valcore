@@ -12,7 +12,8 @@ from pydantic import BaseModel, ConfigDict
 from valcore.api.deps import get_store
 from valcore.datagen import generate_rows
 from valcore.errors import ContractError
-from valcore.models import LabelSchema, LabelSource, ScoreKind
+from valcore.models import LabelSchema, LabelSource
+from valcore.schema_migration import label_matches_schema
 from valcore.store import Store
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
@@ -56,6 +57,18 @@ class RowPatch(BaseModel):
     note: str | None = None
     accept_suggestion: bool = False
     clear_label: bool = False
+    data: dict | None = None
+
+
+class DatasetUpdate(BaseModel):
+    """Partial update for a dataset's metadata and shape."""
+
+    name: str | None = None
+    description: str | None = None
+    columns: list[str] | None = None
+    column_renames: dict[str, str] | None = None
+    label_schema: LabelSchema | None = None
+    force: bool = False
 
 
 class DatasetOut(BaseModel):
@@ -110,17 +123,6 @@ class StatsOut(BaseModel):
     labeled: int
     unlabeled: int
     label_distribution: dict[str, int]
-
-
-def _label_matches_schema(value: str | float, schema: LabelSchema) -> bool:
-    """Return True if ``value`` is a valid label under ``schema``."""
-    if schema.kind is ScoreKind.CATEGORICAL:
-        return isinstance(value, str) and value in (schema.labels or [])
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return False
-    below = schema.minimum is not None and value < schema.minimum
-    above = schema.maximum is not None and value > schema.maximum
-    return not (below or above)
 
 
 def _parse_csv(text: str, label_column: str | None) -> tuple[list[str], list[dict]]:
@@ -191,6 +193,22 @@ async def get_dataset(id: str, store: StoreDep) -> DatasetOut:
     return DatasetOut.model_validate(store.get_dataset(id))
 
 
+@router.patch("/{id}")
+async def update_dataset(id: str, body: DatasetUpdate, store: StoreDep) -> DatasetOut:
+    """Update a dataset's metadata and shape, migrating its rows."""
+    schema = body.label_schema.model_dump(mode="json") if body.label_schema is not None else None
+    dataset = store.update_dataset(
+        id,
+        name=body.name,
+        description=body.description,
+        columns=body.columns,
+        column_renames=body.column_renames,
+        label_schema=schema,
+        force=body.force,
+    )
+    return DatasetOut.model_validate(dataset)
+
+
 @router.delete("/{id}")
 async def delete_dataset(id: str, store: StoreDep) -> dict[str, str]:
     """Delete a dataset and all of its rows."""
@@ -248,11 +266,11 @@ def _parse_label_schema(raw: str | None) -> dict:
 
 
 @router.post("/{id}/rows")
-async def append_rows(id: str, body: RowsAppend, store: StoreDep) -> dict[str, int]:
-    """Append plain data rows to a dataset."""
+async def append_rows(id: str, body: RowsAppend, store: StoreDep) -> list[RowOut]:
+    """Append plain data rows to a dataset, returning the created rows."""
     store.get_dataset(id)
     rows = store.add_rows(id, body.rows)
-    return {"row_count": len(rows)}
+    return [RowOut.model_validate(row) for row in rows]
 
 
 @router.post("/generate")
@@ -318,12 +336,19 @@ async def patch_row(row_id: str, body: RowPatch, store: StoreDep) -> RowOut:
     if body.label is not None:
         dataset = store.get_dataset(row.dataset_id)
         schema = LabelSchema.model_validate(dataset.label_schema)
-        if not _label_matches_schema(body.label, schema):
+        if not label_matches_schema(body.label, schema):
             raise ContractError(
                 f"Label {body.label!r} is not valid for this dataset's label schema."
             )
         updates["label"] = {"value": body.label}
         updates["label_source"] = LabelSource.MANUAL
+
+    if body.data is not None:
+        dataset = store.get_dataset(row.dataset_id)
+        unknown = [key for key in body.data if key not in dataset.columns]
+        if unknown:
+            raise ContractError(f"Unknown columns for this dataset: {unknown}.")
+        updates["data"] = {**row.data, **body.data}
 
     if body.note is not None:
         updates["note"] = body.note
@@ -331,6 +356,12 @@ async def patch_row(row_id: str, body: RowPatch, store: StoreDep) -> RowOut:
     if not updates:
         return RowOut.model_validate(row)
     return RowOut.model_validate(store.update_row(row_id, **updates))
+
+
+@router.delete("/rows/{row_id}", status_code=204)
+async def delete_row(row_id: str, store: StoreDep) -> None:
+    """Delete a single dataset row."""
+    store.delete_row(row_id)
 
 
 @router.get("/{id}/stats")

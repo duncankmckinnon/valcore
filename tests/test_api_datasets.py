@@ -8,7 +8,7 @@ import pytest
 from valcore.api.deps import get_store
 from valcore.api.main import create_app
 from valcore.datagen import GeneratedRow
-from valcore.models import LabelSource
+from valcore.models import LabelSource, RunKind, ScoreKind
 from valcore.store import Store, create_engine, init_db
 
 CATEGORICAL_SCHEMA = {"kind": "categorical", "labels": ["good", "bad"]}
@@ -396,6 +396,298 @@ async def test_append_rows(client: httpx.AsyncClient) -> None:
         json={"rows": [{"prompt": "a"}, {"prompt": "b"}]},
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["row_count"] == 2
+    # The route returns the created rows themselves, not a bare count, so the grid can
+    # append without refetching.
+    appended = resp.json()
+    assert isinstance(appended, list)
+    assert [r["data"]["prompt"] for r in appended] == ["a", "b"]
+    assert all(r["id"] for r in appended)
+
     rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
     assert [r["data"]["prompt"] for r in rows] == ["a", "b"]
+
+
+# -- Dataset shape edits (PATCH /{id}) ---------------------------------------
+
+
+async def _create_dataset(
+    client: httpx.AsyncClient,
+    *,
+    columns: list[str],
+    label_schema: dict,
+    name: str = "shape",
+    description: str = "",
+) -> str:
+    """Create a dataset via the API and return its id."""
+    resp = await client.post(
+        "/api/datasets",
+        json={
+            "name": name,
+            "description": description,
+            "columns": columns,
+            "label_schema": label_schema,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["id"]
+
+
+@pytest.mark.anyio
+async def test_patch_dataset_renames_column_remaps_every_row(client: httpx.AsyncClient) -> None:
+    ds_id = await _create_dataset(client, columns=["question"], label_schema=CATEGORICAL_SCHEMA)
+    await client.post(
+        f"/api/datasets/{ds_id}/rows",
+        json={"rows": [{"question": "q1"}, {"question": "q2"}]},
+    )
+
+    resp = await client.patch(
+        f"/api/datasets/{ds_id}", json={"column_renames": {"question": "prompt"}}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["columns"] == ["prompt"]
+
+    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
+    assert [r["data"] for r in rows] == [{"prompt": "q1"}, {"prompt": "q2"}]
+
+
+@pytest.mark.anyio
+async def test_patch_dataset_add_column_backfills_and_remove_drops(
+    client: httpx.AsyncClient,
+) -> None:
+    ds_id = await _create_dataset(client, columns=["question"], label_schema=CATEGORICAL_SCHEMA)
+    await client.post(f"/api/datasets/{ds_id}/rows", json={"rows": [{"question": "q1"}]})
+
+    added = await client.patch(f"/api/datasets/{ds_id}", json={"columns": ["question", "answer"]})
+    assert added.status_code == 200, added.text
+    assert added.json()["columns"] == ["question", "answer"]
+    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
+    assert rows[0]["data"] == {"question": "q1", "answer": None}
+
+    removed = await client.patch(f"/api/datasets/{ds_id}", json={"columns": ["answer"]})
+    assert removed.status_code == 200, removed.text
+    assert removed.json()["columns"] == ["answer"]
+    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
+    assert rows[0]["data"] == {"answer": None}
+
+
+@pytest.mark.anyio
+async def test_patch_dataset_unknown_rename_key_is_422(client: httpx.AsyncClient) -> None:
+    ds_id = await _create_dataset(client, columns=["question"], label_schema=CATEGORICAL_SCHEMA)
+    resp = await client.patch(
+        f"/api/datasets/{ds_id}", json={"column_renames": {"missing": "prompt"}}
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["type"] == "ContractError"
+
+
+@pytest.mark.anyio
+async def test_patch_dataset_empty_body_is_noop(client: httpx.AsyncClient) -> None:
+    ds_id = await _create_dataset(
+        client, columns=["question"], label_schema=CATEGORICAL_SCHEMA, name="orig"
+    )
+    before = (await client.get(f"/api/datasets/{ds_id}")).json()
+
+    resp = await client.patch(f"/api/datasets/{ds_id}", json={})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == before
+
+
+@pytest.mark.anyio
+async def test_patch_dataset_narrowing_schema_with_labels_is_409(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    ds_id, row_ids = _seed_rows(
+        store,
+        CATEGORICAL_SCHEMA,
+        [{"data": {"prompt": "p0"}}, {"data": {"prompt": "p1"}}, {"data": {"prompt": "p2"}}],
+    )
+    # Two rows labeled "bad" would fall outside a schema narrowed to just "good".
+    await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"label": "good"})
+    await client.patch(f"/api/datasets/rows/{row_ids[1]}", json={"label": "bad"})
+    await client.patch(f"/api/datasets/rows/{row_ids[2]}", json={"label": "bad"})
+
+    narrowed = {"kind": "categorical", "labels": ["good"]}
+    resp = await client.patch(f"/api/datasets/{ds_id}", json={"label_schema": narrowed})
+    assert resp.status_code == 409, resp.text
+    error = resp.json()["error"]
+    assert error["type"] == "DestructiveChangeError"
+    assert error["detail"]["invalid_label_count"] == 2
+
+    # Nothing changed: the schema and the "bad" labels are still present.
+    ds = (await client.get(f"/api/datasets/{ds_id}")).json()
+    assert ds["label_schema"]["labels"] == ["good", "bad"]
+    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
+    assert [r["label"] for r in rows] == [{"value": "good"}, {"value": "bad"}, {"value": "bad"}]
+
+
+@pytest.mark.anyio
+async def test_patch_dataset_narrowing_schema_with_force_clears_invalid(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    ds_id, row_ids = _seed_rows(
+        store,
+        CATEGORICAL_SCHEMA,
+        [{"data": {"prompt": "p0"}}, {"data": {"prompt": "p1"}}],
+    )
+    await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"label": "good"})
+    await client.patch(f"/api/datasets/rows/{row_ids[1]}", json={"label": "bad"})
+
+    narrowed = {"kind": "categorical", "labels": ["good"]}
+    resp = await client.patch(
+        f"/api/datasets/{ds_id}", json={"label_schema": narrowed, "force": True}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["label_schema"]["labels"] == ["good"]
+
+    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
+    assert rows[0]["label"] == {"value": "good"}
+    assert rows[1]["label"] is None
+    assert rows[1]["label_source"] is None
+
+
+# -- Row data edits (PATCH /rows/{row_id}) -----------------------------------
+
+
+@pytest.mark.anyio
+async def test_patch_row_data_merges_leaving_other_columns(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    ds = store.create_dataset(
+        name="qa", description="", columns=["question", "answer"], label_schema=CATEGORICAL_SCHEMA
+    )
+    rows = store.add_prepared_rows(ds.id, [{"data": {"question": "q", "answer": "a"}}])
+    row_id = rows[0].id
+
+    resp = await client.patch(f"/api/datasets/rows/{row_id}", json={"data": {"question": "new"}})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"] == {"question": "new", "answer": "a"}
+
+
+@pytest.mark.anyio
+async def test_patch_row_data_unknown_column_is_422_and_leaves_row(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    ds = store.create_dataset(
+        name="qa", description="", columns=["question"], label_schema=CATEGORICAL_SCHEMA
+    )
+    rows = store.add_prepared_rows(ds.id, [{"data": {"question": "q"}}])
+    row_id = rows[0].id
+
+    resp = await client.patch(f"/api/datasets/rows/{row_id}", json={"data": {"bogus": "x"}})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["type"] == "ContractError"
+
+    unchanged = (await client.get(f"/api/datasets/{ds.id}/rows")).json()["rows"]
+    assert unchanged[0]["data"] == {"question": "q"}
+
+
+@pytest.mark.anyio
+async def test_patch_row_applies_data_and_note_together(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    ds = store.create_dataset(
+        name="qa", description="", columns=["question"], label_schema=CATEGORICAL_SCHEMA
+    )
+    rows = store.add_prepared_rows(ds.id, [{"data": {"question": "q"}}])
+    row_id = rows[0].id
+
+    resp = await client.patch(
+        f"/api/datasets/rows/{row_id}", json={"data": {"question": "new"}, "note": "checked"}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["data"] == {"question": "new"}
+    assert body["note"] == "checked"
+
+
+@pytest.mark.anyio
+async def test_patch_row_empty_data_preserves_note_in_same_request(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    ds = store.create_dataset(
+        name="qa", description="", columns=["question"], label_schema=CATEGORICAL_SCHEMA
+    )
+    rows = store.add_prepared_rows(ds.id, [{"data": {"question": "q"}}])
+    row_id = rows[0].id
+
+    resp = await client.patch(f"/api/datasets/rows/{row_id}", json={"data": {}, "note": "kept"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["data"] == {"question": "q"}
+    assert body["note"] == "kept"
+
+
+# -- Row deletion (DELETE /rows/{row_id}) ------------------------------------
+
+
+@pytest.mark.anyio
+async def test_delete_row_returns_204_and_removes_it(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    ds_id, row_ids = _seed_rows(
+        store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p0"}}, {"data": {"prompt": "p1"}}]
+    )
+    resp = await client.delete(f"/api/datasets/rows/{row_ids[0]}")
+    assert resp.status_code == 204, resp.text
+    assert resp.content == b""
+
+    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
+    assert [r["id"] for r in rows] == [row_ids[1]]
+
+
+@pytest.mark.anyio
+async def test_delete_rows_route_is_not_shadowed_by_dataset_delete(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    # A dataset whose row we target still exists after deleting the row: the literal
+    # ``/rows/{row_id}`` route must win over ``/{id}``.
+    ds_id, row_ids = _seed_rows(store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p0"}}])
+    resp = await client.delete(f"/api/datasets/rows/{row_ids[0]}")
+    assert resp.status_code == 204, resp.text
+
+    assert (await client.get(f"/api/datasets/{ds_id}")).status_code == 200
+    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
+    assert rows == []
+
+
+# -- Referenced delete -------------------------------------------------------
+
+
+def _make_referencing_run(store: Store, dataset_id: str) -> str:
+    """Create an evaluator, version, and a run against ``dataset_id``; return the run id."""
+    evaluator = store.create_evaluator("ev")
+    version = store.create_version(
+        evaluator.id,
+        version_name="v1",
+        model="gateway/anthropic:claude-sonnet-5",
+        instructions="Judge the row.",
+        prompt_template="Input: {prompt}",
+        required_columns=["prompt"],
+        output_fields=[
+            {
+                "name": "verdict",
+                "type": "enum",
+                "description": "good or bad",
+                "enum_values": ["good", "bad"],
+            }
+        ],
+        score_field="verdict",
+        score_kind=ScoreKind.CATEGORICAL,
+        score_labels=["good", "bad"],
+    )
+    run = store.create_run(RunKind.VALIDATION, version.id, dataset_id, concurrency=1)
+    return run.id
+
+
+@pytest.mark.anyio
+async def test_delete_dataset_referenced_by_run_is_409_and_survives(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    ds_id, _ = _seed_rows(store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p"}}])
+    _make_referencing_run(store, ds_id)
+
+    resp = await client.delete(f"/api/datasets/{ds_id}")
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["error"]["type"] == "ReferencedError"
+
+    assert (await client.get(f"/api/datasets/{ds_id}")).status_code == 200

@@ -5,11 +5,18 @@ from pathlib import Path
 
 import pytest
 
-from valcore.errors import FrozenVersionError, NotFoundError
+from valcore.errors import (
+    ContractError,
+    DestructiveChangeError,
+    FrozenVersionError,
+    NotFoundError,
+    ReferencedError,
+)
 from valcore.models import (
     DatasetRow,
     EvaluatorVersion,
     LabelSource,
+    Run,
     RunKind,
     RunResult,
     RunStatus,
@@ -421,3 +428,373 @@ def test_engine_is_usable_across_threads(store: Store) -> None:
 
     assert errors == []
     assert results == ["threaded"]
+
+
+# -- Manual authoring: update_evaluator --------------------------------------
+
+
+def test_update_evaluator_changes_name_and_description(store: Store) -> None:
+    evaluator = store.create_evaluator("old", "old desc")
+    updated = store.update_evaluator(evaluator.id, name="new", description="new desc")
+    assert updated.name == "new"
+    assert updated.description == "new desc"
+    reloaded = store.get_evaluator(evaluator.id)
+    assert reloaded.name == "new"
+    assert reloaded.description == "new desc"
+
+
+def test_update_evaluator_missing_raises(store: Store) -> None:
+    with pytest.raises(NotFoundError):
+        store.update_evaluator("nope", name="x")
+
+
+# -- Manual authoring: delete_version ----------------------------------------
+
+
+def _run_referencing_version(store: Store, version_id: str, dataset_id: str) -> Run:
+    """Create a run against ``version_id``/``dataset_id`` and return it."""
+    return store.create_run(RunKind.EVAL, version_id, dataset_id, concurrency=1)
+
+
+def test_delete_version_non_active_leaves_pointer(store: Store) -> None:
+    evaluator = store.create_evaluator("e")
+    v1 = store.create_version(evaluator.id, **version_fields(version_name="v1"))
+    v2 = store.create_version(evaluator.id, **version_fields(version_name="v2"))
+    # v2 is active; deleting the non-active v1 must not move the pointer.
+    store.delete_version(v1.id)
+    assert store.get_evaluator(evaluator.id).active_version_id == v2.id
+    with pytest.raises(NotFoundError):
+        store.get_version(v1.id)
+
+
+def test_delete_version_active_repoints_to_newest_survivor(store: Store) -> None:
+    evaluator = store.create_evaluator("e")
+    store.create_version(evaluator.id, **version_fields(version_name="v1"))
+    v2 = store.create_version(evaluator.id, **version_fields(version_name="v2"))
+    v3 = store.create_version(evaluator.id, **version_fields(version_name="v3"))
+    assert store.get_evaluator(evaluator.id).active_version_id == v3.id
+    store.delete_version(v3.id)
+    assert store.get_evaluator(evaluator.id).active_version_id == v2.id
+
+
+def test_delete_version_only_version_clears_pointer(store: Store) -> None:
+    evaluator = store.create_evaluator("e")
+    v1 = store.create_version(evaluator.id, **version_fields())
+    assert store.get_evaluator(evaluator.id).active_version_id == v1.id
+    store.delete_version(v1.id)
+    assert store.get_evaluator(evaluator.id).active_version_id is None
+    assert store.list_versions(evaluator.id) == []
+
+
+def test_delete_version_frozen_succeeds(store: Store) -> None:
+    evaluator = store.create_evaluator("e")
+    v1 = store.create_version(evaluator.id, **version_fields())
+    store.freeze_version(v1.id)
+    store.delete_version(v1.id)
+    with pytest.raises(NotFoundError):
+        store.get_version(v1.id)
+
+
+def test_delete_version_missing_raises(store: Store) -> None:
+    with pytest.raises(NotFoundError):
+        store.delete_version("nope")
+
+
+def test_delete_version_referenced_by_run_raises(store: Store) -> None:
+    evaluator = store.create_evaluator("e")
+    version = store.create_version(evaluator.id, **version_fields())
+    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
+    run = _run_referencing_version(store, version.id, ds.id)
+
+    with pytest.raises(ReferencedError) as exc:
+        store.delete_version(version.id)
+    assert exc.value.detail["run_count"] == 1
+    assert run.id in exc.value.detail["run_ids"]
+    # The version must still exist after the blocked delete.
+    assert store.get_version(version.id).id == version.id
+
+
+# -- Manual authoring: delete_evaluator / delete_dataset reference checks -----
+
+
+def test_delete_evaluator_referenced_by_run_raises(store: Store) -> None:
+    evaluator = store.create_evaluator("e")
+    version = store.create_version(evaluator.id, **version_fields())
+    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
+    run = _run_referencing_version(store, version.id, ds.id)
+
+    with pytest.raises(ReferencedError) as exc:
+        store.delete_evaluator(evaluator.id)
+    assert exc.value.detail["run_count"] == 1
+    assert run.id in exc.value.detail["run_ids"]
+    # Blocked, not cascaded: the evaluator and its version survive.
+    assert store.get_evaluator(evaluator.id).id == evaluator.id
+    assert store.get_version(version.id).id == version.id
+
+
+def test_delete_dataset_referenced_by_run_raises(store: Store) -> None:
+    evaluator = store.create_evaluator("e")
+    version = store.create_version(evaluator.id, **version_fields())
+    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
+    run = _run_referencing_version(store, version.id, ds.id)
+
+    with pytest.raises(ReferencedError) as exc:
+        store.delete_dataset(ds.id)
+    assert exc.value.detail["run_count"] == 1
+    assert run.id in exc.value.detail["run_ids"]
+    assert store.get_dataset(ds.id).id == ds.id
+
+
+# -- Manual authoring: runs_for_versions / runs_for_dataset ------------------
+
+
+def test_runs_for_versions_returns_matching_runs(store: Store) -> None:
+    evaluator = store.create_evaluator("e")
+    version = store.create_version(evaluator.id, **version_fields())
+    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
+    run = _run_referencing_version(store, version.id, ds.id)
+
+    assert [r.id for r in store.runs_for_versions([version.id])] == [run.id]
+    assert store.runs_for_versions(["other"]) == []
+    assert store.runs_for_versions([]) == []
+
+
+def test_runs_for_dataset_returns_matching_runs(store: Store) -> None:
+    evaluator = store.create_evaluator("e")
+    version = store.create_version(evaluator.id, **version_fields())
+    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
+    run = _run_referencing_version(store, version.id, ds.id)
+
+    assert [r.id for r in store.runs_for_dataset(ds.id)] == [run.id]
+    assert store.runs_for_dataset("other") == []
+
+
+# -- Manual authoring: update_dataset shape migration ------------------------
+
+
+def _dataset_with_rows(store: Store) -> tuple[str, list[DatasetRow]]:
+    """A two-column dataset with three rows carrying data for both columns."""
+    ds = store.create_dataset("d", "", ["question", "answer"], LABEL_SCHEMA)
+    rows = store.add_rows(
+        ds.id,
+        [
+            {"question": "q1", "answer": "a1"},
+            {"question": "q2", "answer": "a2"},
+            {"question": "q3", "answer": "a3"},
+        ],
+    )
+    return ds.id, rows
+
+
+def test_update_dataset_all_none_is_noop(store: Store) -> None:
+    ds_id, _ = _dataset_with_rows(store)
+    result = store.update_dataset(ds_id)
+    assert result.columns == ["question", "answer"]
+    assert result.label_schema == LABEL_SCHEMA
+    rows = store.list_rows(ds_id)
+    assert [set(r.data) for r in rows] == [{"question", "answer"}] * 3
+
+
+def test_update_dataset_name_and_description(store: Store) -> None:
+    ds_id, _ = _dataset_with_rows(store)
+    result = store.update_dataset(ds_id, name="renamed", description="new")
+    assert result.name == "renamed"
+    assert result.description == "new"
+    reloaded = store.get_dataset(ds_id)
+    assert reloaded.name == "renamed"
+    assert reloaded.description == "new"
+
+
+def test_update_dataset_rename_column_rewrites_row_data(store: Store) -> None:
+    ds_id, _ = _dataset_with_rows(store)
+    result = store.update_dataset(ds_id, column_renames={"question": "prompt"})
+    assert result.columns == ["prompt", "answer"]
+    rows = store.list_rows(ds_id)
+    for row in rows:
+        assert "question" not in row.data
+        assert set(row.data) == {"prompt", "answer"}
+    assert [r.data["prompt"] for r in rows] == ["q1", "q2", "q3"]
+
+
+def test_update_dataset_add_column_backfills_none(store: Store) -> None:
+    ds_id, _ = _dataset_with_rows(store)
+    result = store.update_dataset(ds_id, columns=["question", "answer", "context"])
+    assert result.columns == ["question", "answer", "context"]
+    for row in store.list_rows(ds_id):
+        assert row.data["context"] is None
+
+
+def test_update_dataset_remove_column_drops_key(store: Store) -> None:
+    ds_id, _ = _dataset_with_rows(store)
+    result = store.update_dataset(ds_id, columns=["question"])
+    assert result.columns == ["question"]
+    for row in store.list_rows(ds_id):
+        assert set(row.data) == {"question"}
+
+
+def test_update_dataset_unknown_rename_key_raises(store: Store) -> None:
+    ds_id, _ = _dataset_with_rows(store)
+    with pytest.raises(ContractError):
+        store.update_dataset(ds_id, column_renames={"nonexistent": "x"})
+    # Nothing changed.
+    assert store.get_dataset(ds_id).columns == ["question", "answer"]
+
+
+def test_update_dataset_rename_untouched_by_schema_keeps_labels(store: Store) -> None:
+    ds = store.create_dataset("d", "", ["question", "answer"], LABEL_SCHEMA)
+    rows = store.add_rows(ds.id, [{"question": "q1", "answer": "a1"}])
+    store.set_label(rows[0].id, {"value": "pass"}, LabelSource.MANUAL)
+
+    store.update_dataset(ds.id, column_renames={"question": "prompt"})
+
+    reloaded = store.list_rows(ds.id)[0]
+    assert reloaded.label == {"value": "pass"}
+    assert reloaded.label_source is LabelSource.MANUAL
+
+
+def test_update_dataset_zero_rows_shape_change_needs_no_force(store: Store) -> None:
+    schema = {"kind": "categorical", "labels": ["pass", "fail", "maybe"]}
+    ds = store.create_dataset("d", "", ["question"], schema)
+    narrowed = {"kind": "categorical", "labels": ["pass", "fail"]}
+    result = store.update_dataset(ds.id, columns=["question", "answer"], label_schema=narrowed)
+    assert result.columns == ["question", "answer"]
+    assert result.label_schema == narrowed
+
+
+def _narrowing_dataset(store: Store) -> tuple[str, list[DatasetRow]]:
+    """A categorical dataset whose third row holds a label about to become invalid."""
+    schema = {"kind": "categorical", "labels": ["pass", "fail", "maybe"]}
+    ds = store.create_dataset("d", "", ["question"], schema)
+    rows = store.add_rows(ds.id, [{"question": "q1"}, {"question": "q2"}, {"question": "q3"}])
+    store.set_label(rows[0].id, {"value": "pass"}, LabelSource.MANUAL)
+    store.set_label(rows[1].id, {"value": "fail"}, LabelSource.ACCEPTED)
+    store.set_label(rows[2].id, {"value": "maybe"}, LabelSource.MANUAL)
+    return ds.id, rows
+
+
+def test_update_dataset_narrowing_without_force_raises_and_rolls_back(store: Store) -> None:
+    ds_id, _rows = _narrowing_dataset(store)
+    narrowed = {"kind": "categorical", "labels": ["pass", "fail"]}
+
+    with pytest.raises(DestructiveChangeError) as exc:
+        store.update_dataset(ds_id, columns=["prompt"], label_schema=narrowed)
+    assert exc.value.detail["invalid_label_count"] == 1
+
+    # Full rollback: neither the schema/columns nor any label changed.
+    reloaded = store.get_dataset(ds_id)
+    assert reloaded.columns == ["question"]
+    assert reloaded.label_schema == {"kind": "categorical", "labels": ["pass", "fail", "maybe"]}
+    persisted = store.list_rows(ds_id)
+    assert [r.label for r in persisted] == [
+        {"value": "pass"},
+        {"value": "fail"},
+        {"value": "maybe"},
+    ]
+
+
+def test_update_dataset_narrowing_with_force_clears_only_invalid_labels(store: Store) -> None:
+    ds_id, rows = _narrowing_dataset(store)
+    narrowed = {"kind": "categorical", "labels": ["pass", "fail"]}
+
+    result = store.update_dataset(ds_id, label_schema=narrowed, force=True)
+    assert result.label_schema == narrowed
+
+    persisted = {r.id: r for r in store.list_rows(ds_id)}
+    # The valid labels are untouched, including their source.
+    assert persisted[rows[0].id].label == {"value": "pass"}
+    assert persisted[rows[0].id].label_source is LabelSource.MANUAL
+    assert persisted[rows[1].id].label == {"value": "fail"}
+    assert persisted[rows[1].id].label_source is LabelSource.ACCEPTED
+    # Exactly the invalid row is cleared.
+    assert persisted[rows[2].id].label is None
+    assert persisted[rows[2].id].label_source is None
+
+
+def test_update_dataset_missing_raises(store: Store) -> None:
+    with pytest.raises(NotFoundError):
+        store.update_dataset("nope", name="x")
+
+
+# -- Manual authoring: delete_row --------------------------------------------
+
+
+def test_delete_row_removes_one_leaves_rest(store: Store) -> None:
+    ds_id, rows = _dataset_with_rows(store)
+    store.delete_row(rows[1].id)
+    remaining = store.list_rows(ds_id)
+    assert [r.id for r in remaining] == [rows[0].id, rows[2].id]
+    with pytest.raises(NotFoundError):
+        store.get_row(rows[1].id)
+
+
+def test_delete_row_missing_raises(store: Store) -> None:
+    with pytest.raises(NotFoundError):
+        store.delete_row("nope")
+
+
+# -- Manual authoring: additional interaction coverage -----------------------
+
+
+def test_update_dataset_columns_and_renames_together(store: Store) -> None:
+    """When both are given, renames apply, then rows are pruned to the final columns."""
+    ds_id, _ = _dataset_with_rows(store)
+    result = store.update_dataset(
+        ds_id,
+        columns=["prompt", "context"],
+        column_renames={"question": "prompt"},
+    )
+    assert result.columns == ["prompt", "context"]
+    rows = store.list_rows(ds_id)
+    assert [r.data["prompt"] for r in rows] == ["q1", "q2", "q3"]
+    for row in rows:
+        assert set(row.data) == {"prompt", "context"}
+        assert row.data["context"] is None
+        assert "question" not in row.data
+        assert "answer" not in row.data
+
+
+def test_update_dataset_force_clears_invalid_and_migrates_columns(store: Store) -> None:
+    """A single forced call may both migrate shape and clear the now-invalid labels."""
+    ds_id, rows = _narrowing_dataset(store)
+    narrowed = {"kind": "categorical", "labels": ["pass", "fail"]}
+
+    result = store.update_dataset(
+        ds_id,
+        column_renames={"question": "prompt"},
+        label_schema=narrowed,
+        force=True,
+    )
+    assert result.columns == ["prompt"]
+    assert result.label_schema == narrowed
+
+    persisted = {r.id: r for r in store.list_rows(ds_id)}
+    for row in persisted.values():
+        assert set(row.data) == {"prompt"}
+    assert persisted[rows[0].id].label == {"value": "pass"}
+    assert persisted[rows[1].id].label == {"value": "fail"}
+    assert persisted[rows[2].id].label is None
+    assert persisted[rows[2].id].label_source is None
+
+
+def test_update_dataset_name_only_leaves_shape_and_labels(store: Store) -> None:
+    """A metadata-only edit must not touch columns, rows, or labels."""
+    ds_id, rows = _narrowing_dataset(store)
+    result = store.update_dataset(ds_id, name="renamed")
+    assert result.name == "renamed"
+    assert result.columns == ["question"]
+    persisted = {r.id: r for r in store.list_rows(ds_id)}
+    assert persisted[rows[2].id].label == {"value": "maybe"}
+
+
+def test_delete_version_referenced_leaves_active_pointer(store: Store) -> None:
+    """A blocked version delete must not disturb the active pointer."""
+    evaluator = store.create_evaluator("e")
+    v1 = store.create_version(evaluator.id, **version_fields(version_name="v1"))
+    v2 = store.create_version(evaluator.id, **version_fields(version_name="v2"))
+    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
+    _run_referencing_version(store, v2.id, ds.id)
+
+    with pytest.raises(ReferencedError):
+        store.delete_version(v2.id)
+    assert store.get_version(v1.id).id == v1.id
+    assert store.get_evaluator(evaluator.id).active_version_id == v2.id

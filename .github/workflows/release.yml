@@ -16,22 +16,17 @@ jobs:
       contents: read
       # Required for PyPI trusted publishing (OIDC). No API token is stored.
       id-token: write
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
     steps:
       - name: Check out the tagged commit
         uses: actions/checkout@v4
-
-      - name: Verify the tag matches the packaged version
-        run: |
-          # uv build takes the version from pyproject.toml while the formula URL
-          # is derived from the tag. If they disagree, the emitted stanza points
-          # at a file that was never published -- fail here, not after publishing.
-          tag_version="${GITHUB_REF_NAME#v}"
-          pkg_version=$(grep -m1 '^version' pyproject.toml | cut -d'"' -f2)
-          if [ "$tag_version" != "$pkg_version" ]; then
-            echo "::error::tag ${GITHUB_REF_NAME} implies version ${tag_version}, but pyproject.toml declares ${pkg_version}. Bump pyproject.toml or retag."
-            exit 1
-          fi
-          echo "tag and package version agree: ${pkg_version}"
+        with:
+          # hatch-vcs reads the version out of `git describe`, so the tag and the
+          # history behind it have to be present. The default shallow, tagless
+          # checkout would resolve to the fallback version instead.
+          fetch-depth: 0
 
       - name: Set up Node 20
         uses: actions/setup-node@v4
@@ -60,6 +55,37 @@ jobs:
       - name: Build the wheel and sdist
         run: uv build
 
+      - name: Resolve the published version from the built sdist
+        id: resolve
+        run: |
+          # The sdist filename carries the PEP 440-normalized version that PyPI
+          # will actually serve, so every later step reads it from here rather
+          # than re-deriving it from the tag -- `v0.0.2-rc1` and `v0.0.2rc1` both
+          # normalize to `0.0.2rc1`, and only the filename knows which won.
+          tarball=$(ls dist/*.tar.gz)
+          version=$(basename "$tarball" .tar.gz)
+          version="${version#valcore-}"
+          case "$version" in
+            0.0.0|*.dev*|*+*)
+              echo "::error::built version is ${version}, which means hatch-vcs could not see tag ${GITHUB_REF_NAME}. Check that the tag was pushed and that checkout used fetch-depth: 0."
+              exit 1
+              ;;
+          esac
+          # An rc/alpha/beta still goes to PyPI, but must not land in the tap:
+          # the formula has no channel concept, so writing a prerelease there
+          # would hand it to everyone running a plain `brew install valcore`.
+          # This is deliberately stricter than workbench and thirdeye, which
+          # publish prereleases to the tap.
+          case "$version" in
+            *a[0-9]*|*b[0-9]*|*rc[0-9]*) prerelease=true ;;
+            *) prerelease=false ;;
+          esac
+
+          echo "building and publishing version ${version} from tag ${GITHUB_REF_NAME} (prerelease=${prerelease})"
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+
       - name: Verify the wheel ships the API and the built UI
         run: |
           contents=$(unzip -l dist/*.whl)
@@ -77,33 +103,33 @@ jobs:
       - name: Publish to PyPI (trusted publishing)
         uses: pypa/gh-action-pypi-publish@release/v1
 
-      - name: Emit the Homebrew formula stanza in the job summary
+      - name: Record what was published in the job summary
         run: |
           # The formula downloads the PyPI sdist, so hash exactly that file.
           # These bytes are what the publish step uploaded, and PyPI artifacts
           # are immutable -- so this sha256 stays valid forever.
           tarball=$(ls dist/*.tar.gz)
           sha=$(sha256sum "$tarball" | cut -d' ' -f1)
-          version="${GITHUB_REF_NAME#v}"
-          url="https://files.pythonhosted.org/packages/source/v/valcore/valcore-${version}.tar.gz"
+          url="https://files.pythonhosted.org/packages/source/v/valcore/valcore-${VERSION}.tar.gz"
           {
-            echo "## Homebrew formula stanza"
+            echo "## Published valcore ${VERSION}"
             echo ""
-            echo "Paste into \`Formula/valcore.rb\` in duncankmckinnon/homebrew-tap:"
+            echo "- sdist: ${url}"
+            echo "- sha256: \`${sha}\`"
             echo ""
-            echo '```ruby'
-            echo "  url \"${url}\""
-            echo "  sha256 \"${sha}\""
-            echo '```'
-            echo ""
-            echo "The release does not auto-publish a formula; open that PR by hand."
+            if [ "${{ steps.resolve.outputs.prerelease }}" = "true" ]; then
+              echo "Prerelease — the Homebrew tap was **not** updated. Run the"
+              echo "\"Update Homebrew Tap (Manual)\" workflow if you want it there anyway."
+            else
+              echo "The update-homebrew-tap job publishes the formula to"
+              echo "duncankmckinnon/homebrew-tap automatically."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify the published sdist matches the hash we emitted
         run: |
           # Guards against publishing a formula stanza that brew cannot verify.
-          version="${GITHUB_REF_NAME#v}"
-          url="https://files.pythonhosted.org/packages/source/v/valcore/valcore-${version}.tar.gz"
+          url="https://files.pythonhosted.org/packages/source/v/valcore/valcore-${VERSION}.tar.gz"
           local_sha=$(sha256sum dist/*.tar.gz | cut -d' ' -f1)
           for attempt in 1 2 3 4 5; do
             remote_sha=$(curl -sfL "$url" | sha256sum | cut -d' ' -f1) && break
@@ -115,3 +141,23 @@ jobs:
             exit 1
           fi
           echo "published sdist matches: $local_sha"
+
+  update-homebrew-tap:
+    # Skipped for rc/alpha/beta tags: the tap has a single stable formula, so a
+    # prerelease landing there would reach every `brew install valcore`. Publish
+    # one deliberately via the "Update Homebrew Tap (Manual)" workflow.
+    if: needs.build-and-publish.outputs.prerelease == 'false'
+    needs: build-and-publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update Homebrew tap
+        uses: ./.github/actions/update-homebrew-tap
+        with:
+          # Taken from the build job rather than re-derived from the tag, so the
+          # formula URL uses the same PEP 440-normalized version PyPI served.
+          version: ${{ needs.build-and-publish.outputs.version }}
+          tap-token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
