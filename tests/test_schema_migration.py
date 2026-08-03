@@ -92,9 +92,7 @@ class TestApplyColumnChanges:
         assert result == {"a": 1}
 
     def test_combined_rename_add_remove(self) -> None:
-        result = apply_column_changes(
-            {"a": 1, "gone": 9}, {"a": "b"}, ["b", "new"]
-        )
+        result = apply_column_changes({"a": 1, "gone": 9}, {"a": "b"}, ["b", "new"])
         assert result == {"b": 1, "new": None}
 
     def test_rename_collides_with_existing_column(self) -> None:
