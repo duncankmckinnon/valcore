@@ -129,13 +129,31 @@ jobs:
       - name: Verify the published sdist matches the hash we emitted
         run: |
           # Guards against publishing a formula stanza that brew cannot verify.
+          # The legacy /packages/source/ redirect lags the upload by a couple of
+          # minutes, so poll until it resolves instead of trusting the first hit.
           url="https://files.pythonhosted.org/packages/source/v/valcore/valcore-${VERSION}.tar.gz"
           local_sha=$(sha256sum dist/*.tar.gz | cut -d' ' -f1)
-          for attempt in 1 2 3 4 5; do
-            remote_sha=$(curl -sfL "$url" | sha256sum | cut -d' ' -f1) && break
-            echo "sdist not visible on PyPI yet (attempt ${attempt}); waiting…"
-            sleep 15
+          published="${RUNNER_TEMP}/published.tar.gz"
+
+          # curl has to be tested on its own. Piping it straight into sha256sum
+          # reports the pipeline's *last* status, so a 404 would hash zero bytes
+          # into e3b0c442...b855 and surface as a hash mismatch rather than a
+          # retry -- which is exactly how this step failed for 0.0.2.
+          found=false
+          for attempt in $(seq 1 30); do
+            if curl -sfL -o "$published" "$url"; then
+              found=true
+              break
+            fi
+            echo "sdist not visible on PyPI yet (attempt ${attempt}/30); waiting…"
+            sleep 10
           done
+          if [ "$found" != true ]; then
+            echo "::error::${url} did not become available within 5 minutes"
+            exit 1
+          fi
+
+          remote_sha=$(sha256sum "$published" | cut -d' ' -f1)
           if [ "$remote_sha" != "$local_sha" ]; then
             echo "::error::published sdist sha256 ($remote_sha) != built sdist ($local_sha)"
             exit 1

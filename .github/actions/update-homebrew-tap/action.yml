@@ -48,7 +48,24 @@ runs:
         PYPI_PACKAGE: ${{ inputs.pypi-package }}
       run: |
         URL="https://files.pythonhosted.org/packages/source/${PYPI_PACKAGE:0:1}/${PYPI_PACKAGE}/${PYPI_PACKAGE}-${VERSION}.tar.gz"
-        SHA=$(curl -sL "${URL}" | shasum -a 256 | cut -d' ' -f1)
+
+        # Download first, then hash. `curl -sL | shasum` reports the pipeline's
+        # last status, and without -f curl exits 0 on a 404 having emitted the
+        # error page -- so a transient miss would bake the hash of an HTML error
+        # (or of zero bytes) into the formula and break every `brew install`
+        # with a checksum failure.
+        TARBALL="$(mktemp)"
+        if ! curl -sfL -o "${TARBALL}" "${URL}"; then
+          echo "::error::failed to download ${URL} for hashing"
+          exit 1
+        fi
+        if [ ! -s "${TARBALL}" ]; then
+          echo "::error::${URL} returned an empty file"
+          exit 1
+        fi
+
+        SHA=$(shasum -a 256 "${TARBALL}" | cut -d' ' -f1)
+        rm -f "${TARBALL}"
         echo "sha256=${SHA}" >> "$GITHUB_OUTPUT"
         echo "url=${URL}" >> "$GITHUB_OUTPUT"
         echo "SHA256: ${SHA}"
