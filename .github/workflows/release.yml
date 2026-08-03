@@ -19,19 +19,11 @@ jobs:
     steps:
       - name: Check out the tagged commit
         uses: actions/checkout@v4
-
-      - name: Verify the tag matches the packaged version
-        run: |
-          # uv build takes the version from pyproject.toml while the formula URL
-          # is derived from the tag. If they disagree, the emitted stanza points
-          # at a file that was never published -- fail here, not after publishing.
-          tag_version="${GITHUB_REF_NAME#v}"
-          pkg_version=$(grep -m1 '^version' pyproject.toml | cut -d'"' -f2)
-          if [ "$tag_version" != "$pkg_version" ]; then
-            echo "::error::tag ${GITHUB_REF_NAME} implies version ${tag_version}, but pyproject.toml declares ${pkg_version}. Bump pyproject.toml or retag."
-            exit 1
-          fi
-          echo "tag and package version agree: ${pkg_version}"
+        with:
+          # hatch-vcs reads the version out of `git describe`, so the tag and the
+          # history behind it have to be present. The default shallow, tagless
+          # checkout would resolve to the fallback version instead.
+          fetch-depth: 0
 
       - name: Set up Node 20
         uses: actions/setup-node@v4
@@ -60,6 +52,24 @@ jobs:
       - name: Build the wheel and sdist
         run: uv build
 
+      - name: Resolve the published version from the built sdist
+        run: |
+          # The sdist filename carries the PEP 440-normalized version that PyPI
+          # will actually serve, so every later step reads it from here rather
+          # than re-deriving it from the tag -- `v0.0.2-rc1` and `v0.0.2rc1` both
+          # normalize to `0.0.2rc1`, and only the filename knows which won.
+          tarball=$(ls dist/*.tar.gz)
+          version=$(basename "$tarball" .tar.gz)
+          version="${version#valcore-}"
+          case "$version" in
+            0.0.0|*.dev*|*+*)
+              echo "::error::built version is ${version}, which means hatch-vcs could not see tag ${GITHUB_REF_NAME}. Check that the tag was pushed and that checkout used fetch-depth: 0."
+              exit 1
+              ;;
+          esac
+          echo "building and publishing version ${version} from tag ${GITHUB_REF_NAME}"
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
       - name: Verify the wheel ships the API and the built UI
         run: |
           contents=$(unzip -l dist/*.whl)
@@ -84,8 +94,7 @@ jobs:
           # are immutable -- so this sha256 stays valid forever.
           tarball=$(ls dist/*.tar.gz)
           sha=$(sha256sum "$tarball" | cut -d' ' -f1)
-          version="${GITHUB_REF_NAME#v}"
-          url="https://files.pythonhosted.org/packages/source/v/valcore/valcore-${version}.tar.gz"
+          url="https://files.pythonhosted.org/packages/source/v/valcore/valcore-${VERSION}.tar.gz"
           {
             echo "## Homebrew formula stanza"
             echo ""
@@ -102,8 +111,7 @@ jobs:
       - name: Verify the published sdist matches the hash we emitted
         run: |
           # Guards against publishing a formula stanza that brew cannot verify.
-          version="${GITHUB_REF_NAME#v}"
-          url="https://files.pythonhosted.org/packages/source/v/valcore/valcore-${version}.tar.gz"
+          url="https://files.pythonhosted.org/packages/source/v/valcore/valcore-${VERSION}.tar.gz"
           local_sha=$(sha256sum dist/*.tar.gz | cut -d' ' -f1)
           for attempt in 1 2 3 4 5; do
             remote_sha=$(curl -sfL "$url" | sha256sum | cut -d' ' -f1) && break

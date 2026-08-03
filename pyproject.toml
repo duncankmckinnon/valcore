@@ -1,6 +1,9 @@
 [project]
 name = "valcore"
-version = "0.0.1"
+# Derived from the git tag by hatch-vcs -- see [tool.hatch.version]. There is no
+# version literal to keep in sync; `git tag vX.Y.Z` is the only place a release
+# number is declared.
+dynamic = ["version"]
 description = "A small, self-contained local tool for developing, improving, and running agentic evaluations."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -42,8 +45,20 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+# A shallow clone with no tags (the default for actions/checkout, and what the
+# test workflow uses) cannot describe a version. Fall back rather than failing
+# the build -- only the release workflow, which fetches tags, needs a real one.
+fallback-version = "0.0.0"
+
+[tool.hatch.build.hooks.vcs]
+# Bakes the resolved version into the sdist so building from a downloaded
+# tarball -- which has no .git -- still yields the released version.
+version-file = "src/valcore/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/valcore"]
