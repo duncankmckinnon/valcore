@@ -68,6 +68,24 @@ valcore serve
 and datasets in the UI, then drive runs from the command line. Both can be written by
 hand or generated from a description; a generated result is an editable draft either way.
 
+## Seeding one from the other
+
+An evaluator and a dataset have to agree on columns, so rather than retype that shape you
+can seed either one from the other and let the model fill in content you describe.
+
+Generate a dataset from an evaluator version and the dataset always gets that version's
+required columns; you can add extra columns by naming them, and per-column notes say what
+each should contain. Suggested labels are optional — ask for them when you want the model
+to propose ground truth, and the label space comes from the evaluator.
+
+Generate an evaluator from a dataset and it is drafted against that dataset's columns,
+with per-column notes saying how each factors into the assessment. The result is an
+editable draft, not a saved version, so you review and adjust it before keeping it.
+
+A dataset needs no labels to be scored: an ordinary run just records the judge's output.
+Labels are only required for a `validation` run, which compares the judge against them to
+measure agreement.
+
 ## Models and the gateway
 
 valcore reaches models through the [Pydantic AI Gateway](https://ai.pydantic.dev/gateway/).
