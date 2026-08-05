@@ -8,10 +8,11 @@ from pydantic import BaseModel, ConfigDict
 
 from valcore import generator
 from valcore.api.deps import get_store
-from valcore.errors import FrozenVersionError
+from valcore.errors import ContractError, FrozenVersionError
 from valcore.export import render_script
 from valcore.generator import GeneratedConfig, RefinedConfig
-from valcore.models import CapabilitySpec, Evaluator, OutputField, ScoreKind
+from valcore.models import CapabilitySpec, Evaluator, LabelSchema, OutputField, ScoreKind
+from valcore.seeding import evaluator_seed_from_dataset
 from valcore.store import Store
 
 router = APIRouter(prefix="/api/evaluators", tags=["evaluators"])
@@ -75,10 +76,17 @@ class VersionUpdate(BaseModel):
 
 
 class GenerateRequest(BaseModel):
-    """Natural-language criteria (and optional dataset columns) to generate a config from."""
+    """Natural-language criteria (and optional seed) to generate a config from.
+
+    Shape can be seeded from an existing dataset via ``dataset_id`` — the dataset's
+    columns and label space then steer the generated config so a run can start without
+    a ``ContractError``. ``column_notes`` supplies per-column content guidance.
+    """
 
     criteria: str
     columns: list[str] | None = None
+    dataset_id: str | None = None
+    column_notes: dict[str, str] | None = None
 
 
 class RefineRequest(BaseModel):
@@ -308,26 +316,77 @@ async def export_version(vid: str, store: StoreDep) -> ExportResponse:
 # -- Generation & refinement --------------------------------------------------
 
 
+def _resolve_seed(
+    body: GenerateRequest, store: Store
+) -> tuple[list[str] | None, LabelSchema | None]:
+    """Resolve the column set and label space a generation call should be seeded with.
+
+    A ``dataset_id`` derives the shape from that dataset; explicit ``columns`` are used
+    as-is. The two are mutually exclusive — picking a winner silently would hide a
+    caller mistake — and ``column_notes`` must key only into the resolved column set,
+    which is why validation happens here rather than being left to ``generate_config``.
+    """
+    if body.dataset_id is not None and body.columns:
+        raise ContractError(
+            "Provide either 'dataset_id' to seed columns from a dataset or explicit "
+            "'columns', not both."
+        )
+
+    columns = body.columns
+    label_schema: LabelSchema | None = None
+    if body.dataset_id is not None:
+        dataset = store.get_dataset(body.dataset_id)
+        columns, label_schema = evaluator_seed_from_dataset(dataset)
+
+    if body.column_notes:
+        if not columns:
+            raise ContractError(
+                "'column_notes' requires a column set to validate against; supply "
+                "'columns' or 'dataset_id'."
+            )
+        unknown = [key for key in body.column_notes if key not in columns]
+        if unknown:
+            raise ContractError(
+                f"column_notes key(s) {unknown} are not in the resolved column set {columns}."
+            )
+
+    return columns, label_schema
+
+
 @router.post("/generate", response_model=GeneratedConfig)
-async def generate(body: GenerateRequest) -> GeneratedConfig:
+async def generate(body: GenerateRequest, store: StoreDep) -> GeneratedConfig:
     """Generate an editable config draft from criteria without persisting anything.
 
     Used by the 'new evaluator' flow, which generates a draft before the evaluator
-    exists, so no id is required. Calls an LLM and can take tens of seconds; the UI
-    presents the returned config as an editable draft saved as a version separately.
+    exists, so no id is required. Shape can be seeded from a dataset via ``dataset_id``.
+    Calls an LLM and can take tens of seconds; the UI presents the returned config as an
+    editable draft saved as a version separately.
     """
-    return await generator.generate_config(body.criteria, columns=body.columns)
+    columns, label_schema = _resolve_seed(body, store)
+    return await generator.generate_config(
+        body.criteria,
+        columns=columns,
+        column_notes=body.column_notes,
+        label_schema=label_schema,
+    )
 
 
 @router.post("/{id}/generate", response_model=GeneratedConfig)
 async def generate_version(id: str, body: GenerateRequest, store: StoreDep) -> GeneratedConfig:
     """Generate an editable config draft from criteria without persisting it.
 
-    Calls an LLM and can take tens of seconds; the UI presents the returned config as
-    an editable draft that the user saves as a version separately.
+    Shape can be seeded from a dataset via ``dataset_id``. Calls an LLM and can take tens
+    of seconds; the UI presents the returned config as an editable draft that the user
+    saves as a version separately.
     """
     store.get_evaluator(id)
-    return await generator.generate_config(body.criteria, columns=body.columns)
+    columns, label_schema = _resolve_seed(body, store)
+    return await generator.generate_config(
+        body.criteria,
+        columns=columns,
+        column_notes=body.column_notes,
+        label_schema=label_schema,
+    )
 
 
 @router.post("/refine", response_model=RefinedConfig)
