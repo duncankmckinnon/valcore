@@ -21,11 +21,13 @@ _INSTRUCTIONS = (
 
 
 class GeneratedRow(BaseModel):
-    """One synthetic row: column data, a suggested label, and its reasoning."""
+    """One synthetic row: column data, an optional suggested label, and its reasoning."""
 
     data: dict[str, str]
-    suggested_label: str | float
-    reasoning: str
+    # A label is optional: datasets need no ground truth, so a schema-less
+    # generation leaves this unset rather than inventing a label space.
+    suggested_label: str | float | None = None
+    reasoning: str = ""
 
 
 class GeneratedDataset(BaseModel):
@@ -66,15 +68,48 @@ def _render_label_guidance(label_schema: LabelSchema, count: int) -> str:
     return "Every suggested_label must be a number."
 
 
+def _render_columns(columns: list[str], column_notes: dict[str, str] | None) -> str:
+    """Render the exact-columns instruction, expanding to per-column notes when given.
+
+    Without notes we keep the original single-line form so existing behavior and its
+    tests are untouched; with notes each column gets its own line and optional steer.
+    """
+    if not column_notes:
+        return f"Each row's data must have exactly these columns: {', '.join(columns)}."
+
+    lines = ["Each row's data must have exactly these columns:"]
+    for column in columns:
+        note = column_notes.get(column)
+        lines.append(f"  - {column}: {note}" if note else f"  - {column}")
+    return "\n".join(lines)
+
+
+def _render_labels(label_schema: LabelSchema | None, label_guidance: str | None, count: int) -> str:
+    """Render label instructions, or tell the agent to leave labels unset when schema-less."""
+    if label_schema is None:
+        return "This dataset has no label space; leave suggested_label unset for every row."
+
+    guidance = _render_label_guidance(label_schema, count)
+    if label_guidance:
+        guidance = f"{guidance} {label_guidance}"
+    return guidance
+
+
 def _render_prompt(
-    description: str, columns: list[str], label_schema: LabelSchema, count: int
+    description: str,
+    columns: list[str],
+    label_schema: LabelSchema | None,
+    count: int,
+    *,
+    column_notes: dict[str, str] | None = None,
+    label_guidance: str | None = None,
 ) -> str:
     """Render the per-call user prompt for a batch of `count` rows."""
     return (
         f"Generate {count} dataset rows.\n\n"
         f"Description of the data to produce:\n{description}\n\n"
-        f"Each row's data must have exactly these columns: {', '.join(columns)}.\n"
-        f"{_render_label_guidance(label_schema, count)}\n\n"
+        f"{_render_columns(columns, column_notes)}\n"
+        f"{_render_labels(label_schema, label_guidance, count)}\n\n"
         "Remember to include a deliberate mix of passing, failing, and borderline "
         "examples — roughly a third of each."
     )
@@ -92,23 +127,31 @@ def _label_valid(label: str | float, label_schema: LabelSchema) -> bool:
 
 
 def _valid_rows(
-    rows: list[GeneratedRow], columns: list[str], label_schema: LabelSchema
+    rows: list[GeneratedRow], columns: list[str], label_schema: LabelSchema | None
 ) -> list[GeneratedRow]:
-    """Drop rows whose columns or suggested label do not fit the schema."""
+    """Drop rows whose columns or suggested label do not fit the schema.
+
+    The exact column-set match always gates a row — it is what guarantees the caller's
+    fixed column set is respected. The label check is skipped entirely when there is no
+    schema, since a schema-less dataset carries no ground truth to validate.
+    """
     wanted = set(columns)
     return [
         row
         for row in rows
-        if set(row.data) == wanted and _label_valid(row.suggested_label, label_schema)
+        if set(row.data) == wanted
+        and (label_schema is None or _label_valid(row.suggested_label, label_schema))
     ]
 
 
 async def generate_rows(
     description: str,
     columns: list[str],
-    label_schema: LabelSchema,
+    label_schema: LabelSchema | None,
     count: int,
     *,
+    column_notes: dict[str, str] | None = None,
+    label_guidance: str | None = None,
     model: str | None = None,
     agent: Agent | None = None,
 ) -> list[GeneratedRow]:
@@ -120,12 +163,22 @@ async def generate_rows(
 
     agent = agent or build_datagen_agent(model)
 
-    result = await agent.run(_render_prompt(description, columns, label_schema, count))
+    def render(batch: int) -> str:
+        return _render_prompt(
+            description,
+            columns,
+            label_schema,
+            batch,
+            column_notes=column_notes,
+            label_guidance=label_guidance,
+        )
+
+    result = await agent.run(render(count))
     valid = _valid_rows(result.output.rows, columns, label_schema)
 
     if len(valid) < count:
         shortfall = count - len(valid)
-        top_up = await agent.run(_render_prompt(description, columns, label_schema, shortfall))
+        top_up = await agent.run(render(shortfall))
         valid.extend(_valid_rows(top_up.output.rows, columns, label_schema))
 
     return valid[:count]
