@@ -13,7 +13,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import DatasetFromEvaluator from "./DatasetFromEvaluator";
-import { ApiError, datasets } from "../api/client";
+import { ApiError } from "../api/client";
 import type { DatasetCreated, EvaluatorVersion } from "../api/types";
 
 // Hoisted so the mock factory (evaluated during import) can capture the same spy
