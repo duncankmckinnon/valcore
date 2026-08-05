@@ -7,7 +7,7 @@ from valcore import generator
 from valcore.api.deps import get_store
 from valcore.api.main import create_app
 from valcore.generator import GeneratedConfig, RefinedConfig
-from valcore.models import RunKind, ScoreKind
+from valcore.models import LabelSchema, RunKind, ScoreKind
 from valcore.store import Store, create_engine, init_db
 
 
@@ -417,7 +417,9 @@ async def test_invalid_config_returns_422_uniform_body(app) -> None:
 async def test_generate_returns_config_and_persists_nothing(app, store: Store, monkeypatch) -> None:
     canned = _canned_generated()
 
-    async def fake_generate(criteria: str, *, columns=None) -> GeneratedConfig:
+    async def fake_generate(
+        criteria: str, *, columns=None, column_notes=None, label_schema=None
+    ) -> GeneratedConfig:
         assert criteria == "grade the answer"
         assert columns == ["input", "output"]
         return canned
@@ -448,7 +450,9 @@ async def test_generate_returns_config_and_persists_nothing(app, store: Store, m
 
 @pytest.mark.anyio
 async def test_generate_on_missing_evaluator_404(app, monkeypatch) -> None:
-    async def fake_generate(criteria: str, *, columns=None) -> GeneratedConfig:
+    async def fake_generate(
+        criteria: str, *, columns=None, column_notes=None, label_schema=None
+    ) -> GeneratedConfig:
         return _canned_generated()
 
     monkeypatch.setattr(generator, "generate_config", fake_generate)
@@ -507,3 +511,379 @@ async def test_export_returns_compilable_source(app) -> None:
     assert isinstance(source, str) and source.strip()
     # The exported script must be valid, compilable Python.
     compile(source, "<export>", "exec")
+
+
+# -- Generate seeded from a dataset (monkeypatched, no network) ----------------
+
+
+def _recording_generate(calls: list[dict]):
+    """Return a fake generate_config that records the kwargs each call receives.
+
+    Seeding is entirely about what reaches ``generate_config``: the resolved columns
+    and label space. Capturing the call arguments lets the tests assert the handler
+    derived the right shape without needing a real generator.
+    """
+
+    async def fake_generate(
+        criteria: str, *, columns=None, column_notes=None, label_schema=None
+    ) -> GeneratedConfig:
+        calls.append(
+            {
+                "criteria": criteria,
+                "columns": columns,
+                "column_notes": column_notes,
+                "label_schema": label_schema,
+            }
+        )
+        return _canned_generated()
+
+    return fake_generate
+
+
+@pytest.mark.anyio
+async def test_generate_dataset_id_fills_columns(app, store: Store, monkeypatch) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    dataset = store.create_dataset(
+        "ds", "", ["question", "answer"], {"kind": "categorical", "labels": ["good", "bad"]}
+    )
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={"criteria": "grade it", "dataset_id": dataset.id},
+        )
+
+    assert response.status_code == 200
+    # The dataset's columns are what reaches the generator, not anything the caller typed.
+    assert calls[0]["columns"] == ["question", "answer"]
+
+
+@pytest.mark.anyio
+async def test_generate_dataset_id_passes_categorical_schema(
+    app, store: Store, monkeypatch
+) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    dataset = store.create_dataset(
+        "ds", "", ["question", "answer"], {"kind": "categorical", "labels": ["good", "bad"]}
+    )
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={"criteria": "grade it", "dataset_id": dataset.id},
+        )
+
+    assert response.status_code == 200
+    schema = calls[0]["label_schema"]
+    assert isinstance(schema, LabelSchema)
+    assert schema.kind is ScoreKind.CATEGORICAL
+    assert schema.labels == ["good", "bad"]
+
+
+@pytest.mark.anyio
+async def test_generate_dataset_id_empty_schema_passes_none(app, store: Store, monkeypatch) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    # An empty label_schema is a legal "no ground truth" dataset; it yields no constraint.
+    dataset = store.create_dataset("ds", "", ["question", "answer"], {})
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={"criteria": "grade it", "dataset_id": dataset.id},
+        )
+
+    assert response.status_code == 200
+    assert calls[0]["columns"] == ["question", "answer"]
+    assert calls[0]["label_schema"] is None
+
+
+@pytest.mark.anyio
+async def test_generate_dataset_id_and_columns_conflict(app, store: Store, monkeypatch) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    dataset = store.create_dataset(
+        "ds", "", ["question", "answer"], {"kind": "categorical", "labels": ["good", "bad"]}
+    )
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={
+                "criteria": "grade it",
+                "dataset_id": dataset.id,
+                "columns": ["question"],
+            },
+        )
+
+    # Supplying both a seed and explicit columns is ambiguous; the handler refuses.
+    assert response.status_code == 422
+    assert response.json()["error"]["type"] == "ContractError"
+    # The ambiguity was caught before any generation happened.
+    assert calls == []
+
+
+@pytest.mark.anyio
+async def test_generate_unknown_dataset_id_404(app, monkeypatch) -> None:
+    monkeypatch.setattr(generator, "generate_config", _recording_generate([]))
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={"criteria": "grade it", "dataset_id": "does-not-exist"},
+        )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["type"] == "NotFoundError"
+
+
+@pytest.mark.anyio
+async def test_generate_column_notes_unknown_key_rejected(app, store: Store, monkeypatch) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    dataset = store.create_dataset(
+        "ds", "", ["question", "answer"], {"kind": "categorical", "labels": ["good", "bad"]}
+    )
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={
+                "criteria": "grade it",
+                "dataset_id": dataset.id,
+                "column_notes": {"nonexistent": "be picky"},
+            },
+        )
+
+    # A note for a column the resolved set does not contain is a caller mistake.
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["type"] == "ContractError"
+    assert "nonexistent" in error["message"]
+    assert calls == []
+
+
+@pytest.mark.anyio
+async def test_generate_column_notes_without_columns_rejected(app, monkeypatch) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={"criteria": "grade it", "column_notes": {"question": "be picky"}},
+        )
+
+    # With no columns and no dataset, there is nothing to validate the notes against.
+    assert response.status_code == 422
+    assert response.json()["error"]["type"] == "ContractError"
+    assert calls == []
+
+
+@pytest.mark.anyio
+async def test_generate_criteria_only_still_works(app, monkeypatch) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={"criteria": "grade the answer"},
+        )
+
+    # The pre-existing criteria-only contract is unaffected by seeding.
+    assert response.status_code == 200
+    assert response.json()["name"] == "Answer quality"
+    assert calls[0]["criteria"] == "grade the answer"
+    assert calls[0]["columns"] is None
+    assert calls[0]["column_notes"] is None
+    assert calls[0]["label_schema"] is None
+
+
+@pytest.mark.anyio
+async def test_generate_column_notes_valid_against_columns(app, monkeypatch) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={
+                "criteria": "grade it",
+                "columns": ["question", "answer"],
+                "column_notes": {"answer": "focus on the answer"},
+            },
+        )
+
+    # Notes keyed to an explicit column pass straight through.
+    assert response.status_code == 200
+    assert calls[0]["columns"] == ["question", "answer"]
+    assert calls[0]["column_notes"] == {"answer": "focus on the answer"}
+
+
+@pytest.mark.anyio
+async def test_generate_column_notes_valid_against_dataset_columns(
+    app, store: Store, monkeypatch
+) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    dataset = store.create_dataset(
+        "ds", "", ["question", "answer"], {"kind": "categorical", "labels": ["good", "bad"]}
+    )
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={
+                "criteria": "grade it",
+                "dataset_id": dataset.id,
+                "column_notes": {"answer": "focus on the answer"},
+            },
+        )
+
+    # A note validated against a dataset-derived column set is accepted and forwarded
+    # alongside the seeded columns and label space.
+    assert response.status_code == 200
+    assert calls[0]["columns"] == ["question", "answer"]
+    assert calls[0]["column_notes"] == {"answer": "focus on the answer"}
+    assert isinstance(calls[0]["label_schema"], LabelSchema)
+
+
+# -- Generate seeded on POST /{id}/generate ------------------------------------
+
+
+@pytest.mark.anyio
+async def test_generate_version_dataset_id_fills_columns(app, store: Store, monkeypatch) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    dataset = store.create_dataset(
+        "ds", "", ["question", "answer"], {"kind": "categorical", "labels": ["good", "bad"]}
+    )
+
+    async with _client(app) as client:
+        eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]
+        response = await client.post(
+            f"/api/evaluators/{eval_id}/generate",
+            json={"criteria": "grade it", "dataset_id": dataset.id},
+        )
+
+    assert response.status_code == 200
+    assert calls[0]["columns"] == ["question", "answer"]
+    schema = calls[0]["label_schema"]
+    assert isinstance(schema, LabelSchema)
+    assert schema.labels == ["good", "bad"]
+
+
+@pytest.mark.anyio
+async def test_generate_version_empty_schema_passes_none(app, store: Store, monkeypatch) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    dataset = store.create_dataset("ds", "", ["question", "answer"], {})
+
+    async with _client(app) as client:
+        eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]
+        response = await client.post(
+            f"/api/evaluators/{eval_id}/generate",
+            json={"criteria": "grade it", "dataset_id": dataset.id},
+        )
+
+    assert response.status_code == 200
+    assert calls[0]["label_schema"] is None
+
+
+@pytest.mark.anyio
+async def test_generate_version_dataset_id_and_columns_conflict(
+    app, store: Store, monkeypatch
+) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    dataset = store.create_dataset(
+        "ds", "", ["question", "answer"], {"kind": "categorical", "labels": ["good", "bad"]}
+    )
+
+    async with _client(app) as client:
+        eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]
+        response = await client.post(
+            f"/api/evaluators/{eval_id}/generate",
+            json={
+                "criteria": "grade it",
+                "dataset_id": dataset.id,
+                "columns": ["question"],
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["type"] == "ContractError"
+    assert calls == []
+
+
+@pytest.mark.anyio
+async def test_generate_version_unknown_dataset_id_404(app, monkeypatch) -> None:
+    monkeypatch.setattr(generator, "generate_config", _recording_generate([]))
+
+    async with _client(app) as client:
+        eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]
+        response = await client.post(
+            f"/api/evaluators/{eval_id}/generate",
+            json={"criteria": "grade it", "dataset_id": "does-not-exist"},
+        )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["type"] == "NotFoundError"
+
+
+@pytest.mark.anyio
+async def test_generate_version_column_notes_unknown_key_rejected(
+    app, store: Store, monkeypatch
+) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    dataset = store.create_dataset(
+        "ds", "", ["question", "answer"], {"kind": "categorical", "labels": ["good", "bad"]}
+    )
+
+    async with _client(app) as client:
+        eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]
+        response = await client.post(
+            f"/api/evaluators/{eval_id}/generate",
+            json={
+                "criteria": "grade it",
+                "dataset_id": dataset.id,
+                "column_notes": {"nonexistent": "be picky"},
+            },
+        )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["type"] == "ContractError"
+    assert "nonexistent" in error["message"]
+    assert calls == []
+
+
+@pytest.mark.anyio
+async def test_generate_version_column_notes_without_columns_rejected(app, monkeypatch) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    async with _client(app) as client:
+        eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]
+        response = await client.post(
+            f"/api/evaluators/{eval_id}/generate",
+            json={"criteria": "grade it", "column_notes": {"question": "be picky"}},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["type"] == "ContractError"
+    assert calls == []
