@@ -8,8 +8,8 @@ import pytest
 from valcore.api.deps import get_store
 from valcore.api.main import create_app
 from valcore.datagen import GeneratedRow
-from valcore.models import LabelSource, RunKind, ScoreKind
-from valcore.store import Store, create_engine, init_db
+from valcore.models import LabelSource, RunKind, ScoreKind, check_dataset_compatibility
+from valcore.store import EvaluatorVersion, Store, create_engine, init_db
 
 CATEGORICAL_SCHEMA = {"kind": "categorical", "labels": ["good", "bad"]}
 NUMERIC_SCHEMA = {"kind": "numeric", "minimum": 0, "maximum": 5}
@@ -201,6 +201,349 @@ async def test_generate_count_over_cap_is_422(client: httpx.AsyncClient) -> None
         },
     )
     assert resp.status_code == 422
+
+
+# -- Generate: description vs instructions -----------------------------------
+
+
+def _install_recording_generate(monkeypatch, calls: list[dict]) -> None:
+    """Stub ``generate_rows`` so it records each call and never touches a model.
+
+    The stub returns one row per requested item, filling every column so the persisted
+    rows match the derived shape. It suggests a label only when a ``label_schema`` is
+    passed, mirroring how the handler asks for labels only when it wants them.
+    """
+
+    async def fake_generate_rows(
+        description,
+        columns,
+        label_schema,
+        count,
+        *,
+        column_notes=None,
+        label_guidance=None,
+        model=None,
+        agent=None,
+    ):
+        calls.append(
+            {
+                "description": description,
+                "columns": list(columns),
+                "label_schema": label_schema,
+                "count": count,
+                "column_notes": column_notes,
+                "label_guidance": label_guidance,
+            }
+        )
+        return [
+            GeneratedRow(
+                data={col: f"{col}{i}" for col in columns},
+                suggested_label="good" if label_schema is not None else None,
+                reasoning=f"reason {i}",
+            )
+            for i in range(count)
+        ]
+
+    monkeypatch.setattr("valcore.api.routes.datasets.generate_rows", fake_generate_rows)
+
+
+@pytest.mark.anyio
+async def test_generate_without_instructions_uses_description_for_generation(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    # Backward compatible: with no ``instructions``, ``description`` drives generation
+    # and is also what gets stored, exactly as before this field existed.
+    calls: list[dict] = []
+    _install_recording_generate(monkeypatch, calls)
+
+    resp = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "gen",
+            "description": "some data",
+            "columns": ["prompt"],
+            "label_schema": CATEGORICAL_SCHEMA,
+            "count": 2,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert calls[0]["description"] == "some data"
+    assert resp.json()["dataset"]["description"] == "some data"
+
+
+@pytest.mark.anyio
+async def test_generate_with_instructions_drives_generation_and_stores_description(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    # When present, ``instructions`` steer generation while ``description`` is only stored.
+    calls: list[dict] = []
+    _install_recording_generate(monkeypatch, calls)
+
+    resp = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "gen",
+            "description": "Stored on the dataset.",
+            "instructions": "Adversarial refusal cases across languages.",
+            "columns": ["prompt"],
+            "label_schema": CATEGORICAL_SCHEMA,
+            "count": 2,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert calls[0]["description"] == "Adversarial refusal cases across languages."
+    assert resp.json()["dataset"]["description"] == "Stored on the dataset."
+
+
+# -- Generate from evaluator version -----------------------------------------
+
+
+def _make_version(
+    store: Store,
+    *,
+    required_columns: list[str] | None = None,
+    score_kind: ScoreKind = ScoreKind.CATEGORICAL,
+    score_labels: list[str] | None = None,
+) -> EvaluatorVersion:
+    """Create an evaluator and a single version to seed dataset generation from."""
+    required_columns = required_columns if required_columns is not None else ["prompt", "response"]
+    score_labels = score_labels if score_labels is not None else ["good", "bad"]
+    evaluator = store.create_evaluator("ev")
+    return store.create_version(
+        evaluator.id,
+        version_name="v1",
+        model="gateway/anthropic:claude-sonnet-5",
+        instructions="Judge the row.",
+        prompt_template="Prompt: {prompt}\nResponse: {response}",
+        required_columns=required_columns,
+        output_fields=[
+            {
+                "name": "verdict",
+                "type": "enum",
+                "description": "good or bad",
+                "enum_values": score_labels,
+            }
+        ],
+        score_field="verdict",
+        score_kind=score_kind,
+        score_labels=score_labels,
+    )
+
+
+@pytest.mark.anyio
+async def test_generate_from_version_columns_are_required_then_extras(
+    client: httpx.AsyncClient, store: Store, monkeypatch
+) -> None:
+    version = _make_version(store)
+    calls: list[dict] = []
+    _install_recording_generate(monkeypatch, calls)
+
+    resp = await client.post(
+        "/api/datasets/generate-from-version",
+        json={
+            "version_id": version.id,
+            "name": "multilingual-refusals",
+            "instructions": "Adversarial refusal cases across languages.",
+            "extra_columns": ["locale"],
+            "count": 3,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["row_count"] == 3
+    # Required columns first, in order, then the extras.
+    assert body["dataset"]["columns"] == ["prompt", "response", "locale"]
+    # The shape, not the stored description, is what the generator receives.
+    assert calls[0]["columns"] == ["prompt", "response", "locale"]
+
+
+@pytest.mark.anyio
+async def test_generate_from_version_produces_a_compatible_dataset(
+    client: httpx.AsyncClient, store: Store, monkeypatch
+) -> None:
+    version = _make_version(store)
+    _install_recording_generate(monkeypatch, [])
+
+    resp = await client.post(
+        "/api/datasets/generate-from-version",
+        json={
+            "version_id": version.id,
+            "name": "seeded",
+            "count": 2,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    ds_id = resp.json()["dataset"]["id"]
+
+    # The derived shape must satisfy the compatibility check by construction, so a run
+    # against the source version would start.
+    dataset = store.get_dataset(ds_id)
+    check_dataset_compatibility(store.get_version(version.id), dataset)
+
+    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
+    for row in rows:
+        assert row["label_source"] == LabelSource.GENERATED.value
+        assert row["suggested_label"] is not None
+
+
+@pytest.mark.anyio
+async def test_generate_from_version_without_labels_leaves_no_ground_truth(
+    client: httpx.AsyncClient, store: Store, monkeypatch
+) -> None:
+    version = _make_version(store)
+    calls: list[dict] = []
+    _install_recording_generate(monkeypatch, calls)
+
+    resp = await client.post(
+        "/api/datasets/generate-from-version",
+        json={
+            "version_id": version.id,
+            "name": "no-labels",
+            "include_labels": False,
+            "count": 2,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    ds_id = body["dataset"]["id"]
+
+    # An empty label schema is the legal "no ground truth" state.
+    assert body["dataset"]["label_schema"] == {}
+    # The generator is told there is no label space to fill.
+    assert calls[0]["label_schema"] is None
+
+    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
+    for row in rows:
+        assert row["suggested_label"] is None
+
+    # Without labels it is still immediately runnable against the source version.
+    check_dataset_compatibility(store.get_version(version.id), store.get_dataset(ds_id))
+
+
+@pytest.mark.anyio
+async def test_generate_from_version_passes_column_notes_and_label_guidance(
+    client: httpx.AsyncClient, store: Store, monkeypatch
+) -> None:
+    version = _make_version(store)
+    calls: list[dict] = []
+    _install_recording_generate(monkeypatch, calls)
+
+    resp = await client.post(
+        "/api/datasets/generate-from-version",
+        json={
+            "version_id": version.id,
+            "name": "guided",
+            "extra_columns": ["locale"],
+            "column_notes": {"prompt": "a", "response": "b", "locale": "c"},
+            "include_labels": True,
+            "label_guidance": "partial compliance is borderline, not bad",
+            "count": 1,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert calls[0]["column_notes"] == {"prompt": "a", "response": "b", "locale": "c"}
+    assert calls[0]["label_guidance"] == "partial compliance is borderline, not bad"
+
+
+@pytest.mark.anyio
+async def test_generate_from_version_unknown_column_note_key_is_422(
+    client: httpx.AsyncClient, store: Store, monkeypatch
+) -> None:
+    version = _make_version(store)
+    _install_recording_generate(monkeypatch, [])
+
+    resp = await client.post(
+        "/api/datasets/generate-from-version",
+        json={
+            "version_id": version.id,
+            "name": "typo",
+            "column_notes": {"prmpt": "oops"},
+            "count": 1,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    error = resp.json()["error"]
+    assert error["type"] == "ContractError"
+    # The unknown key is named so a typo is never silently ignored.
+    assert "prmpt" in error["message"]
+
+
+@pytest.mark.anyio
+async def test_generate_from_version_extra_column_duplicating_required_is_422(
+    client: httpx.AsyncClient, store: Store, monkeypatch
+) -> None:
+    version = _make_version(store)
+    _install_recording_generate(monkeypatch, [])
+
+    resp = await client.post(
+        "/api/datasets/generate-from-version",
+        json={
+            "version_id": version.id,
+            "name": "clash",
+            "extra_columns": ["prompt"],
+            "count": 1,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["type"] == "ContractError"
+
+
+@pytest.mark.anyio
+async def test_generate_from_version_count_over_cap_is_422(
+    client: httpx.AsyncClient, store: Store, monkeypatch
+) -> None:
+    version = _make_version(store)
+    _install_recording_generate(monkeypatch, [])
+
+    resp = await client.post(
+        "/api/datasets/generate-from-version",
+        json={
+            "version_id": version.id,
+            "name": "toomany",
+            "count": 201,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["type"] == "ContractError"
+
+
+@pytest.mark.anyio
+async def test_generate_from_version_label_guidance_without_labels_is_422(
+    client: httpx.AsyncClient, store: Store, monkeypatch
+) -> None:
+    version = _make_version(store)
+    _install_recording_generate(monkeypatch, [])
+
+    resp = await client.post(
+        "/api/datasets/generate-from-version",
+        json={
+            "version_id": version.id,
+            "name": "contradiction",
+            "include_labels": False,
+            "label_guidance": "how to assign labels",
+            "count": 1,
+        },
+    )
+    # Silently dropping the guidance would mislead the user, so it must raise.
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["type"] == "ContractError"
+
+
+@pytest.mark.anyio
+async def test_generate_from_version_unknown_version_is_404(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    _install_recording_generate(monkeypatch, [])
+
+    resp = await client.post(
+        "/api/datasets/generate-from-version",
+        json={
+            "version_id": "ver_missing",
+            "name": "orphan",
+            "count": 1,
+        },
+    )
+    assert resp.status_code == 404, resp.text
 
 
 # -- Labeling ----------------------------------------------------------------
