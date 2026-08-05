@@ -203,6 +203,109 @@ describe("manual CRUD helpers", () => {
   });
 });
 
+// Seeded generation: a dataset's shape can be derived from an evaluator version,
+// and an evaluator's columns from a dataset. Only content-steering fields are
+// optional; the shape always comes from the source, so the client just forwards
+// whatever the caller supplies.
+describe("seeded generation client helpers", () => {
+  it("generateFromVersion POSTs the full body to /api/datasets/generate-from-version", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ dataset: { id: "d1" }, row_count: 5 }));
+
+    const payload = {
+      version_id: "v1",
+      name: "Seeded from v1",
+      description: "test data",
+      instructions: "make it varied",
+      extra_columns: ["notes"],
+      column_notes: { input: "keep it short" },
+      include_labels: true,
+      label_guidance: "assign the strictest applicable label",
+      count: 5,
+    };
+    await datasets.generateFromVersion(payload);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/datasets/generate-from-version");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe(JSON.stringify(payload));
+    expect(new Headers(init?.headers).get("Content-Type")).toBe("application/json");
+  });
+
+  it("generateFromVersion omits optional fields left unset from the body", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ dataset: { id: "d1" }, row_count: 3 }));
+
+    const payload = { version_id: "v1", name: "Minimal", count: 3 };
+    await datasets.generateFromVersion(payload);
+
+    const [, init] = fetchMock.mock.calls[0];
+    // JSON.stringify drops undefined keys, so the wire body must contain only the
+    // three fields the caller actually supplied.
+    expect(init?.body).toBe(JSON.stringify(payload));
+    const parsed = JSON.parse(init?.body as string);
+    expect(Object.keys(parsed).sort()).toEqual(["count", "name", "version_id"]);
+  });
+
+  it("generateFromVersion returns the DatasetCreated envelope", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ dataset: { id: "d1", name: "Seeded" }, row_count: 5 }),
+    );
+
+    const result = await datasets.generateFromVersion({
+      version_id: "v1",
+      name: "Seeded",
+      count: 5,
+    });
+
+    expect(result).toEqual({ dataset: { id: "d1", name: "Seeded" }, row_count: 5 });
+  });
+
+  it("datasets.generate still POSTs to /api/datasets/generate and forwards instructions", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ dataset: { id: "d1" }, row_count: 4 }));
+
+    const payload = {
+      name: "Blank seeded",
+      columns: ["input", "output"],
+      label_schema: { kind: "categorical" as const, labels: ["pass", "fail"], minimum: null, maximum: null },
+      instructions: "vary the tone",
+      count: 4,
+    };
+    await datasets.generate(payload);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/datasets/generate");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe(JSON.stringify(payload));
+    expect(JSON.parse(init?.body as string).instructions).toBe("vary the tone");
+  });
+
+  it("evaluators.generate forwards dataset_id and column_notes to /api/evaluators/generate", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ name: "Judge", required_columns: ["input"] }));
+
+    const payload = {
+      criteria: "score for helpfulness",
+      dataset_id: "d1",
+      column_notes: { input: "the user prompt" },
+    };
+    await evaluators.generate(payload);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/evaluators/generate");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe(JSON.stringify(payload));
+    const parsed = JSON.parse(init?.body as string);
+    expect(parsed.dataset_id).toBe("d1");
+    expect(parsed.column_notes).toEqual({ input: "the user prompt" });
+  });
+});
+
 describe("ApiError detail", () => {
   it("carries error.detail from a 409 ReferencedError body", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
