@@ -1,4 +1,17 @@
-# valcore
+<p align="center">
+  <img
+    src="https://raw.githubusercontent.com/duncankmckinnon/valcore/main/docs/img/logo.png"
+    alt="valcore"
+    width="420"
+  >
+</p>
+
+<!--
+Absolute raw.githubusercontent URL rather than a relative path: this README is the
+PyPI long_description, and PyPI resolves relative paths against pypi.org, so a
+relative image renders broken there. The URL is pinned to main, so it only resolves
+once this lands on the default branch.
+-->
 
 A small, self-contained local tool for developing, improving, and running agentic
 evaluations. Author evaluators in a web UI, run them over datasets from the command
