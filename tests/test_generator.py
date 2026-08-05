@@ -262,6 +262,26 @@ async def test_column_without_note_still_listed_in_prompt() -> None:
 
 
 @pytest.mark.anyio
+async def test_dataset_columns_are_the_only_allowed_required_columns_and_placeholders() -> None:
+    """The per-call prompt prohibits invented and explicitly irrelevant columns."""
+    agent, capture = capturing_generator_agent([VALID_CONFIG])
+
+    await generate_config(
+        "Judge answer correctness.",
+        columns=["question", "answer", "locale"],
+        column_notes={"locale": "irrelevant to scoring; ignore it"},
+        agent=agent,
+    )
+
+    prompt = capture.prompts[0]
+    assert "`required_columns` may contain only the dataset columns listed above" in prompt
+    assert "irrelevant or ignored must appear in neither" in prompt
+    assert "`required_columns` nor `prompt_template`" in prompt
+    assert "Every `{column}` placeholder" in prompt
+    assert "do not invent columns or placeholders" in prompt
+
+
+@pytest.mark.anyio
 async def test_no_column_notes_keeps_current_prompt_form() -> None:
     """With ``column_notes=None`` the prompt keeps its existing columns form."""
     agent, capture = capturing_generator_agent([VALID_CONFIG])

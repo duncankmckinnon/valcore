@@ -172,9 +172,17 @@ def _columns_section(columns: list[str] | None, column_notes: dict[str, str] | N
     """
     if not columns and not column_notes:
         return ""
+    constraints = (
+        "\n\nColumn constraints:\n"
+        "  - `required_columns` may contain only the dataset columns listed above.\n"
+        "  - A column described as irrelevant or ignored must appear in neither "
+        "`required_columns` nor `prompt_template`.\n"
+        "  - Every `{column}` placeholder in `prompt_template` must name a listed dataset "
+        "column; do not invent columns or placeholders."
+    )
     if not column_notes:
         # Preserve the pre-existing plain listing when no roles are supplied.
-        return f"\n\nAvailable dataset columns: {columns}"
+        return f"\n\nAvailable dataset columns: {columns}{constraints}"
     # Union without losing the caller's ordering: listed columns first, then any
     # annotated column not already named in `columns`.
     ordered = list(columns or [])
@@ -185,8 +193,10 @@ def _columns_section(columns: list[str] | None, column_notes: dict[str, str] | N
         f"  - {name}: {column_notes[name]}" if name in column_notes else f"  - {name}"
         for name in ordered
     ]
-    return "\n\nAvailable dataset columns and how each factors into the assessment:\n" + "\n".join(
-        lines
+    return (
+        "\n\nAvailable dataset columns and how each factors into the assessment:\n"
+        + "\n".join(lines)
+        + constraints
     )
 
 

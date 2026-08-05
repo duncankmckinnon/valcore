@@ -1,10 +1,10 @@
 """Tests for pure shape derivation between evaluators and datasets."""
 
 import pytest
-from valcore.seeding import dataset_shape_from_version, evaluator_seed_from_dataset
 
 from valcore.errors import ContractError
 from valcore.models import Dataset, EvaluatorVersion, LabelSchema, ScoreKind
+from valcore.seeding import dataset_shape_from_version, evaluator_seed_from_dataset
 
 
 def make_version(**overrides: object) -> EvaluatorVersion:

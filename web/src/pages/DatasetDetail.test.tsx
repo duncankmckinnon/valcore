@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import DatasetDetail from "./DatasetDetail";
-import { ApiError, datasets, evaluators } from "../api/client";
+import EvaluatorsPage from "./EvaluatorsPage";
+import { api, ApiError, datasets, evaluators } from "../api/client";
 import type { Dataset, GeneratedConfig } from "../api/types";
 
 // The settings modal is owned by another task; stub it to report a shape change
@@ -46,11 +47,13 @@ vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
   return {
     ...actual,
+    api: vi.fn(),
     datasets: { ...actual.datasets, get: vi.fn(), stats: vi.fn(), remove: vi.fn() },
     // `create`/`createVersion` are stubbed so a stray persistence call from the modal
     // wiring would be observable: the generate flow must hand back a draft, never save.
     evaluators: {
       ...actual.evaluators,
+      list: vi.fn(),
       generate: vi.fn(),
       create: vi.fn(),
       createVersion: vi.fn(),
@@ -64,6 +67,8 @@ const removeMock = vi.mocked(datasets.remove);
 const generateMock = vi.mocked(evaluators.generate);
 const createMock = vi.mocked(evaluators.create);
 const createVersionMock = vi.mocked(evaluators.createVersion);
+const apiMock = vi.mocked(api);
+const listMock = vi.mocked(evaluators.list);
 
 function madeDraft(): GeneratedConfig {
   return {
@@ -95,28 +100,21 @@ function madeDataset(): Dataset {
   };
 }
 
-// Stand-in for the evaluators page: it reads the draft the detail page hands off via
-// router state so a successful generate is observable as "arrived at the editor with the
-// draft" rather than needing the real editor.
-function EvaluatorsLanding() {
-  const location = useLocation();
-  const draft = (location.state as { draft?: GeneratedConfig } | null)?.draft ?? null;
-  return <div>evaluators index{draft ? `:draft:${draft.name}` : ""}</div>;
-}
-
 function renderDetail() {
   render(
     <MemoryRouter initialEntries={["/datasets/d1"]}>
       <Routes>
         <Route path="/datasets" element={<p>datasets index</p>} />
         <Route path="/datasets/:id" element={<DatasetDetail datasetId="d1" />} />
-        <Route path="/evaluators" element={<EvaluatorsLanding />} />
+        <Route path="/evaluators" element={<EvaluatorsPage />} />
       </Routes>
     </MemoryRouter>,
   );
 }
 
 beforeEach(() => {
+  apiMock.mockResolvedValue({ models: ["model-a"], tools: [], capabilities: [] });
+  listMock.mockResolvedValue([]);
   getMock.mockResolvedValue(madeDataset());
   statsMock.mockResolvedValue({ total: 5, labeled: 5, unlabeled: 0, label_distribution: {} });
 });
@@ -204,8 +202,11 @@ describe("DatasetDetail", () => {
     const dialog = screen.getByRole("dialog");
     await userEvent.click(within(dialog).getByRole("button", { name: "Generate evaluator" }));
 
-    // Arrived at the evaluators editor carrying the draft through router state.
-    expect(await screen.findByText("evaluators index:draft:Answer quality")).toBeTruthy();
+    // The production destination consumes router state and populates the existing editor.
+    expect(await screen.findByRole("heading", { name: "Answer quality" })).toBeTruthy();
+    expect(screen.getByLabelText("Version name")).toHaveValue("v1");
+    expect(screen.getByLabelText("Instructions")).toHaveValue(draft.instructions);
+    expect(screen.getByLabelText("Prompt template")).toHaveValue(draft.prompt_template);
     // Seeded generation sends dataset_id + column_notes, never an explicit columns array.
     const arg = generateMock.mock.calls[0][0];
     expect(arg.dataset_id).toBe("d1");

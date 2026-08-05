@@ -40,10 +40,19 @@ const LABELLED_SCHEMA: LabelSchema = {
   maximum: null,
 };
 
-// Decision 4: an empty label_schema is legal and means "no ground truth".
-const EMPTY_SCHEMA: LabelSchema = {
-  kind: "categorical",
-  labels: [],
+// The API returns a literal empty object when the dataset has no ground truth.
+const EMPTY_SCHEMA: Dataset["label_schema"] = {};
+
+const BOUNDED_NUMERIC_SCHEMA: LabelSchema = {
+  kind: "numeric",
+  labels: null,
+  minimum: 1,
+  maximum: 5,
+};
+
+const UNBOUNDED_NUMERIC_SCHEMA: LabelSchema = {
+  kind: "numeric",
+  labels: null,
   minimum: null,
   maximum: null,
 };
@@ -167,6 +176,22 @@ describe("EvaluatorFromDataset", () => {
     expect(screen.getByText(/define its own/i)).toBeInTheDocument();
     // No stray label chips when there is no declared space.
     expect(screen.queryByText("good")).toBeNull();
+  });
+
+  it("renders a bounded numeric label space read-only", () => {
+    renderModal({ dataset: madeDataset({ label_schema: BOUNDED_NUMERIC_SCHEMA }) });
+
+    expect(screen.getByText(/Minimum: 1; Maximum: 5/)).toBeInTheDocument();
+    expect(screen.getByText(/generated evaluator will use/i)).toBeInTheDocument();
+    expect(screen.queryByRole("spinbutton")).toBeNull();
+  });
+
+  it("recognizes and renders an unbounded numeric label space", () => {
+    renderModal({ dataset: madeDataset({ label_schema: UNBOUNDED_NUMERIC_SCHEMA }) });
+
+    expect(screen.getByText(/Minimum: unbounded; Maximum: unbounded/)).toBeInTheDocument();
+    expect(screen.getByText(/generated evaluator will use/i)).toBeInTheDocument();
+    expect(screen.queryByText(/define its own/i)).toBeNull();
   });
 
   it("hands the generated draft to the version editor without saving anything", async () => {

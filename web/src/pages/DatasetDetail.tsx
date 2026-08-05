@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { datasets } from "../api/client";
-import type { Dataset, DatasetStats, GeneratedConfig } from "../api/types";
+import type { Dataset, DatasetStats, GeneratedConfig, LabelSchema } from "../api/types";
 import { Button, ConfirmDialog, ErrorBanner, Spinner } from "../components/ui";
 import DatasetSettingsModal from "../components/DatasetSettingsModal";
 import EvaluatorFromDataset from "../components/EvaluatorFromDataset";
@@ -148,7 +148,7 @@ export default function DatasetDetail({ datasetId }: Props) {
         key={gridKey}
         datasetId={datasetId}
         columns={dataset.columns}
-        schema={dataset.label_schema}
+        schema={dataset.label_schema as LabelSchema}
         onChange={refreshStats}
       />
 

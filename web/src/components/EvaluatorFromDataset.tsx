@@ -20,12 +20,10 @@ type EvaluatorFromDatasetProps = {
   onClose: () => void;
 };
 
-// A dataset "declares a label space" when it pins down actual labels or a numeric range.
-// Decision 4: an empty label_schema is legal and means "no ground truth", in which case the
-// generated evaluator defines its own space rather than inheriting one.
-function declaresLabelSpace(schema: LabelSchema): boolean {
-  if (schema.labels && schema.labels.length > 0) return true;
-  return schema.minimum !== null || schema.maximum !== null;
+// The API represents "no ground truth" as a literal empty object. Presence of `kind`, not
+// labels or bounds, distinguishes a declared schema (including an unbounded numeric one).
+function declaresLabelSpace(schema: Dataset["label_schema"]): schema is LabelSchema {
+  return Object.keys(schema).length > 0 && "kind" in schema;
 }
 
 export function EvaluatorFromDataset({
@@ -101,13 +99,20 @@ export function EvaluatorFromDataset({
         <span className="field-label">Label space</span>
         {hasLabelSpace ? (
           <>
-            <div className="chips">
-              {(schema.labels ?? []).map((label) => (
-                <span key={label} className="chip">
-                  {label}
-                </span>
-              ))}
-            </div>
+            {schema.kind === "categorical" ? (
+              <div className="chips">
+                {(schema.labels ?? []).map((label) => (
+                  <span key={label} className="chip">
+                    {label}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p>
+                Minimum: {schema.minimum ?? "unbounded"}; Maximum:{" "}
+                {schema.maximum ?? "unbounded"}
+              </p>
+            )}
             <p className="muted">
               The generated evaluator will use this dataset's label space.
             </p>

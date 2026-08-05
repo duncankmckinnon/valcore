@@ -27,7 +27,7 @@ export default function DatasetSettingsModal({
 }: DatasetSettingsModalProps) {
   const [name, setName] = useState(dataset.name);
   const [description, setDescription] = useState(dataset.description);
-  const [schema, setSchema] = useState<LabelSchema>(dataset.label_schema);
+  const [schema, setSchema] = useState<LabelSchema>(dataset.label_schema as LabelSchema);
   const [rows, setRows] = useState<ColumnRow[]>(
     dataset.columns.map((column) => ({ original: column, current: column })),
   );

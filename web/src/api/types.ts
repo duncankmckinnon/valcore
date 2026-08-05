@@ -35,6 +35,8 @@ export interface LabelSchema {
   maximum: number | null;
 }
 
+export type EmptyLabelSchema = Record<string, never>;
+
 export interface Evaluator {
   id: string;
   created_at: string;
@@ -70,7 +72,7 @@ export interface Dataset {
   name: string;
   description: string;
   columns: string[];
-  label_schema: LabelSchema;
+  label_schema: LabelSchema | EmptyLabelSchema;
 }
 
 export interface DatasetRow {
