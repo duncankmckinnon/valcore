@@ -189,6 +189,29 @@ def test_compatible_dataset_passes() -> None:
     check_dataset_compatibility(make_version(), make_dataset())
 
 
+def test_empty_label_schema_passes_categorical() -> None:
+    # A dataset that declares no ground truth has nothing to disagree about, so it is
+    # compatible with a categorical evaluator regardless of the evaluator's label space.
+    dataset = make_dataset(label_schema={})
+    check_dataset_compatibility(make_version(), dataset)
+
+
+def test_empty_label_schema_passes_numeric() -> None:
+    dataset = make_dataset(label_schema={})
+    check_dataset_compatibility(make_numeric_version(), dataset)
+
+
+def test_empty_label_schema_does_not_raise_validation_error() -> None:
+    # Regression: an unlabeled uploaded dataset stores ``{}`` for its label schema, which
+    # LabelSchema.model_validate cannot parse; the empty schema must short-circuit before
+    # that call so no bare pydantic ValidationError escapes the compatibility check.
+    dataset = make_dataset(label_schema={})
+    try:
+        check_dataset_compatibility(make_version(), dataset)
+    except ValidationError as exc:  # pragma: no cover - fails loudly if the guard is missing
+        pytest.fail(f"empty label_schema leaked a pydantic ValidationError: {exc}")
+
+
 def test_dataset_missing_required_column() -> None:
     dataset = make_dataset(columns=["answer"])
     with pytest.raises(ContractError, match="missing required column") as exc:
