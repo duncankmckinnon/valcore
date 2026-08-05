@@ -7,20 +7,23 @@
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/valcore/">
-    <img src="https://img.shields.io/pypi/v/valcore?logo=pypi&logoColor=white&label=pypi" alt="PyPI version">
-  </a>
-  <a href="https://pypi.org/project/valcore/">
-    <img src="https://img.shields.io/pypi/pyversions/valcore?logo=python&logoColor=white" alt="Supported Python versions">
-  </a>
   <a href="https://github.com/duncankmckinnon/valcore/actions/workflows/test.yml">
-    <img src="https://img.shields.io/github/actions/workflow/status/duncankmckinnon/valcore/test.yml?branch=main&logo=githubactions&logoColor=white&label=tests" alt="Test status">
+    <img src="https://github.com/duncankmckinnon/valcore/actions/workflows/test.yml/badge.svg" alt="CI">
   </a>
   <a href="https://codecov.io/gh/duncankmckinnon/valcore">
-    <img src="https://img.shields.io/codecov/c/github/duncankmckinnon/valcore?logo=codecov&logoColor=white" alt="Coverage">
+    <img src="https://codecov.io/gh/duncankmckinnon/valcore/graph/badge.svg" alt="codecov">
   </a>
-  <a href="https://github.com/pre-commit/pre-commit">
-    <img src="https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white" alt="pre-commit enabled">
+  <a href="https://pypi.org/project/valcore/">
+    <img src="https://img.shields.io/pypi/v/valcore" alt="PyPI">
+  </a>
+  <a href="https://github.com/duncankmckinnon/homebrew-tap">
+    <img src="https://img.shields.io/badge/homebrew-duncankmckinnon%2Ftap-orange?logo=homebrew" alt="Homebrew">
+  </a>
+  <a href="https://pypi.org/project/valcore/">
+    <img src="https://img.shields.io/pypi/pyversions/valcore" alt="Python">
+  </a>
+  <a href="https://github.com/duncankmckinnon/valcore/blob/main/LICENSE">
+    <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License: Apache 2.0">
   </a>
 </p>
 
