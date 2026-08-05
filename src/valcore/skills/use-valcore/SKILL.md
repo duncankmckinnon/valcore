@@ -9,8 +9,9 @@ valcore develops, runs, and exports agentic evaluations locally. Everything live
 SQLite database and one process — there is no service to sign up for, and no data leaves
 the machine except the model calls the judge itself makes.
 
-`reference.md` in this directory is the complete CLI reference: every command, flag, and
-exit code. Read it when you need exact syntax.
+[reference.md](reference.md) is the complete CLI reference: every command, flag,
+configuration key, environment variable, and exit code. Read it when you need exact
+syntax.
 
 ## Setup: the Pydantic AI gateway
 

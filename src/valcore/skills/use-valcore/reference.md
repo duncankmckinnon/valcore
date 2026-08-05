@@ -1,6 +1,19 @@
 # valcore CLI reference
 
-Syntax only. Concepts, workflow, and gateway setup are in `SKILL.md` alongside this file.
+Syntax only. Concepts, workflow, and gateway setup are in [SKILL.md](SKILL.md).
+
+## Contents
+
+- [Global](#global) — `--db`, `--version`, database resolution
+- [`valcore version`](#valcore-version)
+- [`valcore serve`](#valcore-serve) — run the web app and API
+- [`valcore list`](#valcore-list-evaluatorsdatasetsruns) — evaluators, datasets, runs
+- [`valcore run`](#valcore-run-evaluator-dataset) — validation and eval runs
+- [`valcore export`](#valcore-export-evaluator) — standalone judge script
+- [`valcore config`](#valcore-config) — gateway key and defaults
+- [`valcore skills`](#valcore-skills) — install these skills into agent directories
+- [Configuration](#configuration) — `config.toml` keys, `VALCORE_*` environment variables
+- [Exit codes](#exit-codes)
 
 ## Global
 
