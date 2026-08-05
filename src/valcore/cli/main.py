@@ -11,6 +11,7 @@ import asyncio
 import sys
 import threading
 import webbrowser
+from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from pathlib import Path
 
@@ -18,6 +19,7 @@ import click
 
 from valcore.cli.output import emit
 from valcore.cli.resolve import resolve_dataset, resolve_evaluator, resolve_version
+from valcore.cli.skills import skills
 from valcore.config import apply_gateway_key, load_config, save_config, set_key
 from valcore.errors import ContractError, ValcoreError
 from valcore.export import render_script
@@ -28,6 +30,23 @@ from valcore.settings import get_settings
 from valcore.store import Store, create_engine, init_db
 
 _LOCAL_DB = Path("valcore.db")
+
+
+def _resolve_version() -> str:
+    """Report the running version, tolerating a source checkout with no install.
+
+    ``importlib.metadata`` only knows about installed distributions, so running
+    straight out of a clone raises. Fall back to the file hatch-vcs bakes in at
+    build time, and finally to a placeholder, so ``--version`` never crashes.
+    """
+    try:
+        return package_version("valcore")
+    except PackageNotFoundError:
+        try:
+            from valcore._version import __version__
+        except ImportError:
+            return "unknown"
+        return str(__version__)
 
 
 class _ValcoreGroup(click.Group):
@@ -49,6 +68,7 @@ def _store(ctx: click.Context) -> Store:
 
 
 @click.group(cls=_ValcoreGroup)
+@click.version_option(_resolve_version(), "--version", message="%(version)s")
 @click.option(
     "--db",
     "db",
@@ -77,7 +97,10 @@ def cli(ctx: click.Context, db: Path | None) -> None:
 @cli.command()
 def version() -> None:
     """Print the installed valcore version."""
-    click.echo(package_version("valcore"))
+    click.echo(_resolve_version())
+
+
+cli.add_command(skills)
 
 
 # -- serve --------------------------------------------------------------------
