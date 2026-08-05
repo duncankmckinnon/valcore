@@ -7,6 +7,7 @@ from click.testing import CliRunner
 
 from valcore.cli import skills as skills_mod
 from valcore.cli.main import cli
+from valcore.errors import ContractError
 from valcore.models import Dataset, EvaluatorVersion, ScoreKind, check_dataset_compatibility
 
 
@@ -14,6 +15,12 @@ def _skill_body() -> str:
     """Return the text of the packaged ``use-valcore`` SKILL.md."""
     directory = dict(skills_mod.packaged_skills())["use-valcore"]
     return (directory / "SKILL.md").read_text()
+
+
+def _reference_body() -> str:
+    """Return the text of the packaged ``use-valcore`` reference.md (CLI reference)."""
+    directory = dict(skills_mod.packaged_skills())["use-valcore"]
+    return (directory / "reference.md").read_text()
 
 
 @pytest.fixture
@@ -129,6 +136,45 @@ def test_unlabeled_dataset_claim_is_backed_by_check_dataset_compatibility() -> N
 
     # Must not raise: no label space means nothing to reconcile with the score space.
     check_dataset_compatibility(version, dataset)
+
+
+def test_empty_label_schema_does_not_waive_the_required_columns_check() -> None:
+    """Back the corrected prose: an empty schema skips checks 2/3 but not check 1.
+
+    The skill now states an unlabeled dataset "still must satisfy check 1: the
+    evaluator's required_columns must be present." Guard that so the wording cannot
+    over-relax into "runs against any evaluator" again.
+    """
+    version = EvaluatorVersion(
+        evaluator_id="ev",
+        version_name="v1",
+        model="gateway/anthropic:claude-sonnet-5",
+        instructions="Score the answer.",
+        prompt_template="{answer}",
+        required_columns=["answer"],
+        score_field="score",
+        score_kind=ScoreKind.CATEGORICAL,
+        score_labels=["pass", "fail"],
+    )
+    # Empty label schema, but the required column is absent.
+    dataset = Dataset(name="wrong-shape", columns=["question"], label_schema={})
+
+    with pytest.raises(ContractError):
+        check_dataset_compatibility(version, dataset)
+
+
+# -- reference.md (CLI) content -----------------------------------------------
+#
+# Seeded generation is API/web only. The CLI reference must say so plainly and must
+# not invent a command or flag for it -- the worst outcome named in the task.
+
+
+def test_reference_notes_seeded_generation_is_not_in_the_cli() -> None:
+    """The CLI reference points agents away from hunting for a flag that does not exist."""
+    body = _reference_body()
+    assert "Not in the CLI" in body
+    # The table of contents at the top must link the new section, or it drifts.
+    assert "#not-in-the-cli" in body
 
 
 # -- target resolution --------------------------------------------------------
