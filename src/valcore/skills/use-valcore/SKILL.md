@@ -106,8 +106,13 @@ This is where runs most often fail to start. A run requires:
 3. **Label set**: for categorical scoring, the dataset's labels and the evaluator's
    `score_labels` must be **exactly equal** — not a subset in either direction.
 
-A dataset with no label schema skips checks 2 and 3 and runs against any evaluator. It
-just cannot be used for a `validation` run, which needs ground truth.
+A dataset with an empty label schema skips checks 2 and 3 — with no label space declared,
+there is nothing to reconcile with the score space. It still must satisfy check 1: the
+evaluator's `required_columns` must be present. Such a dataset runs against any evaluator
+whose columns it covers; it just cannot back a `validation` run, which needs ground truth.
+
+Labels are therefore **optional**. An `eval` run scores unlabeled rows fine — labels are
+required only for a `validation` run, which measures whether the judge agrees with you.
 
 ## The workflow
 
@@ -120,6 +125,11 @@ Two paths, both first-class:
 - **By generation** — describe your criteria in natural language and let valcore produce
   a complete draft config, then edit it. Generation returns an editable draft; nothing is
   saved until you save a version.
+- **By generation, seeded from a dataset** — generate an **evaluator from a dataset** so
+  its shape comes from that dataset's columns. Per-column notes say how each column factors
+  into the assessment; a column described as irrelevant ends up in neither
+  `required_columns` nor the `prompt_template`. The model never invents columns. The result
+  is still an editable draft — nothing is persisted until you save a version.
 
 Design guidance that matters for judge quality:
 
@@ -132,6 +142,18 @@ Design guidance that matters for judge quality:
 ### 2. Build a dataset
 
 Upload a file, author rows by hand, or generate synthetic rows.
+
+To make test data for an evaluator you already have, generate a
+**dataset from an evaluator version**. It always receives that version's
+`required_columns` — shape
+derives from the source, and instructions cannot remove them. Extra columns are allowed
+but must be typed in explicitly; the model never infers them. Per-column notes say what
+each column should contain. The result is compatible with the source evaluator by
+construction.
+
+Suggested labels are **optional** here. When you include them, the label space comes from
+the evaluator — you supply only guidance on *how to assign* labels, never what the labels
+are. Leave them out and the dataset carries no ground truth, which is fine for `eval` runs.
 
 Generated rows deliberately mix clearly-passing, clearly-failing, and borderline examples
 — roughly a third each. **A judge validated only against good outputs tells you nothing
