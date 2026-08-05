@@ -4,10 +4,11 @@
 // detail page for editing.
 
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { api, evaluators } from "../api/client";
 import type { Evaluator, EvaluatorVersion, GeneratedConfig } from "../api/types";
 import EvaluatorDetail from "./EvaluatorDetail";
+import { VersionEditor } from "../components/VersionEditor";
 import type { AppConfig } from "../components/VersionEditor";
 import { Badge, Button, ErrorBanner, Modal, Spinner, Table, TextArea } from "../components/ui";
 
@@ -37,7 +38,10 @@ function draftToVersion(draft: GeneratedConfig, model: string): Partial<Evaluato
 }
 
 function EvaluatorsList() {
+  const location = useLocation();
   const navigate = useNavigate();
+  const receivedDraft =
+    (location.state as { draft?: GeneratedConfig } | null)?.draft ?? null;
   const [rows, setRows] = useState<EvaluatorRow[]>([]);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [loading, setLoading] = useState(true);
@@ -92,6 +96,28 @@ function EvaluatorsList() {
 
   if (loading) {
     return <Spinner />;
+  }
+
+  if (receivedDraft && config) {
+    return (
+      <section>
+        <div className="page-header">
+          <h1>{receivedDraft.name}</h1>
+        </div>
+        <VersionEditor
+          version={null}
+          evaluatorId=""
+          config={config}
+          evaluatorName={receivedDraft.name}
+          initialDraft={receivedDraft}
+          onCreateDraft={async (version) => {
+            const evaluator = await evaluators.create({ name: receivedDraft.name });
+            return evaluators.createVersion(evaluator.id, version);
+          }}
+          onSaved={(version) => navigate(`/evaluators/${version.evaluator_id}`)}
+        />
+      </section>
+    );
   }
 
   return (

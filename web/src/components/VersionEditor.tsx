@@ -48,6 +48,8 @@ type VersionEditorProps = {
   evaluatorId: string;
   config: AppConfig;
   evaluatorName?: string;
+  initialDraft?: GeneratedConfig;
+  onCreateDraft?: (version: Partial<EvaluatorVersion>) => Promise<EvaluatorVersion>;
   onSaved?: (version: EvaluatorVersion) => void;
 };
 
@@ -89,6 +91,25 @@ function blankForm(config: AppConfig): FormState {
   };
 }
 
+function generatedForm(draft: GeneratedConfig, config: AppConfig): FormState {
+  return {
+    version_name: draft.version_name,
+    notes: "",
+    model: config.models[0] ?? "",
+    instructions: draft.instructions,
+    prompt_template: draft.prompt_template,
+    required_columns: [...draft.required_columns],
+    output_fields: draft.output_fields.map((field) => ({ ...field })),
+    score_field: draft.score_field,
+    score_kind: draft.score_kind,
+    score_labels: draft.score_labels,
+    score_minimum: draft.score_minimum,
+    score_maximum: draft.score_maximum,
+    capabilities: draft.capabilities.map((capability) => ({ ...capability })),
+    tools: [...draft.tools],
+  };
+}
+
 /** Output fields whose type is compatible with a given score kind. */
 function compatibleFields(fields: OutputField[], kind: ScoreKind): OutputField[] {
   if (kind === "categorical") {
@@ -115,21 +136,25 @@ export function VersionEditor({
   evaluatorId,
   config,
   evaluatorName,
+  initialDraft,
+  onCreateDraft,
   onSaved,
 }: VersionEditorProps) {
   const [form, setForm] = useState<FormState>(() =>
-    version ? toForm(version) : blankForm(config),
+    version ? toForm(version) : initialDraft ? generatedForm(initialDraft, config) : blankForm(config),
   );
   const [error, setError] = useState<unknown>(null);
   const [saving, setSaving] = useState(false);
   const [columnDraft, setColumnDraft] = useState("");
 
   useEffect(() => {
-    setForm(version ? toForm(version) : blankForm(config));
+    setForm(
+      version ? toForm(version) : initialDraft ? generatedForm(initialDraft, config) : blankForm(config),
+    );
     setError(null);
     // config is stable for the lifetime of an editor; only a version swap resets the form.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [version]);
+  }, [version, initialDraft]);
 
   const frozen = version?.frozen ?? false;
   const errors = validateVersion(form);
@@ -202,7 +227,9 @@ export function VersionEditor({
     try {
       let result: EvaluatorVersion;
       if (version === null) {
-        result = await evaluators.createVersion(evaluatorId, patch);
+        result = onCreateDraft
+          ? await onCreateDraft(patch)
+          : await evaluators.createVersion(evaluatorId, patch);
       } else {
         let target = version;
         if (frozen) {

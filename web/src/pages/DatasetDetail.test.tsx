@@ -3,8 +3,9 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import DatasetDetail from "./DatasetDetail";
-import { ApiError, datasets } from "../api/client";
-import type { Dataset } from "../api/types";
+import EvaluatorsPage from "./EvaluatorsPage";
+import { api, ApiError, datasets, evaluators } from "../api/client";
+import type { Dataset, GeneratedConfig } from "../api/types";
 
 // The settings modal is owned by another task; stub it to report a shape change
 // (a new column list) back through `onSaved` when the user saves.
@@ -46,13 +47,47 @@ vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
   return {
     ...actual,
+    api: vi.fn(),
     datasets: { ...actual.datasets, get: vi.fn(), stats: vi.fn(), remove: vi.fn() },
+    // `create`/`createVersion` are stubbed so a stray persistence call from the modal
+    // wiring would be observable: the generate flow must hand back a draft, never save.
+    evaluators: {
+      ...actual.evaluators,
+      list: vi.fn(),
+      generate: vi.fn(),
+      create: vi.fn(),
+      createVersion: vi.fn(),
+    },
   };
 });
 
 const getMock = vi.mocked(datasets.get);
 const statsMock = vi.mocked(datasets.stats);
 const removeMock = vi.mocked(datasets.remove);
+const generateMock = vi.mocked(evaluators.generate);
+const createMock = vi.mocked(evaluators.create);
+const createVersionMock = vi.mocked(evaluators.createVersion);
+const apiMock = vi.mocked(api);
+const listMock = vi.mocked(evaluators.list);
+
+function madeDraft(): GeneratedConfig {
+  return {
+    name: "Answer quality",
+    version_name: "v1",
+    instructions: "Judge whether the answer resolves the question.",
+    prompt_template: "Q: {question}\nA: {answer}",
+    required_columns: ["question", "answer"],
+    output_fields: [],
+    score_field: "score",
+    score_kind: "categorical",
+    score_labels: ["good", "bad"],
+    score_minimum: null,
+    score_maximum: null,
+    capabilities: [],
+    tools: [],
+    rationale: "derived from dataset d1",
+  };
+}
 
 function madeDataset(): Dataset {
   return {
@@ -71,12 +106,15 @@ function renderDetail() {
       <Routes>
         <Route path="/datasets" element={<p>datasets index</p>} />
         <Route path="/datasets/:id" element={<DatasetDetail datasetId="d1" />} />
+        <Route path="/evaluators" element={<EvaluatorsPage />} />
       </Routes>
     </MemoryRouter>,
   );
 }
 
 beforeEach(() => {
+  apiMock.mockResolvedValue({ models: ["model-a"], tools: [], capabilities: [] });
+  listMock.mockResolvedValue([]);
   getMock.mockResolvedValue(madeDataset());
   statsMock.mockResolvedValue({ total: 5, labeled: 5, unlabeled: 0, label_distribution: {} });
 });
@@ -132,6 +170,50 @@ describe("DatasetDetail", () => {
 
     await waitFor(() => expect(removeMock).toHaveBeenCalledWith("d1"));
     expect(await screen.findByText("datasets index")).toBeTruthy();
+  });
+
+  it("opens the Generate evaluator modal, seeded with the dataset's columns", async () => {
+    renderDetail();
+
+    await screen.findByText("header:question");
+    await userEvent.click(screen.getByRole("button", { name: "Generate evaluator" }));
+
+    // The modal is seeded from this dataset: its columns render as locked note rows.
+    expect(await screen.findByLabelText("Note for question")).toBeTruthy();
+    expect(screen.getByLabelText("Note for answer")).toBeTruthy();
+    // Locked set: no add-column control is offered here.
+    expect(screen.queryByLabelText("New column name")).toBeNull();
+  });
+
+  it("routes the generated draft to the version editor without persisting it", async () => {
+    const draft = madeDraft();
+    generateMock.mockResolvedValue(draft);
+    renderDetail();
+
+    await screen.findByText("header:question");
+    await userEvent.click(screen.getByRole("button", { name: "Generate evaluator" }));
+
+    await userEvent.type(
+      await screen.findByLabelText("Criteria"),
+      "Does the answer resolve the ticket?",
+    );
+    // Two controls share this name (the page action and the modal submit); the submit is
+    // the one inside the dialog.
+    const dialog = screen.getByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Generate evaluator" }));
+
+    // The production destination consumes router state and populates the existing editor.
+    expect(await screen.findByRole("heading", { name: "Answer quality" })).toBeTruthy();
+    expect(screen.getByLabelText("Version name")).toHaveValue("v1");
+    expect(screen.getByLabelText("Instructions")).toHaveValue(draft.instructions);
+    expect(screen.getByLabelText("Prompt template")).toHaveValue(draft.prompt_template);
+    // Seeded generation sends dataset_id + column_notes, never an explicit columns array.
+    const arg = generateMock.mock.calls[0][0];
+    expect(arg.dataset_id).toBe("d1");
+    expect(arg).not.toHaveProperty("columns");
+    // The draft is editable, not saved: nothing was persisted from the modal.
+    expect(createMock).not.toHaveBeenCalled();
+    expect(createVersionMock).not.toHaveBeenCalled();
   });
 
   it("shows the referencing run count and stays on the page when delete is blocked", async () => {

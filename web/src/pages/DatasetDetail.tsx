@@ -4,9 +4,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { datasets } from "../api/client";
-import type { Dataset, DatasetStats } from "../api/types";
+import type { Dataset, DatasetStats, GeneratedConfig, LabelSchema } from "../api/types";
 import { Button, ConfirmDialog, ErrorBanner, Spinner } from "../components/ui";
 import DatasetSettingsModal from "../components/DatasetSettingsModal";
+import EvaluatorFromDataset from "../components/EvaluatorFromDataset";
 import LabelingGrid from "../components/LabelingGrid";
 
 type Props = {
@@ -19,6 +20,7 @@ export default function DatasetDetail({ datasetId }: Props) {
   const [stats, setStats] = useState<DatasetStats | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [editing, setEditing] = useState(false);
+  const [generatingEvaluator, setGeneratingEvaluator] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<unknown>(null);
@@ -60,6 +62,14 @@ export default function DatasetDetail({ datasetId }: Props) {
     refreshStats();
   }
 
+  function onEvaluatorGenerated(draft: GeneratedConfig) {
+    // The result is an editable draft, not a saved version: hand it to the evaluators
+    // flow, which already presents generated configs as editable drafts in the version
+    // editor. Nothing is persisted from here.
+    setGeneratingEvaluator(false);
+    navigate("/evaluators", { state: { draft } });
+  }
+
   async function confirmDelete() {
     setDeleting(true);
     setDeleteError(null);
@@ -92,6 +102,9 @@ export default function DatasetDetail({ datasetId }: Props) {
           {dataset.description && <p className="muted">{dataset.description}</p>}
         </div>
         <div className="form-actions">
+          <Button variant="secondary" onClick={() => setGeneratingEvaluator(true)}>
+            Generate evaluator
+          </Button>
           <Button variant="secondary" onClick={() => setEditing(true)}>
             Edit
           </Button>
@@ -135,7 +148,7 @@ export default function DatasetDetail({ datasetId }: Props) {
         key={gridKey}
         datasetId={datasetId}
         columns={dataset.columns}
-        schema={dataset.label_schema}
+        schema={dataset.label_schema as LabelSchema}
         onChange={refreshStats}
       />
 
@@ -144,6 +157,13 @@ export default function DatasetDetail({ datasetId }: Props) {
         dataset={dataset}
         onSaved={onSaved}
         onClose={() => setEditing(false)}
+      />
+
+      <EvaluatorFromDataset
+        open={generatingEvaluator}
+        dataset={dataset}
+        onGenerated={onEvaluatorGenerated}
+        onClose={() => setGeneratingEvaluator(false)}
       />
 
       <ConfirmDialog

@@ -12,6 +12,7 @@ Syntax only. Concepts, workflow, and gateway setup are in [SKILL.md](SKILL.md).
 - [`valcore export`](#valcore-export-evaluator) — standalone judge script
 - [`valcore config`](#valcore-config) — gateway key and defaults
 - [`valcore skills`](#valcore-skills) — install these skills into agent directories
+- [Not in the CLI](#not-in-the-cli) — seeded generation is API and web only
 - [Configuration](#configuration) — `config.toml` keys, `VALCORE_*` environment variables
 - [Exit codes](#exit-codes)
 
@@ -124,6 +125,13 @@ directories and does not also touch `.agents/`.
 
 Copy mode skips a skill whose content is already byte-identical, and prompts before
 overwriting one you have edited. `--symlink` always replaces.
+
+## Not in the CLI
+
+Seeded generation — deriving a dataset's shape from an evaluator version, or an
+evaluator's columns from a dataset — is exposed only through the API and web app, not the
+CLI. There is no command or flag for it here; do not go looking for one. See
+[SKILL.md](SKILL.md) for the workflow.
 
 ## Configuration
 

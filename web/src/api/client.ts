@@ -4,6 +4,7 @@
 import type {
   Dataset,
   DatasetCreated,
+  DatasetGenerateFromVersion,
   DatasetRow,
   DatasetStats,
   DatasetUpdate,
@@ -102,8 +103,13 @@ export const evaluators = {
     api<EvaluatorVersion>(`/api/evaluators/versions/${versionId}/copy`, { method: "POST" }),
   deleteVersion: (_id: string, versionId: string) =>
     api<void>(`/api/evaluators/versions/${versionId}`, { method: "DELETE" }),
-  generate: (data: { criteria: string; columns?: string[]; model?: string }) =>
-    api<GeneratedConfig>("/api/evaluators/generate", { method: "POST", ...jsonBody(data) }),
+  generate: (data: {
+    criteria: string;
+    columns?: string[];
+    model?: string;
+    dataset_id?: string;
+    column_notes?: Record<string, string>;
+  }) => api<GeneratedConfig>("/api/evaluators/generate", { method: "POST", ...jsonBody(data) }),
   refine: (data: { config: GeneratedConfig; instruction: string; model?: string }) =>
     api<RefinedConfig>("/api/evaluators/refine", { method: "POST", ...jsonBody(data) }),
   exportScript: async (_id: string, versionId: string) => {
@@ -133,8 +139,14 @@ export const datasets = {
     description?: string;
     columns: string[];
     label_schema: LabelSchema;
+    instructions?: string;
     count: number;
   }) => api<DatasetCreated>("/api/datasets/generate", { method: "POST", ...jsonBody(data) }),
+  generateFromVersion: (data: DatasetGenerateFromVersion) =>
+    api<DatasetCreated>("/api/datasets/generate-from-version", {
+      method: "POST",
+      ...jsonBody(data),
+    }),
   rows: (id: string, params?: { limit?: number; offset?: number }) => {
     const query = new URLSearchParams();
     if (params?.limit !== undefined) query.set("limit", String(params.limit));

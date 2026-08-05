@@ -7,6 +7,20 @@ from click.testing import CliRunner
 
 from valcore.cli import skills as skills_mod
 from valcore.cli.main import cli
+from valcore.errors import ContractError
+from valcore.models import Dataset, EvaluatorVersion, ScoreKind, check_dataset_compatibility
+
+
+def _skill_body() -> str:
+    """Return the text of the packaged ``use-valcore`` SKILL.md."""
+    directory = dict(skills_mod.packaged_skills())["use-valcore"]
+    return (directory / "SKILL.md").read_text()
+
+
+def _reference_body() -> str:
+    """Return the text of the packaged ``use-valcore`` reference.md (CLI reference)."""
+    directory = dict(skills_mod.packaged_skills())["use-valcore"]
+    return (directory / "reference.md").read_text()
 
 
 @pytest.fixture
@@ -60,6 +74,107 @@ def test_skill_documents_the_gateway_setup() -> None:
     assert "PYDANTIC_AI_GATEWAY_API_KEY" in body
     assert "valcore config set-key" in body
     assert "gateway/anthropic:claude-sonnet-5" in body
+
+
+# -- seeded generation content ------------------------------------------------
+#
+# These guard against the drift the skill update fixes: the packaged prose must
+# describe seeded generation as merged, not as it was before it existed.
+
+
+def test_skill_documents_generating_a_dataset_from_an_evaluator_version() -> None:
+    """One direction of seeded generation: shape the dataset from a version."""
+    body = _skill_body().lower()
+    assert "dataset from an evaluator version" in body
+
+
+def test_skill_documents_generating_an_evaluator_from_a_dataset() -> None:
+    """The other direction: seed an evaluator's columns from a dataset."""
+    body = _skill_body().lower()
+    assert "evaluator from a dataset" in body
+
+
+def test_skill_says_labels_are_optional_and_only_needed_for_validation() -> None:
+    """A dataset needs no labels to be scored; labels gate validation runs only."""
+    body = _skill_body().lower()
+    # The claim must tie "optional" labels to the validation-only requirement, not
+    # merely mention validation somewhere in the file.
+    only_for_validation = (
+        "required only for" in body
+        or "only required for" in body
+        or "only for a validation" in body
+        or "only for validation" in body
+    )
+    assert only_for_validation, "skill should say labels are required only for validation runs"
+
+
+def test_skill_still_documents_the_gateway_and_compatibility_rules() -> None:
+    """The update must not drop the material the earlier tests already guard."""
+    body = _skill_body()
+    assert "PYDANTIC_AI_GATEWAY_API_KEY" in body
+    assert "Compatibility rules" in body
+
+
+def test_unlabeled_dataset_claim_is_backed_by_check_dataset_compatibility() -> None:
+    """Tie the skill's unlabeled-dataset prose to real behavior so they cannot diverge.
+
+    An empty ``label_schema`` is the legal "no ground truth" state: as long as the
+    required columns are present, the dataset stays runnable against the version.
+    """
+    version = EvaluatorVersion(
+        evaluator_id="ev",
+        version_name="v1",
+        model="gateway/anthropic:claude-sonnet-5",
+        instructions="Score the answer.",
+        prompt_template="{answer}",
+        required_columns=["answer"],
+        score_field="score",
+        score_kind=ScoreKind.CATEGORICAL,
+        score_labels=["pass", "fail"],
+    )
+    dataset = Dataset(name="unlabeled", columns=["answer"], label_schema={})
+
+    # Must not raise: no label space means nothing to reconcile with the score space.
+    check_dataset_compatibility(version, dataset)
+
+
+def test_empty_label_schema_does_not_waive_the_required_columns_check() -> None:
+    """Back the corrected prose: an empty schema skips checks 2/3 but not check 1.
+
+    The skill now states an unlabeled dataset "still must satisfy check 1: the
+    evaluator's required_columns must be present." Guard that so the wording cannot
+    over-relax into "runs against any evaluator" again.
+    """
+    version = EvaluatorVersion(
+        evaluator_id="ev",
+        version_name="v1",
+        model="gateway/anthropic:claude-sonnet-5",
+        instructions="Score the answer.",
+        prompt_template="{answer}",
+        required_columns=["answer"],
+        score_field="score",
+        score_kind=ScoreKind.CATEGORICAL,
+        score_labels=["pass", "fail"],
+    )
+    # Empty label schema, but the required column is absent.
+    dataset = Dataset(name="wrong-shape", columns=["question"], label_schema={})
+
+    with pytest.raises(ContractError):
+        check_dataset_compatibility(version, dataset)
+
+
+# -- reference.md (CLI) content -----------------------------------------------
+#
+# Seeded generation is API/web only. The CLI reference must say so plainly and must
+# not invent a command or flag for it -- the worst outcome named in the task.
+
+
+def test_reference_notes_seeded_generation_is_not_in_the_cli() -> None:
+    """The CLI reference points agents away from hunting for a flag that does not exist."""
+    body = _reference_body()
+    assert "Not in the CLI" in body
+    # The table of contents at the top must link the new section, or it drifts.
+    assert "#not-in-the-cli" in body
 
 
 # -- target resolution --------------------------------------------------------

@@ -35,6 +35,8 @@ export interface LabelSchema {
   maximum: number | null;
 }
 
+export type EmptyLabelSchema = Record<string, never>;
+
 export interface Evaluator {
   id: string;
   created_at: string;
@@ -70,7 +72,7 @@ export interface Dataset {
   name: string;
   description: string;
   columns: string[];
-  label_schema: LabelSchema;
+  label_schema: LabelSchema | EmptyLabelSchema;
 }
 
 export interface DatasetRow {
@@ -243,4 +245,20 @@ export interface DatasetUpdate {
 export interface EvaluatorUpdate {
   name?: string;
   description?: string;
+}
+
+// Seeded generation: derive a dataset's shape from an evaluator version. The
+// version's `required_columns` are always included; `extra_columns` add explicit
+// user-named columns and `column_notes`/`instructions`/`label_guidance` steer the
+// generated content and (opt-in) suggested labels.
+export interface DatasetGenerateFromVersion {
+  version_id: string;
+  name: string;
+  description?: string;
+  instructions?: string;
+  extra_columns?: string[];
+  column_notes?: Record<string, string>;
+  include_labels?: boolean;
+  label_guidance?: string;
+  count: number;
 }

@@ -314,6 +314,12 @@ def check_dataset_compatibility(version: EvaluatorVersion, dataset: Dataset) -> 
             f"it has columns {dataset.columns}."
         )
 
+    # An empty label schema is the legal "no ground truth" state: the dataset asserts no
+    # label space, so there is nothing to reconcile with the evaluator's score space and
+    # the dataset stays runnable (only VALIDATION runs require labels).
+    if not dataset.label_schema:
+        return
+
     schema = LabelSchema.model_validate(dataset.label_schema)
 
     if schema.kind is not version.score_kind:

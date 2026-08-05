@@ -14,6 +14,7 @@ from valcore.datagen import generate_rows
 from valcore.errors import ContractError
 from valcore.models import LabelSchema, LabelSource
 from valcore.schema_migration import label_matches_schema
+from valcore.seeding import dataset_shape_from_version
 from valcore.store import Store
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
@@ -35,12 +36,37 @@ class DatasetCreate(BaseModel):
 
 
 class DatasetGenerate(BaseModel):
-    """Request body to generate a dataset and its rows."""
+    """Request body to generate a dataset and its rows.
+
+    ``description`` is always stored on the dataset. ``instructions``, when present,
+    steer generation instead; when absent, ``description`` drives generation too, keeping
+    older callers that never sent detailed guidance behaving exactly as before.
+    """
 
     name: str
     description: str = ""
+    instructions: str | None = None
     columns: list[str]
     label_schema: LabelSchema
+    count: int
+
+
+class DatasetGenerateFromVersion(BaseModel):
+    """Request body to generate a dataset shaped by an evaluator version.
+
+    The column set and label space derive from ``version_id`` so the result runs against
+    that version by construction; the free-text fields only steer generated content.
+    ``instructions`` drive generation while ``description`` is what gets stored.
+    """
+
+    version_id: str
+    name: str
+    description: str = ""
+    instructions: str | None = None
+    extra_columns: list[str] = []
+    column_notes: dict[str, str] | None = None
+    include_labels: bool = True
+    label_guidance: str | None = None
     count: int
 
 
@@ -285,7 +311,10 @@ async def generate_dataset(body: DatasetGenerate, store: StoreDep) -> DatasetCre
         columns=body.columns,
         label_schema=body.label_schema.model_dump(mode="json"),
     )
-    generated = await generate_rows(body.description, body.columns, body.label_schema, body.count)
+    # ``instructions`` steer generation when supplied; otherwise the stored description
+    # doubles as the prompt, preserving the pre-``instructions`` behaviour.
+    prompt = body.instructions if body.instructions is not None else body.description
+    generated = await generate_rows(prompt, body.columns, body.label_schema, body.count)
     prepared = [
         {
             "data": row.data,
@@ -295,6 +324,65 @@ async def generate_dataset(body: DatasetGenerate, store: StoreDep) -> DatasetCre
         }
         for row in generated
     ]
+    rows = store.add_prepared_rows(dataset.id, prepared)
+    return DatasetCreatedOut(dataset=DatasetOut.model_validate(dataset), row_count=len(rows))
+
+
+@router.post("/generate-from-version")
+async def generate_dataset_from_version(
+    body: DatasetGenerateFromVersion, store: StoreDep
+) -> DatasetCreatedOut:
+    """Generate a dataset shaped by an evaluator version, runnable against it by construction."""
+    if body.count > _MAX_GENERATE_COUNT:
+        raise ContractError(f"count may not exceed {_MAX_GENERATE_COUNT}.")
+
+    # A missing id surfaces as the store's NotFoundError (404), never a silent empty shape.
+    version = store.get_version(body.version_id)
+    columns, label_schema = dataset_shape_from_version(version, body.extra_columns)
+
+    # Guidance on how to assign labels is meaningless with no label space; refuse rather
+    # than drop it, so the contradiction is never hidden from the caller.
+    if body.label_guidance is not None and not body.include_labels:
+        raise ContractError("label_guidance requires include_labels to be true.")
+
+    if body.column_notes:
+        unknown = [key for key in body.column_notes if key not in columns]
+        if unknown:
+            raise ContractError(
+                f"column_notes references column(s) {unknown} not in the dataset's columns "
+                f"{columns}."
+            )
+
+    # Without labels the dataset carries no ground truth: an empty schema is the legal
+    # "no ground truth" state, and the generator is told there is no label space to fill.
+    stored_schema = label_schema.model_dump(mode="json") if body.include_labels else {}
+    generation_schema = label_schema if body.include_labels else None
+
+    dataset = store.create_dataset(
+        name=body.name,
+        description=body.description,
+        columns=columns,
+        label_schema=stored_schema,
+    )
+    prompt = body.instructions if body.instructions is not None else body.description
+    generated = await generate_rows(
+        prompt,
+        columns,
+        generation_schema,
+        body.count,
+        column_notes=body.column_notes,
+        label_guidance=body.label_guidance,
+    )
+    prepared: list[dict] = []
+    for row in generated:
+        fields: dict = {
+            "data": row.data,
+            "label_reasoning": row.reasoning,
+            "label_source": LabelSource.GENERATED,
+        }
+        if body.include_labels:
+            fields["suggested_label"] = {"value": row.suggested_label}
+        prepared.append(fields)
     rows = store.add_prepared_rows(dataset.id, prepared)
     return DatasetCreatedOut(dataset=DatasetOut.model_validate(dataset), row_count=len(rows))
 
