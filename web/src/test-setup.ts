@@ -13,6 +13,14 @@ expect.extend({
       message: () => `expected element ${disabled ? "not " : ""}to be disabled`,
     };
   },
+  toBeInTheDocument(received: unknown) {
+    const element = received instanceof HTMLElement ? received : null;
+    const pass = element !== null && element.ownerDocument.contains(element);
+    return {
+      pass,
+      message: () => `expected element ${pass ? "not " : ""}to be in the document`,
+    };
+  },
   toHaveTextContent(received: unknown, expected: string) {
     const text = received instanceof HTMLElement ? (received.textContent ?? "") : "";
     const pass = text.includes(expected);
@@ -39,11 +47,13 @@ declare module "vitest" {
   // The type parameter must match vitest's own `Assertion` declaration exactly.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   interface Assertion<T = any> {
+    toBeInTheDocument(): T;
     toBeDisabled(): T;
     toHaveTextContent(expected: string): T;
     toHaveAttribute(name: string, expected?: string): T;
   }
   interface AsymmetricMatchersContaining {
+    toBeInTheDocument(): void;
     toBeDisabled(): void;
     toHaveTextContent(expected: string): void;
     toHaveAttribute(name: string, expected?: string): void;
