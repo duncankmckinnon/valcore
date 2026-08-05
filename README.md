@@ -6,6 +6,24 @@
   >
 </p>
 
+<p align="center">
+  <a href="https://pypi.org/project/valcore/">
+    <img src="https://img.shields.io/pypi/v/valcore?logo=pypi&logoColor=white&label=pypi" alt="PyPI version">
+  </a>
+  <a href="https://pypi.org/project/valcore/">
+    <img src="https://img.shields.io/pypi/pyversions/valcore?logo=python&logoColor=white" alt="Supported Python versions">
+  </a>
+  <a href="https://github.com/duncankmckinnon/valcore/actions/workflows/test.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/duncankmckinnon/valcore/test.yml?branch=main&logo=githubactions&logoColor=white&label=tests" alt="Test status">
+  </a>
+  <a href="https://codecov.io/gh/duncankmckinnon/valcore">
+    <img src="https://img.shields.io/codecov/c/github/duncankmckinnon/valcore?logo=codecov&logoColor=white" alt="Coverage">
+  </a>
+  <a href="https://github.com/pre-commit/pre-commit">
+    <img src="https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white" alt="pre-commit enabled">
+  </a>
+</p>
+
 <!--
 Absolute raw.githubusercontent URL rather than a relative path: this README is the
 PyPI long_description, and PyPI resolves relative paths against pypi.org, so a

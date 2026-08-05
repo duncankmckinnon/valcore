@@ -36,6 +36,7 @@ valcore = "valcore.cli:main"
 dev = [
     "pytest",
     "pytest-asyncio",
+    "pytest-cov",
     "anyio",
     "httpx",
     # Pinned to a minor range: pre-commit shells out to this same ruff, so an
