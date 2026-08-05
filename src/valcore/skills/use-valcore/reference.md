@@ -1,11 +1,6 @@
----
-name: valcore-cli
-description: Reference for every valcore CLI command and flag — version, serve, list, run, export, config, and skills — plus database resolution and exit codes. Use when you need exact valcore command syntax rather than conceptual guidance.
----
-
 # valcore CLI reference
 
-Concepts and workflow live in the `using-valcore` skill. This is syntax.
+Syntax only. Concepts, workflow, and gateway setup are in `SKILL.md` alongside this file.
 
 ## Global
 
@@ -19,21 +14,21 @@ valcore [--db FILE] [--version] COMMAND [ARGS]...
 | `--version` | Print the version and exit. Same string as `valcore version`. |
 
 **Watch the name collision:** at the top level `--version` prints the tool version, but
-on `run` and `export` `--version` names an *evaluator version*. They are different
-flags at different levels.
+on `run` and `export` `--version` names an *evaluator version*. Different flags at
+different levels.
 
 ### Database resolution
 
 The database path comes from settings unless `--db` overrides it. If a `valcore.db`
-exists in the working directory but is **not** the active database, valcore prints a
-note on stderr telling you to pass `--db valcore.db`. It does not switch silently.
+exists in the working directory but is **not** the active database, valcore prints a note
+on stderr telling you to pass `--db valcore.db`. It does not switch silently.
 
 ## Commands
 
 ### `valcore version`
 
-Prints the installed version. Falls back to the built-in version file when running from
-a source checkout with nothing installed, so it does not crash.
+Prints the installed version. Falls back to the built-in version file when running from a
+source checkout with nothing installed, so it does not crash.
 
 ### `valcore serve`
 
@@ -66,8 +61,8 @@ Runs an evaluator version over a dataset.
 
 `EVALUATOR` and `DATASET` resolve by exact name first, then by unique id prefix.
 
-`--kind validation` requires every row to carry a label and fails outright if any row
-is unlabeled. `--min-accuracy` combined with `--kind validation` is the CI pattern.
+`--kind validation` requires every row to carry a label and fails outright if any row is
+unlabeled. `--kind validation --min-accuracy 0.9` is the CI pattern.
 
 ### `valcore export EVALUATOR`
 
@@ -82,7 +77,7 @@ Exports an evaluator version as a standalone Python script.
 
 | Subcommand | Purpose |
 |---|---|
-| `set-key [KEY]` | Store the gateway API key. Prompts hidden if omitted. |
+| `set-key [KEY]` | Store the Pydantic AI gateway key. Prompts hidden if omitted. |
 | `get [--show-key] [--json]` | Show config. The key is masked unless `--show-key`. |
 | `path` | Print the config file path. |
 | `edit` | Open the config file in `$EDITOR`. |
@@ -105,8 +100,8 @@ valcore skills list [--global]
 | `--copilot` | `.github/skills/` | `~/.github/skills/` |
 | `--all` | every directory above | every directory above |
 
-Flags are additive and nothing is implicit — `--claude --copilot` writes exactly those
-two directories and does not also touch `.agents/`.
+Flags are additive and nothing is implicit — `--claude --copilot` writes exactly those two
+directories and does not also touch `.agents/`.
 
 | Option | Meaning |
 |---|---|
@@ -116,6 +111,32 @@ two directories and does not also touch `.agents/`.
 
 Copy mode skips a skill whose content is already byte-identical, and prompts before
 overwriting one you have edited. `--symlink` always replaces.
+
+## Configuration
+
+`~/.valcore/config.toml`, or `$VALCORE_HOME/config.toml`. Written with mode `0600`.
+
+| Key | Meaning |
+|---|---|
+| `gateway_api_key` | Pydantic AI gateway key, exported as `PYDANTIC_AI_GATEWAY_API_KEY`. |
+| `model` | Default model, as `gateway/<provider>:<model>`. |
+| `port` | Default port for `serve`. |
+| `concurrency` | Default max concurrent rows. |
+| `db_path` | Default database path. |
+
+### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `PYDANTIC_AI_GATEWAY_API_KEY` | Gateway key. Overrides the stored one when set. |
+| `VALCORE_HOME` | Home directory. Defaults to `~/.valcore`. |
+| `VALCORE_DEFAULT_MODEL` | Default model. |
+| `VALCORE_DEFAULT_CONCURRENCY` | Default max concurrent rows. |
+| `VALCORE_DB_PATH` | Database path. |
+| `VALCORE_LOGFIRE_ENABLED` | Enable Logfire instrumentation. |
+
+Precedence, highest first: explicit argument, `VALCORE_*` environment variable,
+`config.toml`, built-in default.
 
 ## Exit codes
 

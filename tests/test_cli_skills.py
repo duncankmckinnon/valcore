@@ -37,15 +37,29 @@ def _run(args: list[str], cwd: Path) -> object:
 
 
 def test_real_skills_are_packaged() -> None:
-    """The shipped skills must be discoverable, or the wheel is broken."""
+    """The shipped skill must be discoverable, or the wheel is broken."""
     names = [name for name, _ in skills_mod.packaged_skills()]
-    assert "using-valcore" in names
-    assert "valcore-cli" in names
+    assert names == ["use-valcore"]
 
 
 def test_packaged_skills_all_have_a_skill_md() -> None:
     for _name, directory in skills_mod.packaged_skills():
         assert (directory / "SKILL.md").is_file()
+
+
+def test_cli_reference_ships_alongside_the_skill() -> None:
+    """The reference is a sibling file, so installing the skill must carry it."""
+    directory = dict(skills_mod.packaged_skills())["use-valcore"]
+    assert (directory / "reference.md").is_file()
+
+
+def test_skill_documents_the_gateway_setup() -> None:
+    """Nothing runs without a gateway key, so the skill has to say so."""
+    directory = dict(skills_mod.packaged_skills())["use-valcore"]
+    body = (directory / "SKILL.md").read_text()
+    assert "PYDANTIC_AI_GATEWAY_API_KEY" in body
+    assert "valcore config set-key" in body
+    assert "gateway/anthropic:claude-sonnet-5" in body
 
 
 # -- target resolution --------------------------------------------------------
