@@ -11,6 +11,7 @@ from valcore.models import (
     VALID_CAPABILITIES,
     CapabilitySpec,
     EvaluatorVersion,
+    LabelSchema,
     OutputField,
     ScoreKind,
     validate_version,
@@ -161,19 +162,77 @@ async def _produce(
     return result.output
 
 
+def _columns_section(columns: list[str] | None, column_notes: dict[str, str] | None) -> str:
+    """Render the available-columns block, annotating each column's role when given.
+
+    Roles steer both `required_columns` and the `{column}` placeholders, so the
+    full column set (bare `columns` plus any keys in `column_notes`) is listed;
+    an annotated column that is context-only or ignored can then be excluded by
+    the model from both.
+    """
+    if not columns and not column_notes:
+        return ""
+    if not column_notes:
+        # Preserve the pre-existing plain listing when no roles are supplied.
+        return f"\n\nAvailable dataset columns: {columns}"
+    # Union without losing the caller's ordering: listed columns first, then any
+    # annotated column not already named in `columns`.
+    ordered = list(columns or [])
+    for name in column_notes:
+        if name not in ordered:
+            ordered.append(name)
+    lines = [
+        f"  - {name}: {column_notes[name]}" if name in column_notes else f"  - {name}"
+        for name in ordered
+    ]
+    return "\n\nAvailable dataset columns and how each factors into the assessment:\n" + "\n".join(
+        lines
+    )
+
+
+def _score_space_section(label_schema: LabelSchema | None) -> str:
+    """Render the score-space constraint the config must honour, if one is given.
+
+    Kept as prompt text only: the constraint is stated, never enforced by
+    post-processing the agent's output.
+    """
+    if label_schema is None:
+        return ""
+    if label_schema.kind is ScoreKind.CATEGORICAL:
+        return (
+            "\n\nScore-space constraint (the generated config must honour it exactly):\n"
+            "  - `score_kind` must be categorical.\n"
+            f"  - `score_labels` must equal these labels exactly: {label_schema.labels}."
+        )
+    return (
+        "\n\nScore-space constraint (the generated config must honour it exactly):\n"
+        "  - `score_kind` must be numeric.\n"
+        f"  - the score bounds must match: minimum {label_schema.minimum}, "
+        f"maximum {label_schema.maximum}."
+    )
+
+
 async def generate_config(
     criteria: str,
     *,
     columns: list[str] | None = None,
+    column_notes: dict[str, str] | None = None,
+    label_schema: LabelSchema | None = None,
     model: str | None = None,
     agent: Agent | None = None,
 ) -> GeneratedConfig:
-    """Generate a complete evaluator config from natural-language criteria."""
+    """Generate a complete evaluator config from natural-language criteria.
+
+    `column_notes` steers which columns become `required_columns` and which
+    `{column}` placeholders appear; `label_schema` states the required score
+    space as a constraint. Both are prompt steering only — the validate + single
+    retry contract is unchanged.
+    """
     resolved_model = model or get_settings().default_model
     agent = agent or build_generator_agent(resolved_model)
     prompt = f"Criteria:\n{criteria}"
-    if columns:
-        prompt += f"\n\nAvailable dataset columns: {columns}"
+    prompt += _columns_section(columns, column_notes)
+    prompt += _score_space_section(label_schema)
     return await _produce(agent, prompt, resolved_model, lambda out: out)
 
 
