@@ -36,6 +36,13 @@ vi.mock("../components/VersionEditor", () => ({
   ),
 }));
 
+// The generate-dataset modal is stubbed to a marker so this file tests only that
+// EvaluatorDetail opens it, bound to the selected version.
+vi.mock("../components/DatasetFromEvaluator", () => ({
+  default: ({ open, version }: { open: boolean; version: EvaluatorVersion }) =>
+    open ? <div>Generate dataset modal for {version.id}</div> : null,
+}));
+
 vi.mock("../api/client", async () => {
   const actual = await vi.importActual<typeof import("../api/client")>("../api/client");
   return {
@@ -220,6 +227,22 @@ describe("EvaluatorDetail: delete version", () => {
     // The confirm button is still present, so the dialog did not close, and no reload ran.
     expect(screen.getByRole("button", { name: "Delete" })).toBeTruthy();
     expect(evaluators.get).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("EvaluatorDetail: generate dataset", () => {
+  it("opens the generate-dataset modal bound to the selected version", async () => {
+    vi.mocked(api).mockResolvedValue(config);
+    vi.mocked(evaluators.get).mockResolvedValue(
+      makeDetail({ active_version_id: "v1", versions: [makeVersion({ id: "v1" })] }),
+    );
+    const user = userEvent.setup();
+    renderDetail();
+
+    await screen.findByText("Editing version v1");
+    await user.click(screen.getByRole("button", { name: "Generate dataset" }));
+
+    expect(screen.getByText("Generate dataset modal for v1")).toBeTruthy();
   });
 });
 
