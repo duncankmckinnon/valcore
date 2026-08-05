@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, evaluators } from "../api/client";
 import type { EvaluatorVersion } from "../api/types";
+import DatasetFromEvaluator from "../components/DatasetFromEvaluator";
 import { ExportModal } from "../components/ExportModal";
 import type { AppConfig } from "../components/VersionEditor";
 import { VersionEditor } from "../components/VersionEditor";
@@ -35,6 +36,7 @@ export default function EvaluatorDetail({ id }: EvaluatorDetailProps) {
   const [error, setError] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
+  const [generating, setGenerating] = useState(false);
 
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState("");
@@ -244,6 +246,13 @@ export default function EvaluatorDetail({ id }: EvaluatorDetailProps) {
             </Button>
             <Button
               variant="secondary"
+              onClick={() => setGenerating(true)}
+              disabled={showDraft || !selected}
+            >
+              Generate dataset
+            </Button>
+            <Button
+              variant="secondary"
               onClick={() => setDeleteVersionOpen(true)}
               disabled={showDraft || !selected}
             >
@@ -291,6 +300,15 @@ export default function EvaluatorDetail({ id }: EvaluatorDetailProps) {
           evaluatorId={detail.id}
           versionId={selected.id}
           onClose={() => setExporting(false)}
+        />
+      )}
+
+      {!showDraft && selected && generating && (
+        <DatasetFromEvaluator
+          open={generating}
+          version={selected}
+          maxCount={200}
+          onClose={() => setGenerating(false)}
         />
       )}
 

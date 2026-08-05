@@ -41,6 +41,28 @@ expect.extend({
         (expected === undefined ? "" : ` with value "${expected}" (got "${actual}")`),
     };
   },
+  toBeChecked(received: unknown) {
+    const pass = received instanceof HTMLInputElement && received.checked === true;
+    return {
+      pass,
+      message: () => `expected checkbox ${pass ? "not " : ""}to be checked`,
+    };
+  },
+  toHaveValue(received: unknown, expected: string | number) {
+    const element =
+      received instanceof HTMLInputElement ||
+      received instanceof HTMLTextAreaElement ||
+      received instanceof HTMLSelectElement
+        ? received
+        : null;
+    const actual = element?.value ?? null;
+    const pass = actual !== null && actual === String(expected);
+    return {
+      pass,
+      message: () =>
+        `expected element value ${pass ? "not " : ""}to be "${expected}" (got "${actual}")`,
+    };
+  },
 });
 
 declare module "vitest" {
@@ -51,12 +73,16 @@ declare module "vitest" {
     toBeDisabled(): T;
     toHaveTextContent(expected: string): T;
     toHaveAttribute(name: string, expected?: string): T;
+    toBeChecked(): T;
+    toHaveValue(expected: string | number): T;
   }
   interface AsymmetricMatchersContaining {
     toBeInTheDocument(): void;
     toBeDisabled(): void;
     toHaveTextContent(expected: string): void;
     toHaveAttribute(name: string, expected?: string): void;
+    toBeChecked(): void;
+    toHaveValue(expected: string | number): void;
   }
 }
 
