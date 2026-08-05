@@ -9,7 +9,12 @@ import copy
 
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelResponse,
+    ToolCallPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from valcore.errors import ConfigError
@@ -19,6 +24,7 @@ from valcore.generator import (
     generate_config,
     refine_config,
 )
+from valcore.models import LabelSchema, ScoreKind
 
 # A structurally- and semantically-valid GeneratedConfig payload: reasoning
 # field precedes the enum score field, labels match the enum values.
@@ -86,6 +92,51 @@ def refiner_agent(payloads: list[dict]) -> tuple[Agent, CountingModel]:
     """Build a refiner-typed agent backed by canned RefinedConfig payloads."""
     counter = CountingModel(payloads)
     return Agent(counter.model(), output_type=RefinedConfig), counter
+
+
+def _latest_user_prompt(messages: list[ModelMessage]) -> str:
+    """Return the most recent user-prompt text carried in ``messages``."""
+    for message in reversed(messages):
+        for part in getattr(message, "parts", []):
+            if isinstance(part, UserPromptPart) and isinstance(part.content, str):
+                return part.content
+    return ""
+
+
+class CapturingModel:
+    """A FunctionModel wrapper that records the prompt text of each invocation.
+
+    The generator options are expressed entirely as prompt text, so the tests
+    assert on what the agent actually receives rather than on any post-processed
+    output. ``prompts`` holds the user-prompt string seen on every call, letting a
+    retry's amended prompt be inspected too.
+    """
+
+    def __init__(self, payloads: list[dict]) -> None:
+        self.payloads = payloads
+        self.prompts: list[str] = []
+
+    @property
+    def calls(self) -> int:
+        """Number of times the backing model was invoked."""
+        return len(self.prompts)
+
+    def model(self) -> FunctionModel:
+        """Return a FunctionModel that captures each prompt then emits a payload."""
+
+        def fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            payload = self.payloads[min(len(self.prompts), len(self.payloads) - 1)]
+            self.prompts.append(_latest_user_prompt(messages))
+            tool = info.output_tools[0]
+            return ModelResponse(parts=[ToolCallPart(tool_name=tool.name, args=payload)])
+
+        return FunctionModel(fn)
+
+
+def capturing_generator_agent(payloads: list[dict]) -> tuple[Agent, CapturingModel]:
+    """Build a generator-typed agent that records the prompt it is handed."""
+    capture = CapturingModel(payloads)
+    return Agent(capture.model(), output_type=GeneratedConfig), capture
 
 
 @pytest.mark.anyio
@@ -165,6 +216,135 @@ async def test_refine_returns_full_config_with_changed_fields() -> None:
     assert isinstance(result.config, GeneratedConfig)
     assert result.config.score_field == "verdict"
     assert result.config.instructions == "Sharper rubric. Explain, then score."
+
+
+@pytest.mark.anyio
+async def test_column_notes_roles_appear_in_prompt() -> None:
+    """Each column's role from ``column_notes`` is stated in the prompt verbatim."""
+    agent, capture = capturing_generator_agent([VALID_CONFIG])
+
+    await generate_config(
+        "Judge answer correctness.",
+        column_notes={
+            "question": "the user's request; context only, not the thing being judged",
+            "answer": "the text being assessed",
+            "locale": "ignore for scoring",
+        },
+        agent=agent,
+    )
+
+    prompt = capture.prompts[0]
+    assert "question" in prompt
+    assert "the user's request; context only, not the thing being judged" in prompt
+    assert "answer" in prompt
+    assert "the text being assessed" in prompt
+    assert "locale" in prompt
+    assert "ignore for scoring" in prompt
+
+
+@pytest.mark.anyio
+async def test_column_without_note_still_listed_in_prompt() -> None:
+    """A column in ``columns`` but missing from ``column_notes`` still appears."""
+    agent, capture = capturing_generator_agent([VALID_CONFIG])
+
+    await generate_config(
+        "Judge answer correctness.",
+        columns=["question", "answer", "locale"],
+        column_notes={"question": "the text being assessed"},
+        agent=agent,
+    )
+
+    prompt = capture.prompts[0]
+    # The annotated column carries its role, and the bare columns are not dropped.
+    assert "the text being assessed" in prompt
+    assert "answer" in prompt
+    assert "locale" in prompt
+
+
+@pytest.mark.anyio
+async def test_no_column_notes_keeps_current_prompt_form() -> None:
+    """With ``column_notes=None`` the prompt keeps its existing columns form."""
+    agent, capture = capturing_generator_agent([VALID_CONFIG])
+
+    await generate_config(
+        "Judge answer correctness.",
+        columns=["question", "answer"],
+        agent=agent,
+    )
+
+    prompt = capture.prompts[0]
+    # The pre-existing behavior: a plain "Available dataset columns" listing with
+    # no per-column role annotations introduced by the new option.
+    assert "Available dataset columns" in prompt
+    assert "question" in prompt
+    assert "answer" in prompt
+    assert "how each factors into the assessment" not in prompt
+
+
+@pytest.mark.anyio
+async def test_categorical_label_schema_states_labels_as_constraint() -> None:
+    """A categorical ``label_schema`` puts its labels in the prompt as a constraint."""
+    agent, capture = capturing_generator_agent([VALID_CONFIG])
+
+    await generate_config(
+        "Judge answer correctness.",
+        label_schema=LabelSchema(kind=ScoreKind.CATEGORICAL, labels=["good", "bad"]),
+        agent=agent,
+    )
+
+    prompt = capture.prompts[0]
+    assert "categorical" in prompt.lower()
+    assert "good" in prompt
+    assert "bad" in prompt
+
+
+@pytest.mark.anyio
+async def test_numeric_label_schema_states_bounds_as_constraint() -> None:
+    """A numeric ``label_schema`` with bounds states those bounds in the prompt."""
+    agent, capture = capturing_generator_agent([VALID_CONFIG])
+
+    await generate_config(
+        "Judge answer correctness.",
+        label_schema=LabelSchema(kind=ScoreKind.NUMERIC, minimum=1.0, maximum=5.0),
+        agent=agent,
+    )
+
+    prompt = capture.prompts[0]
+    assert "numeric" in prompt.lower()
+    assert "1" in prompt
+    assert "5" in prompt
+
+
+@pytest.mark.anyio
+async def test_no_label_schema_states_no_score_space_constraint() -> None:
+    """With ``label_schema=None`` the prompt imposes no score-space constraint."""
+    agent, capture = capturing_generator_agent([VALID_CONFIG])
+
+    await generate_config("Judge answer correctness.", agent=agent)
+
+    prompt = capture.prompts[0]
+    # No categorical/numeric score-space constraint is stated when unconstrained.
+    assert "score_labels must" not in prompt
+    assert "score_kind must" not in prompt
+
+
+@pytest.mark.anyio
+async def test_generator_options_survive_the_single_retry() -> None:
+    """The options are steering text only: an invalid first config still retries once."""
+    agent, capture = capturing_generator_agent([INVALID_CONFIG, VALID_CONFIG])
+
+    result = await generate_config(
+        "Judge answer correctness.",
+        column_notes={"question": "the text being assessed"},
+        label_schema=LabelSchema(kind=ScoreKind.CATEGORICAL, labels=["pass", "fail"]),
+        agent=agent,
+    )
+
+    assert capture.calls == 2  # one retry, not a loop
+    assert result.score_field == "verdict"
+    # The steering context is preserved into the retry prompt, not discarded.
+    assert "the text being assessed" in capture.prompts[1]
+    assert "pass" in capture.prompts[1]
 
 
 @pytest.mark.anyio
