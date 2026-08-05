@@ -728,6 +728,35 @@ async def test_generate_column_notes_valid_against_columns(app, monkeypatch) -> 
     assert calls[0]["column_notes"] == {"answer": "focus on the answer"}
 
 
+@pytest.mark.anyio
+async def test_generate_column_notes_valid_against_dataset_columns(
+    app, store: Store, monkeypatch
+) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    dataset = store.create_dataset(
+        "ds", "", ["question", "answer"], {"kind": "categorical", "labels": ["good", "bad"]}
+    )
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={
+                "criteria": "grade it",
+                "dataset_id": dataset.id,
+                "column_notes": {"answer": "focus on the answer"},
+            },
+        )
+
+    # A note validated against a dataset-derived column set is accepted and forwarded
+    # alongside the seeded columns and label space.
+    assert response.status_code == 200
+    assert calls[0]["columns"] == ["question", "answer"]
+    assert calls[0]["column_notes"] == {"answer": "focus on the answer"}
+    assert isinstance(calls[0]["label_schema"], LabelSchema)
+
+
 # -- Generate seeded on POST /{id}/generate ------------------------------------
 
 
