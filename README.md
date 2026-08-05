@@ -6,6 +6,27 @@
   >
 </p>
 
+<p align="center">
+  <a href="https://github.com/duncankmckinnon/valcore/actions/workflows/test.yml">
+    <img src="https://github.com/duncankmckinnon/valcore/actions/workflows/test.yml/badge.svg" alt="CI">
+  </a>
+  <a href="https://codecov.io/gh/duncankmckinnon/valcore">
+    <img src="https://codecov.io/gh/duncankmckinnon/valcore/graph/badge.svg" alt="codecov">
+  </a>
+  <a href="https://pypi.org/project/valcore/">
+    <img src="https://img.shields.io/pypi/v/valcore" alt="PyPI">
+  </a>
+  <a href="https://github.com/duncankmckinnon/homebrew-tap">
+    <img src="https://img.shields.io/badge/homebrew-duncankmckinnon%2Ftap-orange?logo=homebrew" alt="Homebrew">
+  </a>
+  <a href="https://pypi.org/project/valcore/">
+    <img src="https://img.shields.io/pypi/pyversions/valcore" alt="Python">
+  </a>
+  <a href="https://github.com/duncankmckinnon/valcore/blob/main/LICENSE">
+    <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License: Apache 2.0">
+  </a>
+</p>
+
 <!--
 Absolute raw.githubusercontent URL rather than a relative path: this README is the
 PyPI long_description, and PyPI resolves relative paths against pypi.org, so a
