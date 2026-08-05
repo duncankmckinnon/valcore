@@ -219,4 +219,62 @@ describe("ColumnNotesEditor", () => {
     expect(screen.queryByLabelText("New column name")).toBeNull();
     expect(screen.queryByRole("button", { name: "Add column" })).toBeNull();
   });
+
+  it("appends a new column when Enter is pressed in the name input", async () => {
+    const onChangeExtraColumns = vi.fn();
+    const user = userEvent.setup();
+    renderStateful(
+      { lockedColumns: ["question"], extraColumns: ["context"] },
+      { onChangeExtraColumns },
+    );
+
+    await user.type(screen.getByLabelText("New column name"), "citation{Enter}");
+
+    expect(onChangeExtraColumns).toHaveBeenCalledWith(["context", "citation"]);
+  });
+
+  it("calls onChangeNotes with the merged record when an extra column's note is typed", async () => {
+    const onChangeNotes = vi.fn();
+    const user = userEvent.setup();
+    renderStateful(
+      { lockedColumns: ["question"], extraColumns: ["context"], notes: { question: "keep me" } },
+      { onChangeNotes },
+    );
+
+    await user.type(screen.getByLabelText("Note for context"), "prior turn");
+
+    expect(onChangeNotes).toHaveBeenLastCalledWith({
+      question: "keep me",
+      context: "prior turn",
+    });
+  });
+
+  it("clears the draft input after a successful add but not after a rejected one", async () => {
+    const user = userEvent.setup();
+    renderStateful({ lockedColumns: ["question"], extraColumns: [] });
+
+    const input = () => screen.getByLabelText("New column name") as HTMLInputElement;
+
+    // Rejected (duplicate of a locked column): the draft is preserved so the user can fix it.
+    await user.type(input(), "question");
+    await user.click(screen.getByRole("button", { name: "Add column" }));
+    expect(input().value).toBe("question");
+
+    // A valid add clears the draft, ready for the next name.
+    await user.clear(input());
+    await user.type(input(), "citation");
+    await user.click(screen.getByRole("button", { name: "Add column" }));
+    expect(input().value).toBe("");
+  });
+
+  it("trims surrounding whitespace from an added column name", async () => {
+    const onChangeExtraColumns = vi.fn();
+    const user = userEvent.setup();
+    renderStateful({ lockedColumns: ["question"], extraColumns: [] }, { onChangeExtraColumns });
+
+    await user.type(screen.getByLabelText("New column name"), "  citation  ");
+    await user.click(screen.getByRole("button", { name: "Add column" }));
+
+    expect(onChangeExtraColumns).toHaveBeenCalledWith(["citation"]);
+  });
 });
