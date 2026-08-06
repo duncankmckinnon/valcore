@@ -172,6 +172,25 @@ Shares become whole row counts before the model sees them, so it is told "8 rows
 no rows. `label_mix` needs a categorical label space, and on `generate-from-version` it
 needs `include_labels: true`.
 
+Whatever you asked for is **stored against the dataset**, so you never have to reconstruct
+it. `GET /api/datasets/{id}/generation` returns the instructions, column notes, label mix,
+guidance, and count that produced the rows — or `null` for a dataset that was uploaded or
+created blank. It also records `source_version_id` when the dataset was seeded from an
+evaluator, as provenance only: that version may since have changed or been deleted, so
+nothing derives shape from it.
+
+That makes topping a dataset up cheap. `POST /api/datasets/{id}/generate-rows` appends more
+rows and falls back to the stored settings, so repeating the same ask needs only a count:
+
+```json
+{"count": 10}
+```
+
+Any field you do pass overrides the stored one and becomes the new stored ask, so the next
+top-up repeats what actually ran. Shape is never overridable — the dataset's own columns and
+label space always apply, which is what keeps the new rows compatible with the existing ones
+and with any evaluator already running against them.
+
 ### 3. Validate the judge
 
 Label a dataset with what you believe the correct answers are, then run a `validation`

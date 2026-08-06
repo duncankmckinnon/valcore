@@ -1241,3 +1241,329 @@ async def test_generate_unknown_column_note_key_is_422(client: httpx.AsyncClient
         },
     )
     assert resp.status_code == 422, resp.text
+
+
+# -- Generation settings are stored and reusable -----------------------------
+
+
+@pytest.mark.anyio
+async def test_generate_stores_its_settings(client: httpx.AsyncClient, monkeypatch) -> None:
+    _install_recording_generate(monkeypatch, [])
+
+    created = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "gen",
+            "description": "some data",
+            "instructions": "be subtle",
+            "columns": ["question"],
+            "column_notes": {"question": "a support ticket"},
+            "label_schema": CATEGORICAL_SCHEMA,
+            "label_mix": {"good": 0.5, "bad": 0.5},
+            "count": 4,
+        },
+    )
+    assert created.status_code == 200, created.text
+    ds_id = created.json()["dataset"]["id"]
+
+    resp = await client.get(f"/api/datasets/{ds_id}/generation")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["instructions"] == "be subtle"
+    assert body["column_notes"] == {"question": "a support ticket"}
+    assert body["label_mix"] == {"good": 0.5, "bad": 0.5}
+    assert body["count"] == 4
+    # Nothing seeded this dataset, so there is no source version to point back at.
+    assert body["source_version_id"] is None
+
+
+@pytest.mark.anyio
+async def test_generate_from_version_stores_its_settings(
+    client: httpx.AsyncClient, store: Store, monkeypatch
+) -> None:
+    version = _make_version(store)
+    _install_recording_generate(monkeypatch, [])
+
+    created = await client.post(
+        "/api/datasets/generate-from-version",
+        json={
+            "version_id": version.id,
+            "name": "seeded",
+            "instructions": "vary the phrasing",
+            "include_labels": True,
+            "label_guidance": "partial compliance is bad",
+            "count": 3,
+        },
+    )
+    assert created.status_code == 200, created.text
+    ds_id = created.json()["dataset"]["id"]
+
+    body = (await client.get(f"/api/datasets/{ds_id}/generation")).json()
+    assert body["instructions"] == "vary the phrasing"
+    assert body["label_guidance"] == "partial compliance is bad"
+    assert body["include_labels"] is True
+    # Provenance: which version's shape this dataset was built from.
+    assert body["source_version_id"] == version.id
+
+
+@pytest.mark.anyio
+async def test_generation_is_null_for_an_uploaded_dataset(client: httpx.AsyncClient) -> None:
+    csv = b"question,answer\nq,a\n"
+    created = await client.post(
+        "/api/datasets/upload",
+        files={"file": ("data.csv", csv, "text/csv")},
+        data={"name": "uploaded"},
+    )
+    ds_id = created.json()["dataset"]["id"]
+
+    resp = await client.get(f"/api/datasets/{ds_id}/generation")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() is None
+
+
+@pytest.mark.anyio
+async def test_generation_for_missing_dataset_is_404(client: httpx.AsyncClient) -> None:
+    resp = await client.get("/api/datasets/nope/generation")
+    assert resp.status_code == 404, resp.text
+
+
+# -- Generating more rows into an existing dataset ---------------------------
+
+
+@pytest.mark.anyio
+async def test_generate_rows_falls_back_to_the_stored_settings(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    calls: list[dict] = []
+    _install_recording_generate(monkeypatch, calls)
+
+    created = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "gen",
+            "description": "some data",
+            "instructions": "be subtle",
+            "columns": ["question"],
+            "column_notes": {"question": "a support ticket"},
+            "label_schema": CATEGORICAL_SCHEMA,
+            "label_mix": {"good": 0.5, "bad": 0.5},
+            "count": 2,
+        },
+    )
+    ds_id = created.json()["dataset"]["id"]
+
+    resp = await client.post(f"/api/datasets/{ds_id}/generate-rows", json={"count": 2})
+    assert resp.status_code == 200, resp.text
+
+    # Only `count` was sent, so every steer came from the stored settings.
+    top_up = calls[-1]
+    assert top_up["description"] == "be subtle"
+    assert top_up["column_notes"] == {"question": "a support ticket"}
+    assert top_up["label_mix"] == {"good": 0.5, "bad": 0.5}
+    assert top_up["count"] == 2
+
+
+@pytest.mark.anyio
+async def test_generate_rows_appends_after_the_existing_rows(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    _install_recording_generate(monkeypatch, [])
+
+    created = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "gen",
+            "description": "d",
+            "columns": ["question"],
+            "label_schema": CATEGORICAL_SCHEMA,
+            "count": 2,
+        },
+    )
+    ds_id = created.json()["dataset"]["id"]
+
+    appended = (await client.post(f"/api/datasets/{ds_id}/generate-rows", json={"count": 3})).json()
+    assert len(appended) == 3
+    # Indices continue from the rows already there rather than restarting.
+    assert [row["idx"] for row in appended] == [2, 3, 4]
+
+    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()
+    assert rows["total"] == 5
+    for row in rows["rows"]:
+        assert row["label_source"] == LabelSource.GENERATED.value
+
+
+@pytest.mark.anyio
+async def test_generate_rows_overrides_win_over_stored_settings(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    calls: list[dict] = []
+    _install_recording_generate(monkeypatch, calls)
+
+    created = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "gen",
+            "description": "d",
+            "instructions": "original",
+            "columns": ["question"],
+            "label_schema": CATEGORICAL_SCHEMA,
+            "count": 1,
+        },
+    )
+    ds_id = created.json()["dataset"]["id"]
+
+    await client.post(
+        f"/api/datasets/{ds_id}/generate-rows",
+        json={"count": 1, "instructions": "sharper"},
+    )
+    assert calls[-1]["description"] == "sharper"
+
+    # The override becomes the new stored ask, so the next top-up repeats what ran.
+    body = (await client.get(f"/api/datasets/{ds_id}/generation")).json()
+    assert body["instructions"] == "sharper"
+
+
+@pytest.mark.anyio
+async def test_generate_rows_uses_the_datasets_own_shape(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    # Shape is not overridable: new rows must stay compatible with the existing ones.
+    calls: list[dict] = []
+    _install_recording_generate(monkeypatch, calls)
+
+    created = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "gen",
+            "description": "d",
+            "columns": ["question", "answer"],
+            "label_schema": CATEGORICAL_SCHEMA,
+            "count": 1,
+        },
+    )
+    ds_id = created.json()["dataset"]["id"]
+
+    await client.post(f"/api/datasets/{ds_id}/generate-rows", json={"count": 1})
+
+    assert calls[-1]["columns"] == ["question", "answer"]
+    assert calls[-1]["label_schema"].kind is ScoreKind.CATEGORICAL
+
+
+@pytest.mark.anyio
+async def test_generate_rows_works_for_an_uploaded_dataset(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    # No stored settings, so the dataset's description is the prompt and nothing else steers.
+    calls: list[dict] = []
+    _install_recording_generate(monkeypatch, calls)
+
+    csv = b"question\nq\n"
+    created = await client.post(
+        "/api/datasets/upload",
+        files={"file": ("data.csv", csv, "text/csv")},
+        data={"name": "uploaded"},
+    )
+    ds_id = created.json()["dataset"]["id"]
+
+    resp = await client.post(f"/api/datasets/{ds_id}/generate-rows", json={"count": 2})
+    assert resp.status_code == 200, resp.text
+    assert calls[-1]["column_notes"] is None
+    assert calls[-1]["label_mix"] is None
+
+
+@pytest.mark.anyio
+async def test_generate_rows_without_a_label_space_leaves_labels_unset(
+    client: httpx.AsyncClient, store: Store, monkeypatch
+) -> None:
+    version = _make_version(store)
+    _install_recording_generate(monkeypatch, [])
+
+    created = await client.post(
+        "/api/datasets/generate-from-version",
+        json={
+            "version_id": version.id,
+            "name": "no-labels",
+            "include_labels": False,
+            "count": 1,
+        },
+    )
+    ds_id = created.json()["dataset"]["id"]
+
+    appended = (await client.post(f"/api/datasets/{ds_id}/generate-rows", json={"count": 1})).json()
+    assert appended[0]["suggested_label"] is None
+
+
+@pytest.mark.anyio
+async def test_generate_rows_label_guidance_without_a_label_space_is_422(
+    client: httpx.AsyncClient, store: Store, monkeypatch
+) -> None:
+    version = _make_version(store)
+    _install_recording_generate(monkeypatch, [])
+
+    created = await client.post(
+        "/api/datasets/generate-from-version",
+        json={
+            "version_id": version.id,
+            "name": "no-labels",
+            "include_labels": False,
+            "count": 1,
+        },
+    )
+    ds_id = created.json()["dataset"]["id"]
+
+    resp = await client.post(
+        f"/api/datasets/{ds_id}/generate-rows",
+        json={"count": 1, "label_guidance": "partial is bad"},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.anyio
+async def test_generate_rows_unknown_column_note_key_is_422(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    _install_recording_generate(monkeypatch, [])
+
+    created = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "gen",
+            "description": "d",
+            "columns": ["question"],
+            "label_schema": CATEGORICAL_SCHEMA,
+            "count": 1,
+        },
+    )
+    ds_id = created.json()["dataset"]["id"]
+
+    resp = await client.post(
+        f"/api/datasets/{ds_id}/generate-rows",
+        json={"count": 1, "column_notes": {"quesiton": "oops"}},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.anyio
+async def test_generate_rows_count_over_cap_is_422(client: httpx.AsyncClient, monkeypatch) -> None:
+    _install_recording_generate(monkeypatch, [])
+
+    created = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "gen",
+            "description": "d",
+            "columns": ["question"],
+            "label_schema": CATEGORICAL_SCHEMA,
+            "count": 1,
+        },
+    )
+    ds_id = created.json()["dataset"]["id"]
+
+    resp = await client.post(f"/api/datasets/{ds_id}/generate-rows", json={"count": 201})
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.anyio
+async def test_generate_rows_for_missing_dataset_is_404(client: httpx.AsyncClient) -> None:
+    resp = await client.post("/api/datasets/nope/generate-rows", json={"count": 1})
+    assert resp.status_code == 404, resp.text

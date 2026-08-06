@@ -5,6 +5,7 @@ import type {
   Dataset,
   DatasetCreated,
   DatasetGenerateFromVersion,
+  DatasetGeneration,
   DatasetRow,
   DatasetStats,
   DatasetUpdate,
@@ -17,6 +18,7 @@ import type {
   LabelSchema,
   RefinedConfig,
   RowPatch,
+  RowsGenerate,
   RowsPage,
   CompareOut,
   ResultsPage,
@@ -147,6 +149,14 @@ export const datasets = {
   }) => api<DatasetCreated>("/api/datasets/generate", { method: "POST", ...jsonBody(data) }),
   generateFromVersion: (data: DatasetGenerateFromVersion) =>
     api<DatasetCreated>("/api/datasets/generate-from-version", {
+      method: "POST",
+      ...jsonBody(data),
+    }),
+  // Null for a dataset that was uploaded or created blank rather than generated.
+  generation: (id: string) =>
+    api<DatasetGeneration | null>(`/api/datasets/${id}/generation`),
+  generateRows: (id: string, data: RowsGenerate) =>
+    api<DatasetRow[]>(`/api/datasets/${id}/generate-rows`, {
       method: "POST",
       ...jsonBody(data),
     }),

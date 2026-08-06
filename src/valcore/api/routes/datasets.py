@@ -75,6 +75,21 @@ class DatasetGenerateFromVersion(BaseModel):
     count: int
 
 
+class RowsGenerate(BaseModel):
+    """Request body to generate more rows into an existing dataset.
+
+    Every field is an override: omitted ones fall back to the dataset's stored generation
+    settings, so repeating an ask needs only ``count``. The dataset's own columns and label
+    space are never overridable — they are what makes the new rows fit the existing ones.
+    """
+
+    count: int
+    instructions: str | None = None
+    column_notes: dict[str, str] | None = None
+    label_mix: dict[str, float] | None = None
+    label_guidance: str | None = None
+
+
 class RowsAppend(BaseModel):
     """Request body to append plain data rows to a dataset."""
 
@@ -120,6 +135,20 @@ class DatasetCreatedOut(BaseModel):
 
     dataset: DatasetOut
     row_count: int
+
+
+class DatasetGenerationOut(BaseModel):
+    """The stored generation settings for a dataset, as returned to the client."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    count: int
+    instructions: str | None
+    column_notes: dict | None
+    label_mix: dict | None
+    label_guidance: str | None
+    include_labels: bool
+    source_version_id: str | None
 
 
 class RowOut(BaseModel):
@@ -355,6 +384,13 @@ async def generate_dataset(body: DatasetGenerate, store: StoreDep) -> DatasetCre
         for row in generated
     ]
     rows = store.add_prepared_rows(dataset.id, prepared)
+    store.set_generation(
+        dataset.id,
+        count=body.count,
+        instructions=body.instructions,
+        column_notes=body.column_notes,
+        label_mix=body.label_mix,
+    )
     return DatasetCreatedOut(dataset=DatasetOut.model_validate(dataset), row_count=len(rows))
 
 
@@ -412,7 +448,99 @@ async def generate_dataset_from_version(
             fields["suggested_label"] = {"value": row.suggested_label}
         prepared.append(fields)
     rows = store.add_prepared_rows(dataset.id, prepared)
+    store.set_generation(
+        dataset.id,
+        count=body.count,
+        instructions=body.instructions,
+        column_notes=body.column_notes,
+        label_mix=body.label_mix,
+        label_guidance=body.label_guidance,
+        include_labels=body.include_labels,
+        source_version_id=body.version_id,
+    )
     return DatasetCreatedOut(dataset=DatasetOut.model_validate(dataset), row_count=len(rows))
+
+
+@router.get("/{id}/generation")
+async def get_dataset_generation(id: str, store: StoreDep) -> DatasetGenerationOut | None:
+    """Return how a dataset's rows were generated, or null if it was uploaded or blank."""
+    generation = store.get_generation(id)
+    return None if generation is None else DatasetGenerationOut.model_validate(generation)
+
+
+@router.post("/{id}/generate-rows")
+async def generate_more_rows(id: str, body: RowsGenerate, store: StoreDep) -> list[RowOut]:
+    """Generate more rows into an existing dataset, appending to the rows already there.
+
+    Steering falls back to the dataset's stored generation settings, so asking again needs
+    only a ``count``. Shape does not: the dataset's own columns and label space are used, so
+    the new rows stay compatible with the existing ones and with any evaluator that already
+    runs against them.
+    """
+    if body.count > _MAX_GENERATE_COUNT:
+        raise ContractError(f"count may not exceed {_MAX_GENERATE_COUNT}.")
+
+    dataset = store.get_dataset(id)
+    stored = store.get_generation(id)
+
+    def resolve(override, attribute: str):
+        """An explicit override wins; otherwise fall back to the stored ask."""
+        if override is not None:
+            return override
+        return getattr(stored, attribute) if stored is not None else None
+
+    instructions = resolve(body.instructions, "instructions")
+    column_notes = resolve(body.column_notes, "column_notes")
+    label_mix = resolve(body.label_mix, "label_mix")
+    label_guidance = resolve(body.label_guidance, "label_guidance")
+
+    _check_column_notes(column_notes, dataset.columns)
+
+    # An empty stored schema is the legal "no ground truth" state, so there is no label
+    # space to fill and nothing to say about how labels are assigned.
+    label_schema = (
+        LabelSchema.model_validate(dataset.label_schema) if dataset.label_schema else None
+    )
+    if label_schema is None and label_guidance is not None:
+        raise ContractError(
+            f"Dataset {dataset.name!r} has no label space, so label_guidance cannot apply."
+        )
+
+    prompt = instructions if instructions is not None else dataset.description
+    generated = await generate_rows(
+        prompt,
+        dataset.columns,
+        label_schema,
+        body.count,
+        column_notes=column_notes,
+        label_guidance=label_guidance,
+        label_mix=label_mix,
+    )
+    prepared: list[dict] = []
+    for row in generated:
+        fields: dict = {
+            "data": row.data,
+            "label_reasoning": row.reasoning,
+            "label_source": LabelSource.GENERATED,
+        }
+        if label_schema is not None:
+            fields["suggested_label"] = {"value": row.suggested_label}
+        prepared.append(fields)
+    rows = store.add_prepared_rows(dataset.id, prepared)
+
+    # Record the ask that actually ran, so the next top-up repeats it rather than the
+    # original creation call.
+    store.set_generation(
+        dataset.id,
+        count=body.count,
+        instructions=instructions,
+        column_notes=column_notes,
+        label_mix=label_mix,
+        label_guidance=label_guidance,
+        include_labels=label_schema is not None,
+        source_version_id=stored.source_version_id if stored else None,
+    )
+    return [RowOut.model_validate(row) for row in rows]
 
 
 @router.get("/{id}/rows")

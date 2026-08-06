@@ -263,3 +263,101 @@ describe("DatasetGenerateForm column notes", () => {
     expect(screen.getByLabelText("Note for question")).toHaveValue("a support ticket");
   });
 });
+
+describe("DatasetGenerateForm prefill", () => {
+  it("starts empty when no prefill is given", () => {
+    render(<DatasetGenerateForm onCreated={vi.fn()} />);
+
+    expect(screen.getByLabelText("Name")).toHaveValue("");
+    expect(screen.getByLabelText("Columns (comma separated)")).toHaveValue("");
+    expect(screen.getByLabelText("Row count")).toHaveValue(20);
+  });
+
+  it("seeds every field from the prefill", () => {
+    render(
+      <DatasetGenerateForm
+        onCreated={vi.fn()}
+        initial={{
+          name: "Support QA copy",
+          description: "support questions",
+          instructions: "be subtle",
+          columns: ["question", "answer"],
+          columnNotes: { question: "a support ticket" },
+          labelSchema: {
+            kind: "categorical",
+            labels: ["pass", "fail"],
+            minimum: null,
+            maximum: null,
+          },
+          labelMix: { pass: 0.25, fail: 0.75 },
+          count: 7,
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText("Name")).toHaveValue("Support QA copy");
+    expect(screen.getByLabelText("Description")).toHaveValue("support questions");
+    expect(screen.getByLabelText("Instructions")).toHaveValue("be subtle");
+    // Columns round-trip through the comma-separated field.
+    expect(screen.getByLabelText("Columns (comma separated)")).toHaveValue("question, answer");
+    expect(screen.getByLabelText("Note for question")).toHaveValue("a support ticket");
+    expect(screen.getByLabelText("Row count")).toHaveValue(7);
+    // A stored mix arrives as proportions and is shown as whole percents.
+    expect(screen.getByLabelText("Percent for pass")).toHaveValue(25);
+    expect(screen.getByLabelText("Percent for fail")).toHaveValue(75);
+  });
+
+  it("enables the mix only when the prefill carries one", () => {
+    render(
+      <DatasetGenerateForm
+        onCreated={vi.fn()}
+        initial={{
+          columns: ["question"],
+          labelSchema: {
+            kind: "categorical",
+            labels: ["pass", "fail"],
+            minimum: null,
+            maximum: null,
+          },
+          labelMix: null,
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByRole("checkbox", { name: /prescribe label distribution/i }),
+    ).not.toBeChecked();
+  });
+
+  it("submits the seeded values unchanged", async () => {
+    const user = userEvent.setup();
+    generateMock.mockResolvedValue(madeCreated());
+    render(
+      <DatasetGenerateForm
+        onCreated={vi.fn()}
+        initial={{
+          name: "Support QA copy",
+          description: "support questions",
+          instructions: "be subtle",
+          columns: ["question"],
+          labelSchema: {
+            kind: "categorical",
+            labels: ["pass", "fail"],
+            minimum: null,
+            maximum: null,
+          },
+          count: 4,
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Generate" }));
+
+    await waitFor(() => expect(generateMock).toHaveBeenCalled());
+    const payload = generateMock.mock.calls[0][0];
+    expect(payload.name).toBe("Support QA copy");
+    expect(payload.instructions).toBe("be subtle");
+    expect(payload.columns).toEqual(["question"]);
+    expect(payload.count).toBe(4);
+  });
+});
