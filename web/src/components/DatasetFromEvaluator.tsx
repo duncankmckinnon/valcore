@@ -9,6 +9,9 @@ import { useNavigate } from "react-router-dom";
 import { datasets } from "../api/client";
 import type { DatasetGenerateFromVersion, EvaluatorVersion } from "../api/types";
 import ColumnNotesEditor from "./ColumnNotesEditor";
+import LabelMixEditor from "./LabelMixEditor";
+import { TOTAL_PERCENT, toProportions, totalPercent } from "./labelMix";
+import type { LabelMixPercents } from "./labelMix";
 import { Button, ErrorBanner, Modal, Spinner } from "./ui";
 
 type DatasetFromEvaluatorProps = {
@@ -35,15 +38,25 @@ export default function DatasetFromEvaluator({
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [includeLabels, setIncludeLabels] = useState(true);
   const [labelGuidance, setLabelGuidance] = useState("");
+  const [mixEnabled, setMixEnabled] = useState(false);
+  const [mixPercents, setMixPercents] = useState<LabelMixPercents>({});
   const [count, setCount] = useState(DEFAULT_COUNT);
   const [error, setError] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // The label space is the evaluator's, so a mix distributes over its score labels and is
+  // available only for a categorical space — the API rejects a mix for numeric bounds.
+  const mixLabels = version.score_kind === "categorical" ? (version.score_labels ?? []) : [];
+  // A distribution over labels is meaningless with labels off, which the API rejects; the
+  // editor is hidden in that case, so the flag must not survive into the payload either.
+  const mixActive = mixEnabled && includeLabels && mixLabels.length > 0;
+  const mixIncomplete = mixActive && totalPercent(mixPercents) !== TOTAL_PERCENT;
 
   // The full column set must be fixed before the generation call (`_valid_rows` compares
   // key sets by exact equality), and an over-count request would only fail server-side, so
   // both are blocked here rather than surfaced late.
   const countExceeds = count > maxCount;
-  const canSubmit = name.trim() !== "" && !countExceeds;
+  const canSubmit = name.trim() !== "" && !countExceeds && !mixIncomplete;
 
   async function submit() {
     if (!canSubmit) {
@@ -67,6 +80,10 @@ export default function DatasetFromEvaluator({
       // assign labels, and only when labels are opted in. Omit it entirely when they are off.
       if (includeLabels) {
         payload.label_guidance = labelGuidance;
+      }
+      // Omitted unless prescribed, which leaves the distribution to the instructions.
+      if (mixActive) {
+        payload.label_mix = toProportions(mixPercents);
       }
       const created = await datasets.generateFromVersion(payload);
       navigate(`/datasets/${created.dataset.id}`);
@@ -95,6 +112,7 @@ export default function DatasetFromEvaluator({
             extraColumns={extraColumns}
             notes={notes}
             notePlaceholder="What should this column contain?"
+            lockedBadge="required"
             allowAddColumns
             onChangeNotes={setNotes}
             onChangeExtraColumns={setExtraColumns}
@@ -146,6 +164,15 @@ export default function DatasetFromEvaluator({
                 onChange={(e) => setLabelGuidance(e.target.value)}
               />
             </label>
+
+            <LabelMixEditor
+              labels={mixLabels}
+              percents={mixPercents}
+              enabled={mixEnabled}
+              count={count}
+              onChangeEnabled={setMixEnabled}
+              onChangePercents={setMixPercents}
+            />
           </>
         )}
 

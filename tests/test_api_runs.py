@@ -248,7 +248,13 @@ async def _collect_sse_types(
 
 
 @pytest.mark.anyio
-async def test_sse_streams_started_row_finished(store: Store) -> None:
+async def test_sse_streams_row_progress_and_finished(store: Store) -> None:
+    """A subscriber sees per-row progress and a terminal event.
+
+    Whether the stream opens with ``started`` or with a replayed ``status`` is a race
+    between the subscribe and the run's first event, so it is not asserted here — the
+    replay path is what ``test_sse_late_subscriber_gets_replayed_status`` covers.
+    """
     version = make_version(store)
     dataset, _ = make_dataset(store, ["pass", "pass", "pass"])
 
@@ -256,7 +262,6 @@ async def test_sse_streams_started_row_finished(store: Store) -> None:
         body = await _start_run(client, version.id, dataset.id, concurrency=1)
         seen = await _collect_sse_types(client, body["id"])
 
-    assert "started" in seen
     assert "row" in seen
     assert "finished" in seen
 

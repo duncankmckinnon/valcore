@@ -151,7 +151,7 @@ async def test_unsupported_extension_is_422(client: httpx.AsyncClient) -> None:
 async def test_generate_persists_rows_with_generated_source(
     client: httpx.AsyncClient, monkeypatch
 ) -> None:
-    async def fake_generate_rows(description, columns, label_schema, count):
+    async def fake_generate_rows(description, columns, label_schema, count, **kwargs):
         return [
             GeneratedRow(
                 data={"prompt": f"p{i}"},
@@ -222,6 +222,7 @@ def _install_recording_generate(monkeypatch, calls: list[dict]) -> None:
         *,
         column_notes=None,
         label_guidance=None,
+        label_mix=None,
         model=None,
         agent=None,
     ):
@@ -233,6 +234,7 @@ def _install_recording_generate(monkeypatch, calls: list[dict]) -> None:
                 "count": count,
                 "column_notes": column_notes,
                 "label_guidance": label_guidance,
+                "label_mix": label_mix,
             }
         )
         return [
@@ -1034,3 +1036,208 @@ async def test_delete_dataset_referenced_by_run_is_409_and_survives(
     assert resp.json()["error"]["type"] == "ReferencedError"
 
     assert (await client.get(f"/api/datasets/{ds_id}")).status_code == 200
+
+
+# -- Generate: prescribed label mix ------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_generate_passes_label_mix_through(client: httpx.AsyncClient, monkeypatch) -> None:
+    calls: list[dict] = []
+    _install_recording_generate(monkeypatch, calls)
+
+    resp = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "mixed",
+            "description": "some data",
+            "columns": ["prompt"],
+            "label_schema": CATEGORICAL_SCHEMA,
+            "label_mix": {"good": 0.25, "bad": 0.75},
+            "count": 4,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert calls[0]["label_mix"] == {"good": 0.25, "bad": 0.75}
+
+
+@pytest.mark.anyio
+async def test_generate_without_label_mix_leaves_distribution_to_the_prompt(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    calls: list[dict] = []
+    _install_recording_generate(monkeypatch, calls)
+
+    resp = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "unmixed",
+            "description": "some data",
+            "columns": ["prompt"],
+            "label_schema": CATEGORICAL_SCHEMA,
+            "count": 2,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert calls[0]["label_mix"] is None
+
+
+@pytest.mark.anyio
+async def test_generate_label_mix_with_unknown_label_is_422(
+    client: httpx.AsyncClient,
+) -> None:
+    resp = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "typo",
+            "description": "d",
+            "columns": ["prompt"],
+            "label_schema": CATEGORICAL_SCHEMA,
+            "label_mix": {"good": 0.5, "goood": 0.5},
+            "count": 4,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.anyio
+async def test_generate_label_mix_not_summing_to_one_is_422(
+    client: httpx.AsyncClient,
+) -> None:
+    resp = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "lopsided",
+            "description": "d",
+            "columns": ["prompt"],
+            "label_schema": CATEGORICAL_SCHEMA,
+            "label_mix": {"good": 0.5, "bad": 0.2},
+            "count": 4,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.anyio
+async def test_generate_label_mix_on_numeric_schema_is_422(
+    client: httpx.AsyncClient,
+) -> None:
+    resp = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "numeric",
+            "description": "d",
+            "columns": ["prompt"],
+            "label_schema": NUMERIC_SCHEMA,
+            "label_mix": {"3": 1.0},
+            "count": 4,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.anyio
+async def test_generate_from_version_passes_label_mix_through(
+    client: httpx.AsyncClient, store: Store, monkeypatch
+) -> None:
+    version = _make_version(store)
+    calls: list[dict] = []
+    _install_recording_generate(monkeypatch, calls)
+
+    resp = await client.post(
+        "/api/datasets/generate-from-version",
+        json={
+            "version_id": version.id,
+            "name": "mixed",
+            "include_labels": True,
+            "label_mix": {"good": 0.5, "bad": 0.5},
+            "count": 2,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert calls[0]["label_mix"] == {"good": 0.5, "bad": 0.5}
+
+
+@pytest.mark.anyio
+async def test_generate_from_version_label_mix_without_labels_is_422(
+    client: httpx.AsyncClient, store: Store, monkeypatch
+) -> None:
+    # A distribution over labels contradicts asking for no labels; refuse rather than drop it.
+    version = _make_version(store)
+    _install_recording_generate(monkeypatch, [])
+
+    resp = await client.post(
+        "/api/datasets/generate-from-version",
+        json={
+            "version_id": version.id,
+            "name": "contradiction",
+            "include_labels": False,
+            "label_mix": {"good": 1.0},
+            "count": 2,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+
+
+# -- Generate: per-column notes ----------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_generate_passes_column_notes_through(client: httpx.AsyncClient, monkeypatch) -> None:
+    calls: list[dict] = []
+    _install_recording_generate(monkeypatch, calls)
+
+    resp = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "noted",
+            "description": "some data",
+            "columns": ["question", "answer"],
+            "column_notes": {"question": "a support ticket", "answer": "the agent reply"},
+            "label_schema": CATEGORICAL_SCHEMA,
+            "count": 2,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert calls[0]["column_notes"] == {
+        "question": "a support ticket",
+        "answer": "the agent reply",
+    }
+
+
+@pytest.mark.anyio
+async def test_generate_without_column_notes_sends_none(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    calls: list[dict] = []
+    _install_recording_generate(monkeypatch, calls)
+
+    resp = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "plain",
+            "description": "some data",
+            "columns": ["question"],
+            "label_schema": CATEGORICAL_SCHEMA,
+            "count": 1,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert calls[0]["column_notes"] is None
+
+
+@pytest.mark.anyio
+async def test_generate_unknown_column_note_key_is_422(client: httpx.AsyncClient) -> None:
+    # A note on a column the dataset will not have is a typo, not a silent no-op.
+    resp = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "typo",
+            "description": "d",
+            "columns": ["question"],
+            "column_notes": {"quesiton": "oops"},
+            "label_schema": CATEGORICAL_SCHEMA,
+            "count": 1,
+        },
+    )
+    assert resp.status_code == 422, resp.text

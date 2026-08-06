@@ -86,6 +86,7 @@ export function EvaluatorFromDataset({
           extraColumns={[]}
           notes={notes}
           notePlaceholder="How does this column factor into the assessment?"
+          lockedBadge="required"
           allowAddColumns={false}
           onChangeNotes={setNotes}
           onChangeExtraColumns={() => {

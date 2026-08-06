@@ -41,13 +41,17 @@ class DatasetGenerate(BaseModel):
     ``description`` is always stored on the dataset. ``instructions``, when present,
     steer generation instead; when absent, ``description`` drives generation too, keeping
     older callers that never sent detailed guidance behaving exactly as before.
+    ``label_mix`` prescribes the label distribution; omit it and the distribution follows
+    whatever the prompt asks for. ``column_notes`` supplies per-column content guidance.
     """
 
     name: str
     description: str = ""
     instructions: str | None = None
     columns: list[str]
+    column_notes: dict[str, str] | None = None
     label_schema: LabelSchema
+    label_mix: dict[str, float] | None = None
     count: int
 
 
@@ -67,6 +71,7 @@ class DatasetGenerateFromVersion(BaseModel):
     column_notes: dict[str, str] | None = None
     include_labels: bool = True
     label_guidance: str | None = None
+    label_mix: dict[str, float] | None = None
     count: int
 
 
@@ -299,11 +304,29 @@ async def append_rows(id: str, body: RowsAppend, store: StoreDep) -> list[RowOut
     return [RowOut.model_validate(row) for row in rows]
 
 
+def _check_column_notes(column_notes: dict[str, str] | None, columns: list[str]) -> None:
+    """Raise ContractError if any note names a column the dataset will not have.
+
+    A note on a column that does not exist steers nothing, so it is almost always a typo
+    in the column name; surfacing it beats spending a slow generation call and silently
+    dropping the guidance.
+    """
+    if not column_notes:
+        return
+    unknown = [key for key in column_notes if key not in columns]
+    if unknown:
+        raise ContractError(
+            f"column_notes references column(s) {unknown} not in the dataset's columns {columns}."
+        )
+
+
 @router.post("/generate")
 async def generate_dataset(body: DatasetGenerate, store: StoreDep) -> DatasetCreatedOut:
     """Generate a dataset and its rows with suggested labels."""
     if body.count > _MAX_GENERATE_COUNT:
         raise ContractError(f"count may not exceed {_MAX_GENERATE_COUNT}.")
+
+    _check_column_notes(body.column_notes, body.columns)
 
     dataset = store.create_dataset(
         name=body.name,
@@ -314,7 +337,14 @@ async def generate_dataset(body: DatasetGenerate, store: StoreDep) -> DatasetCre
     # ``instructions`` steer generation when supplied; otherwise the stored description
     # doubles as the prompt, preserving the pre-``instructions`` behaviour.
     prompt = body.instructions if body.instructions is not None else body.description
-    generated = await generate_rows(prompt, body.columns, body.label_schema, body.count)
+    generated = await generate_rows(
+        prompt,
+        body.columns,
+        body.label_schema,
+        body.count,
+        column_notes=body.column_notes,
+        label_mix=body.label_mix,
+    )
     prepared = [
         {
             "data": row.data,
@@ -340,18 +370,15 @@ async def generate_dataset_from_version(
     version = store.get_version(body.version_id)
     columns, label_schema = dataset_shape_from_version(version, body.extra_columns)
 
-    # Guidance on how to assign labels is meaningless with no label space; refuse rather
-    # than drop it, so the contradiction is never hidden from the caller.
+    # Guidance on how to assign labels, and a prescribed distribution over them, are both
+    # meaningless with no label space; refuse rather than drop them, so the contradiction
+    # is never hidden from the caller.
     if body.label_guidance is not None and not body.include_labels:
         raise ContractError("label_guidance requires include_labels to be true.")
+    if body.label_mix is not None and not body.include_labels:
+        raise ContractError("label_mix requires include_labels to be true.")
 
-    if body.column_notes:
-        unknown = [key for key in body.column_notes if key not in columns]
-        if unknown:
-            raise ContractError(
-                f"column_notes references column(s) {unknown} not in the dataset's columns "
-                f"{columns}."
-            )
+    _check_column_notes(body.column_notes, columns)
 
     # Without labels the dataset carries no ground truth: an empty schema is the legal
     # "no ground truth" state, and the generator is told there is no label space to fill.
@@ -372,6 +399,7 @@ async def generate_dataset_from_version(
         body.count,
         column_notes=body.column_notes,
         label_guidance=body.label_guidance,
+        label_mix=body.label_mix,
     )
     prepared: list[dict] = []
     for row in generated:

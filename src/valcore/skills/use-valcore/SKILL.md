@@ -155,9 +155,22 @@ Suggested labels are **optional** here. When you include them, the label space c
 the evaluator — you supply only guidance on *how to assign* labels, never what the labels
 are. Leave them out and the dataset carries no ground truth, which is fine for `eval` runs.
 
-Generated rows deliberately mix clearly-passing, clearly-failing, and borderline examples
-— roughly a third each. **A judge validated only against good outputs tells you nothing
-about whether it catches bad ones.** Keep that mix when authoring by hand.
+Generation imposes no distribution of its own — it follows what you ask for. **A judge
+validated only against good outputs tells you nothing about whether it catches bad ones**,
+so make sure failing and borderline cases are represented, and keep the same balance when
+authoring by hand.
+
+Two ways to get them. Describe the balance you want in `instructions`, or prescribe it
+exactly with `label_mix` — a map of label to its share of `count`, summing to 1.0:
+
+```json
+{"label_mix": {"pass": 0.34, "fail": 0.33, "borderline": 0.33}}
+```
+
+Shares become whole row counts before the model sees them, so it is told "8 rows labeled
+`fail`" rather than a percentage. Naming only some labels is fine; the ones you omit get
+no rows. `label_mix` needs a categorical label space, and on `generate-from-version` it
+needs `include_labels: true`.
 
 ### 3. Validate the judge
 

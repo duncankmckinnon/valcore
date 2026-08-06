@@ -13,6 +13,7 @@ import type {
   EvaluatorVersion,
   ExportResponse,
   GeneratedConfig,
+  LabelMix,
   LabelSchema,
   RefinedConfig,
   RowPatch,
@@ -138,8 +139,10 @@ export const datasets = {
     name: string;
     description?: string;
     columns: string[];
+    column_notes?: Record<string, string>;
     label_schema: LabelSchema;
     instructions?: string;
+    label_mix?: LabelMix;
     count: number;
   }) => api<DatasetCreated>("/api/datasets/generate", { method: "POST", ...jsonBody(data) }),
   generateFromVersion: (data: DatasetGenerateFromVersion) =>
