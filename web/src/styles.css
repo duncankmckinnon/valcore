@@ -288,6 +288,11 @@ h1 {
   margin-left: 4px;
 }
 
+/* Matches `.field` so the mix editor spaces like the fields around it. */
+.label-mix-editor {
+  margin-bottom: 12px;
+}
+
 .label-mix-row,
 .label-mix-footer {
   display: flex;
@@ -318,6 +323,16 @@ h1 {
 
 .label-mix-total {
   font-weight: 600;
+}
+
+/* A field plus the hint describing it, spaced as one unit. Without this the hint
+   sits below the field's own bottom margin and crowds the next field's label. */
+.field-group {
+  margin-bottom: 12px;
+}
+
+.field-group .field {
+  margin-bottom: 0;
 }
 
 .field-hint {

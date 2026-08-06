@@ -94,19 +94,21 @@ export default function DatasetGenerateForm({ onCreated }: DatasetGenerateFormPr
           onChange={(e) => setDescription(e.target.value)}
         />
       </label>
-      <label className="field">
-        <span className="field-label">Instructions</span>
-        <textarea
-          className="textarea"
-          value={instructions}
-          onChange={(e) => setInstructions(e.target.value)}
-        />
-      </label>
-      {/* Outside the label: text inside it would become part of the field's accessible name. */}
-      <p className="field-hint">
-        How to generate the rows — content, difficulty, mix of cases. Leave blank to generate
-        from the description alone.
-      </p>
+      <div className="field-group">
+        <label className="field">
+          <span className="field-label">Instructions</span>
+          <textarea
+            className="textarea"
+            value={instructions}
+            onChange={(e) => setInstructions(e.target.value)}
+          />
+        </label>
+        {/* Outside the label: text inside it would join the field's accessible name. */}
+        <p className="field-hint">
+          How to generate the rows — content, difficulty, mix of cases. Leave blank to
+          generate from the description alone.
+        </p>
+      </div>
       <label className="field">
         <span className="field-label">Columns (comma separated)</span>
         <input
