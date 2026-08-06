@@ -260,5 +260,11 @@ export interface DatasetGenerateFromVersion {
   column_notes?: Record<string, string>;
   include_labels?: boolean;
   label_guidance?: string;
+  label_mix?: LabelMix;
   count: number;
 }
+
+// Label -> its share of the requested row count, summing to 1.0. Omit the field entirely
+// to leave the distribution to the description/instructions; a categorical label space is
+// required, and naming only some labels gives the rest no rows.
+export type LabelMix = Record<string, number>;

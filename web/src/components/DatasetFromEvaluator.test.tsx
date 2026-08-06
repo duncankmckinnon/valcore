@@ -271,3 +271,97 @@ describe("DatasetFromEvaluator", () => {
     expect(screen.getByText(/50/)).toBeTruthy();
   });
 });
+
+// -- Prescribed label distribution -------------------------------------------
+
+describe("label mix", () => {
+  it("omits label_mix by default, leaving the distribution to the instructions", async () => {
+    const user = userEvent.setup();
+    generateMock.mockResolvedValue(madeCreated());
+    renderModal();
+
+    await user.type(screen.getByLabelText("Dataset name"), "Support QA");
+    await user.click(screen.getByRole("button", { name: "Generate" }));
+
+    await waitFor(() => expect(generateMock).toHaveBeenCalled());
+    expect(generateMock.mock.calls[0][0].label_mix).toBeUndefined();
+  });
+
+  it("sends the mix as proportions once prescribed", async () => {
+    const user = userEvent.setup();
+    generateMock.mockResolvedValue(madeCreated());
+    renderModal();
+
+    await user.type(screen.getByLabelText("Dataset name"), "Support QA");
+    await user.click(screen.getByRole("checkbox", { name: /prescribe label distribution/i }));
+    const accurate = screen.getByLabelText("Percent for accurate");
+    await user.clear(accurate);
+    await user.type(accurate, "25");
+    const inaccurate = screen.getByLabelText("Percent for inaccurate");
+    await user.clear(inaccurate);
+    await user.type(inaccurate, "75");
+    await user.click(screen.getByRole("button", { name: "Generate" }));
+
+    await waitFor(() => expect(generateMock).toHaveBeenCalled());
+    // Percents at the UI boundary, proportions on the wire.
+    expect(generateMock.mock.calls[0][0].label_mix).toEqual({
+      accurate: 0.25,
+      inaccurate: 0.75,
+    });
+  });
+
+  it("blocks Generate while the percents do not total 100", async () => {
+    const user = userEvent.setup();
+    renderModal();
+
+    await user.type(screen.getByLabelText("Dataset name"), "Support QA");
+    await user.click(screen.getByRole("checkbox", { name: /prescribe label distribution/i }));
+    const accurate = screen.getByLabelText("Percent for accurate");
+    await user.clear(accurate);
+    await user.type(accurate, "10");
+
+    expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
+    expect(generateMock).not.toHaveBeenCalled();
+  });
+
+  it("hides the mix editor when suggested labels are switched off", async () => {
+    const user = userEvent.setup();
+    renderModal();
+
+    await user.click(screen.getByRole("checkbox", { name: /include suggested labels/i }));
+
+    // The API rejects a mix without labels, so the control must not be reachable.
+    expect(screen.queryByRole("checkbox", { name: /prescribe label distribution/i })).toBeNull();
+  });
+
+  it("drops a prescribed mix when labels are switched off afterwards", async () => {
+    const user = userEvent.setup();
+    generateMock.mockResolvedValue(madeCreated());
+    renderModal();
+
+    await user.type(screen.getByLabelText("Dataset name"), "Support QA");
+    await user.click(screen.getByRole("checkbox", { name: /prescribe label distribution/i }));
+    // Turning labels off hides the editor; the stale flag must not reach the payload,
+    // which the API would reject with a 422.
+    await user.click(screen.getByRole("checkbox", { name: /include suggested labels/i }));
+    await user.click(screen.getByRole("button", { name: "Generate" }));
+
+    await waitFor(() => expect(generateMock).toHaveBeenCalled());
+    expect(generateMock.mock.calls[0][0].label_mix).toBeUndefined();
+    expect(generateMock.mock.calls[0][0].include_labels).toBe(false);
+  });
+
+  it("offers no mix editor for a numeric score space", () => {
+    // A mix names labels; the API rejects one for numeric bounds.
+    renderModal({
+      version: makeVersion({
+        score_kind: "numeric",
+        score_labels: null,
+        score_minimum: 0,
+        score_maximum: 5,
+      }),
+    });
+
+    expect(screen.queryByRole("checkbox", { name: /prescribe label distribution/i })).toBeNull();
+  });
+});

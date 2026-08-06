@@ -13,6 +13,9 @@ type ColumnNotesEditorProps = {
   notes: Record<string, string>;
   notePlaceholder: string; // the per-direction question
   allowAddColumns: boolean;
+  // Why a locked column is locked, e.g. "required". Omit where the columns are the user's
+  // own and nothing upstream fixes them, so no badge is rendered rather than a wrong one.
+  lockedBadge?: string;
   onChangeNotes: (notes: Record<string, string>) => void;
   onChangeExtraColumns: (columns: string[]) => void;
 };
@@ -23,6 +26,7 @@ export function ColumnNotesEditor({
   notes,
   notePlaceholder,
   allowAddColumns,
+  lockedBadge,
   onChangeNotes,
   onChangeExtraColumns,
 }: ColumnNotesEditorProps) {
@@ -54,9 +58,11 @@ export function ColumnNotesEditor({
       {lockedColumns.map((column) => (
         <div key={column} className="column-note-row column-note-locked">
           <span className="column-note-name">{column}</span>
-          <span className="badge" aria-hidden="true">
-            required
-          </span>
+          {lockedBadge && (
+            <span className="badge" aria-hidden="true">
+              {lockedBadge}
+            </span>
+          )}
           <input
             className="input"
             aria-label={`Note for ${column}`}

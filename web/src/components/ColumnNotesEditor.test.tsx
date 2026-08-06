@@ -277,4 +277,41 @@ describe("ColumnNotesEditor", () => {
 
     expect(onChangeExtraColumns).toHaveBeenCalledWith(["citation"]);
   });
+
+  it("labels locked columns with the badge it is given", () => {
+    render(
+      <ColumnNotesEditor
+        lockedColumns={["question"]}
+        extraColumns={[]}
+        notes={{}}
+        notePlaceholder={PLACEHOLDER}
+        allowAddColumns={false}
+        lockedBadge="required"
+        onChangeNotes={vi.fn()}
+        onChangeExtraColumns={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("required")).toBeInTheDocument();
+  });
+
+  it("renders no badge when none is given", () => {
+    // The plain generate form owns its own column list, so nothing upstream makes a
+    // column "required" and a badge saying so would be a lie.
+    render(
+      <ColumnNotesEditor
+        lockedColumns={["question"]}
+        extraColumns={[]}
+        notes={{}}
+        notePlaceholder={PLACEHOLDER}
+        allowAddColumns={false}
+        onChangeNotes={vi.fn()}
+        onChangeExtraColumns={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText("required")).toBeNull();
+    // The column and its note input are still there; only the badge is absent.
+    expect(screen.getByLabelText("Note for question")).toBeInTheDocument();
+  });
 });

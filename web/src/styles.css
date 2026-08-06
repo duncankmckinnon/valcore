@@ -288,6 +288,44 @@ h1 {
   margin-left: 4px;
 }
 
+.label-mix-row,
+.label-mix-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+/* The label name column is fixed so the percent inputs stay aligned down the list. */
+.label-mix-name {
+  flex: 0 0 140px;
+  font-weight: 600;
+}
+
+.label-mix-row .input {
+  width: 80px;
+}
+
+.label-mix-unit {
+  color: var(--muted);
+}
+
+/* The apportioned row count is the derived value, not the one being edited. */
+.label-mix-count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.label-mix-total {
+  font-weight: 600;
+}
+
+.field-hint {
+  color: var(--muted);
+  font-size: 0.9em;
+  margin: 4px 0 0;
+}
+
 .upload-preview {
   margin: 12px 0;
   overflow-x: auto;
