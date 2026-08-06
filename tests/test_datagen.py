@@ -8,10 +8,15 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from valcore.datagen import (
     GeneratedDataset,
     GeneratedRow,
+    _apportion,
+    _deficit,
     _render_prompt,
+    _select,
     _valid_rows,
+    _validate_mix,
     generate_rows,
 )
+from valcore.errors import ConfigError
 from valcore.models import LabelSchema, ScoreKind
 
 
@@ -291,3 +296,242 @@ async def test_topup_call_carries_same_notes_and_guidance() -> None:
         assert "a jailbreak attempt" in prompt
         assert guidance in prompt
     assert len(rows) == 3
+
+
+# --- Prescribed label mix: apportionment -----------------------------------
+
+THREE_WAY = LabelSchema(kind=ScoreKind.CATEGORICAL, labels=["pass", "fail", "borderline"])
+NUMERIC = LabelSchema(kind=ScoreKind.NUMERIC, minimum=0, maximum=5)
+
+
+def test_apportion_splits_evenly_when_shares_divide() -> None:
+    counts = _apportion({"pass": 0.5, "fail": 0.5}, 10)
+
+    assert counts == {"pass": 5, "fail": 5}
+
+
+def test_apportion_thirds_sum_to_exactly_count() -> None:
+    # 10/3 is not whole, so the leftover row must land somewhere and nowhere twice.
+    counts = _apportion({"pass": 1 / 3, "fail": 1 / 3, "borderline": 1 / 3}, 10)
+
+    assert sum(counts.values()) == 10
+    assert sorted(counts.values()) == [3, 3, 4]
+
+
+def test_apportion_gives_leftover_to_largest_remainder() -> None:
+    # 0.8*9=7.2 and 0.2*9=1.8, so 'pass' holds the larger remainder and takes the ninth
+    # row. 'fail' sorts first alphabetically, so an alphabetical rule would give it 8.
+    counts = _apportion({"fail": 0.8, "pass": 0.2}, 9)
+
+    assert counts == {"fail": 7, "pass": 2}
+
+
+def test_apportion_breaks_remainder_ties_by_label_name() -> None:
+    # 0.25*10 and 0.05*10 both leave a remainder of 0.5, so the name decides.
+    counts = _apportion({"pass": 0.7, "fail": 0.25, "borderline": 0.05}, 10)
+
+    assert counts == {"pass": 7, "fail": 2, "borderline": 1}
+
+
+def test_apportion_drops_labels_that_round_to_zero() -> None:
+    counts = _apportion({"pass": 0.9, "fail": 0.1}, 2)
+
+    assert "fail" not in counts  # 0.2 rows rounds away rather than asking for zero rows
+    assert sum(counts.values()) == 2
+
+
+def test_apportion_is_deterministic_on_ties() -> None:
+    first = _apportion({"b": 0.5, "a": 0.5}, 3)
+    second = _apportion({"a": 0.5, "b": 0.5}, 3)
+
+    assert first == second  # tie broken by label name, not dict ordering
+
+
+# --- Prescribed label mix: validation --------------------------------------
+
+
+def test_validate_mix_rejects_missing_label_space() -> None:
+    with pytest.raises(ConfigError, match="requires a label space"):
+        _validate_mix({"pass": 1.0}, None)
+
+
+def test_validate_mix_rejects_numeric_label_space() -> None:
+    with pytest.raises(ConfigError, match="only supported for a categorical"):
+        _validate_mix({"pass": 1.0}, NUMERIC)
+
+
+def test_validate_mix_rejects_unknown_label() -> None:
+    with pytest.raises(ConfigError, match="not in the schema"):
+        _validate_mix({"pass": 0.5, "unclear": 0.5}, CATEGORICAL)
+
+
+def test_validate_mix_rejects_negative_share() -> None:
+    with pytest.raises(ConfigError, match="negative"):
+        _validate_mix({"pass": 1.5, "fail": -0.5}, CATEGORICAL)
+
+
+def test_validate_mix_rejects_shares_that_do_not_sum_to_one() -> None:
+    with pytest.raises(ConfigError, match="must sum to 1.0"):
+        _validate_mix({"pass": 0.5, "fail": 0.2}, CATEGORICAL)
+
+
+def test_validate_mix_rejects_empty_mix() -> None:
+    with pytest.raises(ConfigError, match="at least one label"):
+        _validate_mix({}, CATEGORICAL)
+
+
+def test_validate_mix_accepts_hand_written_thirds() -> None:
+    # 0.33 + 0.33 + 0.34 is what a human types; it must not be rejected as != 1.0.
+    _validate_mix({"pass": 0.33, "fail": 0.33, "borderline": 0.34}, THREE_WAY)
+
+
+def test_validate_mix_accepts_subset_that_omits_a_label() -> None:
+    # Deliberately excluding a label is legal: the omitted label simply gets no rows.
+    _validate_mix({"pass": 0.5, "fail": 0.5}, THREE_WAY)
+
+
+# --- Prescribed label mix: prompt rendering --------------------------------
+
+
+def test_render_prompt_states_exact_counts_not_percentages() -> None:
+    prompt = _render_prompt(
+        "desc", ["input", "output"], CATEGORICAL, 10, target={"pass": 6, "fail": 4}
+    )
+
+    assert "Produce exactly this many rows for each label:" in prompt
+    assert "'pass': 6 row(s)" in prompt
+    assert "'fail': 4 row(s)" in prompt
+    # The model must never have to do the arithmetic itself.
+    assert "%" not in prompt
+    assert "0.6" not in prompt
+
+
+def test_render_prompt_with_target_drops_use_each_label_hint() -> None:
+    # The coverage hint would contradict a mix that deliberately gives a label no rows.
+    prompt = _render_prompt("desc", ["input", "output"], THREE_WAY, 10, target={"pass": 10})
+
+    assert "at least once" not in prompt
+    # The legal label set is still stated, so an out-of-schema label stays out.
+    assert "Every suggested_label must be one of" in prompt
+
+
+def test_render_prompt_keeps_label_guidance_alongside_target() -> None:
+    prompt = _render_prompt(
+        "desc",
+        ["input", "output"],
+        CATEGORICAL,
+        4,
+        label_guidance="treat partial compliance as fail",
+        target={"pass": 2, "fail": 2},
+    )
+
+    assert "treat partial compliance as fail" in prompt
+    assert "'pass': 2 row(s)" in prompt
+
+
+def test_render_prompt_without_target_is_unchanged() -> None:
+    prompt = _render_prompt("desc", ["input", "output"], CATEGORICAL, 3)
+
+    assert "Produce exactly this many rows" not in prompt
+    assert "Every suggested_label must be one of" in prompt
+
+
+# --- Prescribed label mix: deficit-aware top-up ---------------------------
+
+
+def test_deficit_reports_only_labels_still_short() -> None:
+    rows = [
+        GeneratedRow(data={}, suggested_label="pass"),
+        GeneratedRow(data={}, suggested_label="pass"),
+    ]
+
+    assert _deficit({"pass": 3, "fail": 2}, rows) == {"pass": 1, "fail": 2}
+
+
+def test_deficit_omits_labels_already_over_produced() -> None:
+    rows = [GeneratedRow(data={}, suggested_label="pass") for _ in range(5)]
+
+    assert _deficit({"pass": 3, "fail": 1}, rows) == {"fail": 1}
+
+
+def test_select_fills_quota_before_taking_surplus() -> None:
+    rows = [
+        GeneratedRow(data={}, suggested_label="pass"),
+        GeneratedRow(data={}, suggested_label="pass"),
+        GeneratedRow(data={}, suggested_label="pass"),
+        GeneratedRow(data={}, suggested_label="fail", reasoning="keep me"),
+    ]
+
+    chosen = _select(rows, {"pass": 2, "fail": 2}, 4)
+
+    labels = [row.suggested_label for row in chosen]
+    # The surplus third 'pass' must not crowd out the only 'fail'.
+    assert labels[:3] == ["pass", "pass", "fail"]
+    assert "keep me" in [row.reasoning for row in chosen]
+
+
+@pytest.mark.anyio
+async def test_topup_asks_only_for_the_missing_labels() -> None:
+    calls = [0]
+    prompts: list[str] = []
+    # First call delivers all 3 'pass' rows but no 'fail' rows.
+    batches = [[_row("pass")] * 3, [_row("fail")] * 3]
+    agent = _agent(_capturing_model(batches, calls, prompts))
+
+    rows = await generate_rows(
+        "desc",
+        ["input", "output"],
+        CATEGORICAL,
+        6,
+        label_mix={"pass": 0.5, "fail": 0.5},
+        agent=agent,
+    )
+
+    assert calls[0] == 2
+    assert "'pass': 3 row(s)" in prompts[0]
+    assert "'fail': 3 row(s)" in prompts[0]
+    # The top-up asks for the shortfall only — 3 'fail', and no further 'pass'.
+    assert "'fail': 3 row(s)" in prompts[1]
+    assert "'pass'" not in prompts[1].split("each label:")[1]
+    assert len(rows) == 6
+
+
+@pytest.mark.anyio
+async def test_mix_validation_failure_never_calls_the_model() -> None:
+    calls = [0]
+    agent = _agent(_batch_model([[_row("pass")]], calls))
+
+    with pytest.raises(ConfigError, match="not in the schema"):
+        await generate_rows(
+            "desc", ["input", "output"], CATEGORICAL, 2, label_mix={"nope": 1.0}, agent=agent
+        )
+
+    assert calls[0] == 0
+
+
+@pytest.mark.anyio
+async def test_mix_omitted_leaves_generation_untouched() -> None:
+    calls = [0]
+    prompts: list[str] = []
+    agent = _agent(_capturing_model([[_row("pass"), _row("fail")]], calls, prompts))
+
+    rows = await generate_rows("desc", ["input", "output"], CATEGORICAL, 2, agent=agent)
+
+    assert len(rows) == 2
+    assert "Produce exactly this many rows" not in prompts[0]
+
+
+def test_apportion_sums_to_count_with_hand_written_thirds() -> None:
+    # 0.33+0.33+0.33 is inside the sum tolerance but below 1; the slack must not leave
+    # rows unassigned, so shares are normalised before apportioning.
+    counts = _apportion({"pass": 0.33, "fail": 0.33, "borderline": 0.33}, 100)
+
+    assert sum(counts.values()) == 100
+
+
+def test_apportion_sums_to_count_for_a_single_slack_label() -> None:
+    # One label carrying a 0.99 share is the worst case: there is nowhere else to put
+    # leftover rows, so the normalisation is what keeps the total honest.
+    counts = _apportion({"pass": 0.99}, 200)
+
+    assert counts == {"pass": 200}

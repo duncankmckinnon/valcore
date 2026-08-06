@@ -55,31 +55,28 @@ class RefinedConfig(BaseModel):
 
 
 def _field_rules() -> str:
-    """Return the shared config-design rules injected into both agents' instructions."""
+    """Return the structural requirements injected into both agents' instructions.
+
+    Scoped to what `validate_version` actually enforces, so a config that satisfies
+    this text is a config that stores and runs. Judge design — how the rubric is
+    worded, which score space fits, which capabilities help — is left to the
+    criteria rather than dictated here.
+    """
     return (
-        "Design rules:\n"
-        "- `instructions` is a rubric-style system prompt for an LLM judge. State explicit "
-        "scoring criteria, define every label explicitly, and instruct the judge to explain "
-        "its reasoning before assigning a score.\n"
-        "- `output_fields` is an ordered list. Place an explanation/reasoning field BEFORE the "
-        "score field so the judge reasons before committing to a score.\n"
-        "- Default to a categorical score with 3-5 clearly-defined labels unless the criteria "
-        "explicitly call for a numeric score.\n"
-        "- For a categorical score, the score field must be an enum whose `enum_values` exactly "
-        "equal `score_labels`, and `score_kind` must be 'categorical'. For a numeric score the "
-        "score field must be an int or float, `score_kind` must be 'numeric', and `score_labels` "
-        "must be null.\n"
+        "Structural requirements:\n"
+        "- `instructions` is the system prompt given to the judge.\n"
+        "- `output_fields` is an ordered list of at least one field; field names must be "
+        "unique.\n"
         "- `score_field` must name one of the `output_fields`.\n"
-        "- List every column the judge needs in `required_columns`, and reference EVERY one of "
-        "them in `prompt_template` as a `{column}` placeholder.\n"
-        "- `prompt_template` is the per-row user prompt; use only `{column}` placeholders drawn "
-        "from `required_columns`.\n"
-        f"- Enable the `CodeMode` capability by default. Enable `SubAgents` and/or `Planning` "
-        "only for genuinely multi-criteria rubrics. Leave `FileSystem` and `Shell` off unless "
-        "the criteria explicitly require inspecting files or running commands. Use only "
-        f"capabilities from: {sorted(VALID_CAPABILITIES)}.\n"
-        f"- Select only tools the criteria actually need, from: {tool_names()}. Never invent a "
-        "tool or capability that is not in these lists."
+        "- A categorical score requires `score_kind` 'categorical' and a score field of type "
+        "enum whose `enum_values` exactly equal `score_labels`. A numeric score requires "
+        "`score_kind` 'numeric', a score field typed int or float, and `score_labels` null.\n"
+        "- `required_columns` must list at least one column: every column the judge needs.\n"
+        "- `prompt_template` is the per-row user prompt. Every `{column}` placeholder in it "
+        "must name one of `required_columns`.\n"
+        f"- `capabilities` may use only these names: {sorted(VALID_CAPABILITIES)}.\n"
+        f"- `tools` may use only these names: {tool_names()}. Never invent a capability or "
+        "tool outside these lists."
     )
 
 
