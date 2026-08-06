@@ -325,6 +325,40 @@ h1 {
   font-weight: 600;
 }
 
+/* Collapsed by default: provenance is reference material, not something to scroll past
+   on the way to the rows. */
+.generation-settings {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+}
+
+.generation-settings summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.generation-field {
+  margin-top: 10px;
+}
+
+.generation-text {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.generation-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.generation-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+}
+
 /* A field plus the hint describing it, spaced as one unit. Without this the hint
    sits below the field's own bottom margin and crowds the next field's label. */
 .field-group {

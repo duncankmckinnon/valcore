@@ -4,11 +4,23 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { datasets } from "../api/client";
-import type { Dataset, DatasetStats, GeneratedConfig, LabelSchema } from "../api/types";
+import type {
+  Dataset,
+  DatasetGeneration,
+  DatasetStats,
+  GeneratedConfig,
+  LabelSchema,
+} from "../api/types";
 import { Button, ConfirmDialog, ErrorBanner, Spinner } from "../components/ui";
 import DatasetSettingsModal from "../components/DatasetSettingsModal";
 import EvaluatorFromDataset from "../components/EvaluatorFromDataset";
+import GenerateMoreRows from "../components/GenerateMoreRows";
+import GenerationSettings from "../components/GenerationSettings";
 import LabelingGrid from "../components/LabelingGrid";
+
+// Mirrors the server's generation cap so an over-large ask is refused before it costs a
+// slow generation call.
+const MAX_GENERATE_COUNT = 200;
 
 type Props = {
   datasetId: string;
@@ -19,7 +31,10 @@ export default function DatasetDetail({ datasetId }: Props) {
   const [dataset, setDataset] = useState<Dataset | null>(null);
   const [stats, setStats] = useState<DatasetStats | null>(null);
   const [error, setError] = useState<unknown>(null);
+  const [generation, setGeneration] = useState<DatasetGeneration | null>(null);
   const [editing, setEditing] = useState(false);
+  const [generatingRows, setGeneratingRows] = useState(false);
+  const [gridEpoch, setGridEpoch] = useState(0);
   const [generatingEvaluator, setGeneratingEvaluator] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -40,6 +55,19 @@ export default function DatasetDetail({ datasetId }: Props) {
       cancelled = true;
     };
   }, [datasetId]);
+
+  const refreshGeneration = useCallback(() => {
+    datasets
+      .generation(datasetId)
+      .then(setGeneration)
+      .catch(() => {
+        // Provenance is non-critical: a failure just leaves the panel and prefill empty.
+      });
+  }, [datasetId]);
+
+  useEffect(() => {
+    refreshGeneration();
+  }, [refreshGeneration]);
 
   const refreshStats = useCallback(() => {
     datasets
@@ -88,8 +116,9 @@ export default function DatasetDetail({ datasetId }: Props) {
   if (!dataset) return <Spinner />;
 
   // Remount the grid whenever the dataset's shape changes so it refetches rows
-  // (e.g. after a column migration or a cleared label schema).
-  const gridKey = JSON.stringify([dataset.columns, dataset.label_schema]);
+  // (e.g. after a column migration or a cleared label schema). `gridEpoch` covers the
+  // case where the shape is unchanged but rows were appended.
+  const gridKey = JSON.stringify([dataset.columns, dataset.label_schema, gridEpoch]);
 
   return (
     <section>
@@ -102,6 +131,9 @@ export default function DatasetDetail({ datasetId }: Props) {
           {dataset.description && <p className="muted">{dataset.description}</p>}
         </div>
         <div className="form-actions">
+          <Button variant="secondary" onClick={() => setGeneratingRows(true)}>
+            Generate more rows
+          </Button>
           <Button variant="secondary" onClick={() => setGeneratingEvaluator(true)}>
             Generate evaluator
           </Button>
@@ -144,6 +176,8 @@ export default function DatasetDetail({ datasetId }: Props) {
         </div>
       )}
 
+      <GenerationSettings generation={generation} />
+
       <LabelingGrid
         key={gridKey}
         datasetId={datasetId}
@@ -157,6 +191,21 @@ export default function DatasetDetail({ datasetId }: Props) {
         dataset={dataset}
         onSaved={onSaved}
         onClose={() => setEditing(false)}
+      />
+
+      <GenerateMoreRows
+        open={generatingRows}
+        dataset={dataset}
+        generation={generation}
+        maxCount={MAX_GENERATE_COUNT}
+        onGenerated={() => {
+          setGeneratingRows(false);
+          // The top-up records the ask that ran, so refetch it for the next prefill.
+          refreshGeneration();
+          refreshStats();
+          setGridEpoch((epoch) => epoch + 1);
+        }}
+        onClose={() => setGeneratingRows(false)}
       />
 
       <EvaluatorFromDataset

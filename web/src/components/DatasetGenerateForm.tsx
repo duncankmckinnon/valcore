@@ -9,23 +9,42 @@ import { Button, ErrorBanner, Spinner } from "./ui";
 import LabelSchemaEditor from "./LabelSchemaEditor";
 import ColumnNotesEditor from "./ColumnNotesEditor";
 import LabelMixEditor from "./LabelMixEditor";
-import { TOTAL_PERCENT, toProportions, totalPercent } from "./labelMix";
+import { TOTAL_PERCENT, fromProportions, toProportions, totalPercent } from "./labelMix";
 import type { LabelMixPercents } from "./labelMix";
 
-type DatasetGenerateFormProps = { onCreated: (datasetId: string) => void };
+/** Prefill for the form, e.g. seeded from an existing dataset's stored settings. */
+export type GenerateFormInitial = {
+  name?: string;
+  description?: string;
+  instructions?: string;
+  columns?: string[];
+  columnNotes?: Record<string, string>;
+  labelSchema?: LabelSchema;
+  labelMix?: Record<string, number> | null;
+  count?: number;
+};
+
+type DatasetGenerateFormProps = {
+  onCreated: (datasetId: string) => void;
+  // Read once, at mount: callers change the prefill by remounting with a new `key`, which
+  // keeps the fields plain state rather than props that must be synced back on every edit.
+  initial?: GenerateFormInitial;
+};
 
 const DEFAULT_SCHEMA: LabelSchema = { kind: "categorical", labels: [], minimum: null, maximum: null };
+const DEFAULT_COUNT = 20;
 
-export default function DatasetGenerateForm({ onCreated }: DatasetGenerateFormProps) {
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [instructions, setInstructions] = useState("");
-  const [columnsText, setColumnsText] = useState("");
-  const [notes, setNotes] = useState<Record<string, string>>({});
-  const [count, setCount] = useState(20);
-  const [schema, setSchema] = useState<LabelSchema>(DEFAULT_SCHEMA);
-  const [mixEnabled, setMixEnabled] = useState(false);
-  const [mixPercents, setMixPercents] = useState<LabelMixPercents>({});
+export default function DatasetGenerateForm({ onCreated, initial }: DatasetGenerateFormProps) {
+  const [name, setName] = useState(initial?.name ?? "");
+  const [description, setDescription] = useState(initial?.description ?? "");
+  const [instructions, setInstructions] = useState(initial?.instructions ?? "");
+  const [columnsText, setColumnsText] = useState((initial?.columns ?? []).join(", "));
+  const [notes, setNotes] = useState<Record<string, string>>(initial?.columnNotes ?? {});
+  const [count, setCount] = useState(initial?.count ?? DEFAULT_COUNT);
+  const [schema, setSchema] = useState<LabelSchema>(initial?.labelSchema ?? DEFAULT_SCHEMA);
+  const [initialPercents] = useState(() => fromProportions(initial?.labelMix ?? null));
+  const [mixEnabled, setMixEnabled] = useState(Object.keys(initialPercents).length > 0);
+  const [mixPercents, setMixPercents] = useState<LabelMixPercents>(initialPercents);
   const [error, setError] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
 

@@ -187,6 +187,31 @@ class Dataset(SQLModel, table=True):
     label_schema: dict = Field(default_factory=dict, sa_column=Column(JSON))
 
 
+class DatasetGeneration(SQLModel, table=True):
+    """How a generated dataset's rows were asked for, kept so a form can be repopulated.
+
+    A separate table rather than columns on ``Dataset``: ``init_db`` is a bare
+    ``create_all``, which adds missing tables but never missing columns, so new fields
+    here reach an existing database while new ``Dataset`` fields would not. It also keeps
+    provenance out of the dataset's own metadata — an uploaded dataset simply has no row.
+
+    ``source_version_id`` is set only by seeded generation, and is provenance rather than
+    a live link: the version it names may since have changed or been deleted, so nothing
+    reads through it to derive shape.
+    """
+
+    id: str = Field(default_factory=lambda: uuid4().hex, primary_key=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    dataset_id: str = Field(index=True)
+    count: int = 0
+    instructions: str | None = None
+    column_notes: dict | None = Field(default=None, sa_column=Column(JSON))
+    label_mix: dict | None = Field(default=None, sa_column=Column(JSON))
+    label_guidance: str | None = None
+    include_labels: bool = True
+    source_version_id: str | None = None
+
+
 class DatasetRow(SQLModel, table=True):
     """A single row of a dataset with its (optional) hand-assigned label."""
 

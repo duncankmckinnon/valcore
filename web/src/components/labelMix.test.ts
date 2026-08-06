@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { apportion, evenSplit, toProportions, totalPercent } from "./labelMix";
+import {
+  apportion,
+  evenSplit,
+  fromProportions,
+  toProportions,
+  totalPercent,
+} from "./labelMix";
 
 describe("totalPercent", () => {
   it("sums the given percents", () => {
@@ -79,5 +85,21 @@ describe("apportion", () => {
   it("returns nothing when there is nothing to distribute", () => {
     expect(apportion({}, 10)).toEqual({});
     expect(apportion({ pass: 100 }, 0)).toEqual({});
+  });
+});
+
+describe("fromProportions", () => {
+  it("round-trips whole percents back out of proportions", () => {
+    const percents = { pass: 25, fail: 75 };
+
+    expect(fromProportions(toProportions(percents))).toEqual(percents);
+  });
+
+  it("treats a missing mix as no percents", () => {
+    expect(fromProportions(null)).toEqual({});
+  });
+
+  it("rounds a share that was never a whole percent", () => {
+    expect(fromProportions({ pass: 1 / 3, fail: 2 / 3 })).toEqual({ pass: 33, fail: 67 });
   });
 });

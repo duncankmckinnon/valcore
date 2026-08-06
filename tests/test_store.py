@@ -13,6 +13,7 @@ from valcore.errors import (
     ReferencedError,
 )
 from valcore.models import (
+    DatasetGeneration,
     DatasetRow,
     EvaluatorVersion,
     LabelSource,
@@ -798,3 +799,93 @@ def test_delete_version_referenced_leaves_active_pointer(store: Store) -> None:
         store.delete_version(v2.id)
     assert store.get_version(v1.id).id == v1.id
     assert store.get_evaluator(evaluator.id).active_version_id == v2.id
+
+
+# -- Generation settings ------------------------------------------------------
+
+
+def test_generation_absent_for_a_dataset_that_was_never_generated(store: Store) -> None:
+    dataset = store.create_dataset(name="uploaded", description="", columns=["a"], label_schema={})
+
+    assert store.get_generation(dataset.id) is None
+
+
+def test_set_generation_round_trips_every_field(store: Store) -> None:
+    dataset = store.create_dataset(name="gen", description="", columns=["a"], label_schema={})
+
+    store.set_generation(
+        dataset.id,
+        count=7,
+        instructions="be subtle",
+        column_notes={"a": "a prompt"},
+        label_mix={"pass": 0.5, "fail": 0.5},
+        label_guidance="partial is fail",
+        include_labels=True,
+        source_version_id="v1",
+    )
+
+    stored = store.get_generation(dataset.id)
+    assert stored is not None
+    assert stored.count == 7
+    assert stored.instructions == "be subtle"
+    assert stored.column_notes == {"a": "a prompt"}
+    assert stored.label_mix == {"pass": 0.5, "fail": 0.5}
+    assert stored.label_guidance == "partial is fail"
+    assert stored.include_labels is True
+    assert stored.source_version_id == "v1"
+
+
+def test_set_generation_replaces_rather_than_accumulates(store: Store) -> None:
+    # The settings describe the most recent ask, which is what a form repopulates from.
+    dataset = store.create_dataset(name="gen", description="", columns=["a"], label_schema={})
+
+    store.set_generation(dataset.id, count=5, instructions="first")
+    store.set_generation(dataset.id, count=9, instructions="second")
+
+    stored = store.get_generation(dataset.id)
+    assert stored is not None
+    assert stored.count == 9
+    assert stored.instructions == "second"
+
+
+def test_get_generation_raises_for_a_missing_dataset(store: Store) -> None:
+    with pytest.raises(NotFoundError):
+        store.get_generation("nope")
+
+
+def test_deleting_a_dataset_removes_its_generation_record(store: Store) -> None:
+    dataset = store.create_dataset(name="gen", description="", columns=["a"], label_schema={})
+    store.set_generation(dataset.id, count=3)
+
+    store.delete_dataset(dataset.id)
+
+    with pytest.raises(NotFoundError):
+        store.get_generation(dataset.id)
+
+
+def test_init_db_adds_the_generation_table_to_an_existing_database(tmp_path) -> None:
+    """A database written before ``DatasetGeneration`` existed gains it on the next start.
+
+    This is why the settings live in their own table: ``init_db`` is a bare ``create_all``,
+    which creates missing tables but never missing columns. Extra fields on ``Dataset``
+    would leave an existing database raising ``no such column`` on every dataset query.
+    """
+    engine = create_engine(tmp_path / "existing.db")
+    init_db(engine)
+    store = Store(engine)
+    dataset = store.create_dataset(
+        name="from-before", description="d", columns=["a"], label_schema={}
+    )
+    store.add_rows(dataset.id, [{"a": "1"}])
+
+    # Simulate the older schema: the table simply is not there.
+    DatasetGeneration.__table__.drop(engine)
+
+    init_db(engine)
+
+    # Existing data is untouched, and the new table is usable.
+    assert store.get_dataset(dataset.id).name == "from-before"
+    assert len(store.list_rows(dataset.id)) == 1
+    assert store.get_generation(dataset.id) is None
+    store.set_generation(dataset.id, count=4, instructions="works")
+    assert store.get_generation(dataset.id).count == 4

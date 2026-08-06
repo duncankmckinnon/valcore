@@ -20,6 +20,7 @@ from valcore.errors import (
 )
 from valcore.models import (
     Dataset,
+    DatasetGeneration,
     DatasetRow,
     Evaluator,
     EvaluatorVersion,
@@ -315,6 +316,13 @@ class Store:
             rows = session.exec(select(DatasetRow).where(DatasetRow.dataset_id == id))
             for row in rows:
                 session.delete(row)
+            # The generation record has no meaning without its dataset; leaving it would
+            # orphan a row that nothing can reach.
+            generations = session.exec(
+                select(DatasetGeneration).where(DatasetGeneration.dataset_id == id)
+            )
+            for generation in generations:
+                session.delete(generation)
             session.delete(dataset)
 
     def add_rows(self, dataset_id: str, rows: list[dict]) -> list[DatasetRow]:
@@ -335,6 +343,32 @@ class Store:
                 session.add(row)
                 created.append(row)
             return created
+
+    def set_generation(self, dataset_id: str, **fields) -> DatasetGeneration:
+        """Record (or replace) how ``dataset_id``'s rows were generated.
+
+        Replaces rather than accumulates: the settings describe the most recent ask, which
+        is what a form should be repopulated from. A dataset therefore has at most one row.
+        """
+        with session_scope(self.engine) as session:
+            _require(session, Dataset, dataset_id)
+            existing = session.exec(
+                select(DatasetGeneration).where(DatasetGeneration.dataset_id == dataset_id)
+            ).first()
+            if existing is not None:
+                session.delete(existing)
+                session.flush()
+            generation = DatasetGeneration(dataset_id=dataset_id, **fields)
+            session.add(generation)
+            return generation
+
+    def get_generation(self, dataset_id: str) -> DatasetGeneration | None:
+        """Return how ``dataset_id`` was generated, or None for an uploaded or blank dataset."""
+        with session_scope(self.engine) as session:
+            _require(session, Dataset, dataset_id)
+            return session.exec(
+                select(DatasetGeneration).where(DatasetGeneration.dataset_id == dataset_id)
+            ).first()
 
     def get_row(self, id: str) -> DatasetRow:
         """Return the dataset row with ``id`` or raise NotFoundError."""

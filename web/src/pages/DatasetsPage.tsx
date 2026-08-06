@@ -5,10 +5,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { datasets } from "../api/client";
-import type { Dataset, DatasetStats } from "../api/types";
+import type { Dataset, DatasetStats, LabelSchema } from "../api/types";
 import { Badge, Button, ErrorBanner, Modal, Spinner, Table } from "../components/ui";
 import DatasetBlankForm from "../components/DatasetBlankForm";
 import DatasetGenerateForm from "../components/DatasetGenerateForm";
+import type { GenerateFormInitial } from "../components/DatasetGenerateForm";
 import DatasetUpload from "../components/DatasetUpload";
 import DatasetDetail from "./DatasetDetail";
 
@@ -34,6 +35,10 @@ function DatasetsList() {
   const [error, setError] = useState<unknown>(null);
   const [creating, setCreating] = useState(false);
   const [mode, setMode] = useState<CreateMode>("blank");
+  // Prefill for the generate form, plus a counter that forces it to remount so the new
+  // prefill is picked up (the form reads `initial` once, at mount).
+  const [seed, setSeed] = useState<GenerateFormInitial | undefined>(undefined);
+  const [seedEpoch, setSeedEpoch] = useState(0);
 
   const load = useCallback(() => {
     setError(null);
@@ -57,6 +62,29 @@ function DatasetsList() {
 
   function openCreate() {
     setMode("blank");
+    setSeed(undefined);
+    setSeedEpoch((epoch) => epoch + 1);
+    setCreating(true);
+  }
+
+  async function duplicate(dataset: Dataset) {
+    // Settings are optional: a dataset that was uploaded rather than generated still
+    // seeds its shape and description, just with nothing to steer content.
+    const generation = await datasets.generation(dataset.id).catch(() => null);
+    setSeed({
+      name: `${dataset.name} copy`,
+      description: dataset.description,
+      columns: dataset.columns,
+      labelSchema: Object.keys(dataset.label_schema).length > 0
+        ? (dataset.label_schema as LabelSchema)
+        : undefined,
+      instructions: generation?.instructions ?? undefined,
+      columnNotes: generation?.column_notes ?? undefined,
+      labelMix: generation?.label_mix ?? null,
+      count: generation?.count,
+    });
+    setSeedEpoch((epoch) => epoch + 1);
+    setMode("generate");
     setCreating(true);
   }
 
@@ -105,6 +133,18 @@ function DatasetsList() {
                   "—"
                 ),
             },
+            {
+              header: "",
+              cell: (listing) => (
+                <Button
+                  variant="secondary"
+                  aria-label={`Duplicate ${listing.dataset.name}`}
+                  onClick={() => duplicate(listing.dataset)}
+                >
+                  Duplicate
+                </Button>
+              ),
+            },
           ]}
         />
       )}
@@ -128,7 +168,9 @@ function DatasetsList() {
         {mode === "upload" && (
           <DatasetUpload onCreated={(created) => onCreated(created.dataset.id)} />
         )}
-        {mode === "generate" && <DatasetGenerateForm onCreated={onCreated} />}
+        {mode === "generate" && (
+          <DatasetGenerateForm key={seedEpoch} onCreated={onCreated} initial={seed} />
+        )}
       </Modal>
     </section>
   );

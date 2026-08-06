@@ -49,6 +49,20 @@ export function toProportions(percents: LabelMixPercents): Record<string, number
 }
 
 /**
+ * Convert stored proportions back into the whole percents the editor works in.
+ *
+ * The inverse of `toProportions`, used to repopulate a form from a dataset's saved mix.
+ * Rounding is lossless for any mix the editor produced, since those came from whole
+ * percents to begin with.
+ */
+export function fromProportions(mix: Record<string, number> | null): LabelMixPercents {
+  if (!mix) return {};
+  return Object.fromEntries(
+    Object.entries(mix).map(([label, share]) => [label, Math.round(share * TOTAL_PERCENT)]),
+  );
+}
+
+/**
  * Apportion `count` rows across the given percents, largest-remainder.
  *
  * Mirrors `_apportion` so the preview matches the prompt: shares are normalised by their

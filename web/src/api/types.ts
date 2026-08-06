@@ -268,3 +268,27 @@ export interface DatasetGenerateFromVersion {
 // to leave the distribution to the description/instructions; a categorical label space is
 // required, and naming only some labels gives the rest no rows.
 export type LabelMix = Record<string, number>;
+
+// How a generated dataset's rows were asked for. Null for an uploaded or blank dataset,
+// which was never generated. `source_version_id` is provenance only — the version it
+// names may since have changed or been deleted.
+export interface DatasetGeneration {
+  count: number;
+  instructions: string | null;
+  column_notes: Record<string, string> | null;
+  label_mix: LabelMix | null;
+  label_guidance: string | null;
+  include_labels: boolean;
+  source_version_id: string | null;
+}
+
+// Generate more rows into an existing dataset. Every field but `count` is an override:
+// omitted ones fall back to the dataset's stored generation settings. Shape is never
+// overridable — the dataset's own columns and label space always apply.
+export interface RowsGenerate {
+  count: number;
+  instructions?: string;
+  column_notes?: Record<string, string>;
+  label_mix?: LabelMix;
+  label_guidance?: string;
+}
