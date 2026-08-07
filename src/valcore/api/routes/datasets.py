@@ -118,7 +118,11 @@ class DatasetUpdate(BaseModel):
 
 
 class DatasetOut(BaseModel):
-    """A dataset as returned to the client."""
+    """A dataset as returned to the client.
+
+    ``row_count`` and ``labeled_count`` are additive: existing fields keep their names and
+    types so current callers are unaffected.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -128,6 +132,8 @@ class DatasetOut(BaseModel):
     description: str
     columns: list[str]
     label_schema: dict
+    row_count: int = 0
+    labeled_count: int = 0
 
 
 class DatasetCreatedOut(BaseModel):

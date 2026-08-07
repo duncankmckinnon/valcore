@@ -2,10 +2,12 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypeVar
 
-from sqlalchemy import event
+from sqlalchemy import case, event
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, func, select
 from sqlmodel import create_engine as _sqlmodel_create_engine
@@ -92,6 +94,87 @@ def _raise_referenced(runs: list[Run], noun: str) -> None:
         f"{len(run_ids)} {plural} reference this {noun}; delete them first.",
         detail={"run_count": len(run_ids), "run_ids": run_ids},
     )
+
+
+@dataclass
+class DatasetSummary:
+    """A dataset carrying its row and labeled-row counts, as returned by ``list_datasets``.
+
+    The counts are additive: every field the bare ``Dataset`` exposed survives with the
+    same name and type, so callers reading only those are unaffected.
+    """
+
+    id: str
+    created_at: datetime
+    name: str
+    description: str
+    columns: list[str]
+    label_schema: dict
+    row_count: int
+    labeled_count: int
+
+    def model_dump(self) -> dict:
+        """Match the ``Dataset.model_dump`` the CLI relied on before counts were added."""
+        return asdict(self)
+
+
+@dataclass
+class LatestRun:
+    """The most recently finished run, flattened for the overview aggregate."""
+
+    id: str
+    dataset_name: str
+    status: RunStatus
+    accuracy: float | None
+    finished_at: datetime
+
+
+@dataclass
+class Overview:
+    """Store-wide aggregate counts for the Overview page."""
+
+    evaluator_count: int
+    dataset_count: int
+    run_count: int
+    total_rows: int
+    labeled_rows: int
+    best_accuracy: float | None
+    latest_run: LatestRun | None
+
+
+def _labeled_rows_expr() -> object:
+    """A grouped count of rows carrying a real label.
+
+    An unlabeled row persists the JSON text ``'null'`` rather than SQL ``NULL``, so a plain
+    ``COUNT(label)`` would count it. Counting only rows whose JSON type is not ``null`` keeps
+    the SQL count in step with the Python ``label is not None`` check used elsewhere, and
+    still reports ``0`` for a dataset with no rows (a ``LEFT JOIN`` yields SQL ``NULL`` there,
+    whose ``json_type`` is ``NULL`` and so is excluded).
+    """
+    return func.count(case((func.json_type(DatasetRow.label) != "null", DatasetRow.id)))
+
+
+def _read_accuracy(metrics: dict | None) -> float | None:
+    """Read ``metrics["accuracy"]`` as a float, or ``None`` for any unusable shape.
+
+    ``Run.metrics`` is an untyped JSON dict: a run may carry ``None``, a dict without the
+    key, or a non-numeric value. Each of those means "no accuracy" rather than an error, so
+    none may raise. ``bool`` is rejected explicitly because it is a subclass of ``int`` and
+    an accuracy of ``True`` would otherwise read as ``1.0``.
+    """
+    if not isinstance(metrics, dict):
+        return None
+    value = metrics.get("accuracy")
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value)
+
+
+def _as_utc(moment: datetime | None) -> datetime | None:
+    """Tag a naive timestamp as UTC, since SQLite drops the tzinfo everything is stored with."""
+    if moment is None:
+        return None
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
 
 
 class Store:
@@ -242,10 +325,37 @@ class Store:
         with session_scope(self.engine) as session:
             return _require(session, Dataset, id)
 
-    def list_datasets(self) -> list[Dataset]:
-        """Return every dataset ordered by creation time."""
+    def list_datasets(self) -> list[DatasetSummary]:
+        """Return every dataset ordered by creation time, each with its row/label counts.
+
+        The counts come from one grouped ``LEFT JOIN`` against the rows table, not a query
+        per dataset: a dataset with no rows still appears, reporting ``0``/``0`` rather than
+        being dropped by an inner join. ``labeled_count`` counts rows whose ``label`` is set.
+        """
         with session_scope(self.engine) as session:
-            return list(session.exec(select(Dataset).order_by(Dataset.created_at)))
+            grouped = session.exec(
+                select(
+                    Dataset,
+                    func.count(DatasetRow.id),
+                    _labeled_rows_expr(),
+                )
+                .outerjoin(DatasetRow, DatasetRow.dataset_id == Dataset.id)
+                .group_by(Dataset.id)
+                .order_by(Dataset.created_at)
+            ).all()
+            return [
+                DatasetSummary(
+                    id=dataset.id,
+                    created_at=dataset.created_at,
+                    name=dataset.name,
+                    description=dataset.description,
+                    columns=dataset.columns,
+                    label_schema=dataset.label_schema,
+                    row_count=row_count,
+                    labeled_count=labeled_count,
+                )
+                for dataset, row_count, labeled_count in grouped
+            ]
 
     def update_dataset(
         self,
@@ -550,4 +660,59 @@ class Store:
                         RunResult.run_id == run_id, RunResult.error.is_not(None)
                     )
                 )
+            )
+
+    # -- Overview -------------------------------------------------------------
+
+    def overview(self) -> Overview:
+        """Return store-wide aggregate counts for the Overview page.
+
+        Entity and row counts are computed by grouped aggregate SQL rather than by looping
+        datasets, avoiding an N+1. Accuracy cannot be aggregated in SQL because it lives in
+        the untyped ``Run.metrics`` JSON, so completed runs are read back and their accuracy
+        parsed defensively in Python — mirroring ``labeled_count`` and ``label_distribution``.
+        Only runs in the completed terminal state contribute to ``best_accuracy`` and are
+        eligible to be the ``latest_run``.
+        """
+        with session_scope(self.engine) as session:
+            evaluator_count = session.exec(select(func.count()).select_from(Evaluator)).one()
+            dataset_count = session.exec(select(func.count()).select_from(Dataset)).one()
+            run_count = session.exec(select(func.count()).select_from(Run)).one()
+            total_rows, labeled_rows = session.exec(
+                select(func.count(DatasetRow.id), _labeled_rows_expr())
+            ).one()
+
+            completed = session.exec(
+                select(Run, Dataset.name)
+                .join(Dataset, Dataset.id == Run.dataset_id)
+                .where(Run.status == RunStatus.COMPLETED)
+                .order_by(Run.finished_at.desc())
+            ).all()
+
+            accuracies = [
+                accuracy
+                for run, _ in completed
+                if (accuracy := _read_accuracy(run.metrics)) is not None
+            ]
+            best_accuracy = max(accuracies) if accuracies else None
+
+            latest_run: LatestRun | None = None
+            if completed:
+                run, dataset_name = completed[0]
+                latest_run = LatestRun(
+                    id=run.id,
+                    dataset_name=dataset_name,
+                    status=run.status,
+                    accuracy=_read_accuracy(run.metrics),
+                    finished_at=_as_utc(run.finished_at),
+                )
+
+            return Overview(
+                evaluator_count=evaluator_count,
+                dataset_count=dataset_count,
+                run_count=run_count,
+                total_rows=total_rows,
+                labeled_rows=labeled_rows,
+                best_accuracy=best_accuracy,
+                latest_run=latest_run,
             )
