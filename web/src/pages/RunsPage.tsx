@@ -5,6 +5,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { datasets, evaluators, runs } from "../api/client";
 import type { Dataset, Evaluator, EvaluatorVersion, Run, RunStatus } from "../api/types";
+import { EmptyState } from "../components/EmptyState";
+import { RunIcon } from "../components/icons";
+import { PageHeader } from "../components/PageHeader";
 import RunLauncher from "../components/RunLauncher";
 import { Badge, Button, ErrorBanner, Modal, Spinner, Table } from "../components/ui";
 import ComparePage from "./ComparePage";
@@ -77,15 +80,18 @@ function RunsList() {
 
   return (
     <section>
-      <div className="page-header">
-        <h1>Runs</h1>
-        <div className="form-actions">
-          <Button onClick={() => setLaunching(true)}>New run</Button>
-          <Button variant="secondary" onClick={() => navigate("/runs/compare")}>
-            Compare
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        title="Runs"
+        description="A run applies an evaluator version to a dataset and records how well it scored."
+        action={
+          <div className="form-actions">
+            <Button onClick={() => setLaunching(true)}>New run</Button>
+            <Button variant="secondary" onClick={() => navigate("/runs/compare")}>
+              Compare
+            </Button>
+          </div>
+        }
+      />
 
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
@@ -95,7 +101,13 @@ function RunsList() {
         <Table<Run>
           rows={rows}
           rowKey={(run) => run.id}
-          empty="No runs yet. Start one to see it here."
+          empty={
+            <EmptyState
+              icon={<RunIcon />}
+              message="A run scores an evaluator version against a dataset. Start one to see it here."
+              action={<Button onClick={() => setLaunching(true)}>New run</Button>}
+            />
+          }
           columns={[
             {
               header: "Evaluator / version",

@@ -6,6 +6,7 @@ import { Link } from "react-router-dom";
 import { datasets, runs } from "../api/client";
 import type { ResultRow, Run, RunStatus } from "../api/types";
 import MetricsPanel from "../components/MetricsPanel";
+import { PageHeader } from "../components/PageHeader";
 import RunProgress from "../components/RunProgress";
 import { Badge, Button, ErrorBanner, Spinner, Table } from "../components/ui";
 
@@ -116,7 +117,7 @@ export default function RunDetail({ runId }: Props) {
       <div className="detail-breadcrumb">
         <Link to="/runs">Runs</Link> / {run.kind} run
       </div>
-      <h1>Run {run.id.slice(0, 8)}</h1>
+      <PageHeader title={`Run ${run.id.slice(0, 8)}`} />
 
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
