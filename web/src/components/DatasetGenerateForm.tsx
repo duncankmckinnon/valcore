@@ -6,10 +6,12 @@ import { useState } from "react";
 import { datasets } from "../api/client";
 import type { LabelSchema } from "../api/types";
 import { Button, ErrorBanner, Spinner } from "./ui";
+import { Tooltip } from "./Tooltip";
+import { FormFooter } from "./FormFooter";
 import LabelSchemaEditor from "./LabelSchemaEditor";
 import ColumnNotesEditor from "./ColumnNotesEditor";
 import LabelMixEditor from "./LabelMixEditor";
-import { TOTAL_PERCENT, fromProportions, toProportions, totalPercent } from "./labelMix";
+import { TOTAL_PERCENT, apportion, fromProportions, toProportions, totalPercent } from "./labelMix";
 import type { LabelMixPercents } from "./labelMix";
 
 /** Prefill for the form, e.g. seeded from an existing dataset's stored settings. */
@@ -33,6 +35,13 @@ type DatasetGenerateFormProps = {
 
 const DEFAULT_SCHEMA: LabelSchema = { kind: "categorical", labels: [], minimum: null, maximum: null };
 const DEFAULT_COUNT = 20;
+
+// The longer explanation that used to sit inline under the field. It steers the generated
+// content and is optional, so it belongs in an on-demand tooltip rather than as permanent
+// prose competing with the field for attention.
+const INSTRUCTIONS_HINT =
+  "How to generate the rows — content, difficulty, mix of cases. Leave blank to generate " +
+  "from the description alone.";
 
 export default function DatasetGenerateForm({ onCreated, initial }: DatasetGenerateFormProps) {
   const [name, setName] = useState(initial?.name ?? "");
@@ -58,8 +67,15 @@ export default function DatasetGenerateForm({ onCreated, initial }: DatasetGener
   // labels to distribute over — otherwise the editor is not rendered at all.
   const mixActive = mixEnabled && mixLabels.length > 0;
   const mixIncomplete = mixActive && totalPercent(mixPercents) !== TOTAL_PERCENT;
-  const canSubmit =
-    name.trim() !== "" && description.trim() !== "" && columns.length > 0 && !mixIncomplete;
+
+  // The old silent `canSubmit` becomes an ordered list of what is still missing, surfaced
+  // through FormFooter one instruction at a time. The gating is unchanged: the button stays
+  // disabled while any blocker remains, i.e. exactly when the old `canSubmit` was false.
+  const blockers: string[] = [];
+  if (name.trim() === "") blockers.push("Add a name");
+  if (description.trim() === "") blockers.push("Add a description");
+  if (columns.length === 0) blockers.push("Add at least one column");
+  if (mixIncomplete) blockers.push("Label mix must total 100%");
 
   // The columns text field owns the column set, so a note can outlive the column it was
   // written for — retyping the list is enough to orphan one. Notes are kept in state
@@ -72,6 +88,12 @@ export default function DatasetGenerateForm({ onCreated, initial }: DatasetGener
       notes[column].trim(),
     ]),
   );
+
+  // Derived, not stored: the preview re-computes on every keystroke so the row shape and
+  // apportioned counts always reflect the current fields. Row counts reuse the shared
+  // apportionment helper so the preview and LabelMixEditor never disagree.
+  const previewRows =
+    mixActive && !mixIncomplete ? apportion(mixPercents, count) : {};
 
   async function submit() {
     setSubmitting(true);
@@ -101,83 +123,140 @@ export default function DatasetGenerateForm({ onCreated, initial }: DatasetGener
   return (
     <div className="generate-form">
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
-      <label className="field">
-        <span className="field-label">Name</span>
-        <input className="select" value={name} onChange={(e) => setName(e.target.value)} />
-      </label>
-      <label className="field">
-        <span className="field-label">Description</span>
-        <textarea
-          className="textarea"
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-        />
-      </label>
-      <div className="field-group">
-        <label className="field">
-          <span className="field-label">Instructions</span>
-          <textarea
-            className="textarea"
-            value={instructions}
-            onChange={(e) => setInstructions(e.target.value)}
-          />
-        </label>
-        {/* Outside the label: text inside it would join the field's accessible name. */}
-        <p className="field-hint">
-          How to generate the rows — content, difficulty, mix of cases. Leave blank to
-          generate from the description alone.
-        </p>
-      </div>
-      <label className="field">
-        <span className="field-label">Columns (comma separated)</span>
-        <input
-          className="select"
-          value={columnsText}
-          placeholder="question, answer"
-          onChange={(e) => setColumnsText(e.target.value)}
-        />
-      </label>
-      {columns.length > 0 && (
-        <div className="field">
-          <span className="field-label">Column notes (optional)</span>
-          {/* The text field above owns the column set, so every column is locked here and
-              none can be added — this editor only collects the per-column guidance. */}
-          <ColumnNotesEditor
-            lockedColumns={columns}
-            extraColumns={[]}
-            notes={notes}
-            notePlaceholder="What should this column contain?"
-            allowAddColumns={false}
-            onChangeNotes={setNotes}
-            onChangeExtraColumns={() => {}}
+      <div className="modal-two-pane">
+        <div className="modal-main">
+          <label className="field">
+            <span className="field-label">Name</span>
+            <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
+          </label>
+          <label className="field">
+            <span className="field-label">Description</span>
+            <textarea
+              className="textarea"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+            />
+          </label>
+          <div className="field">
+            {/* The tooltip trigger is a <button>, so it must stay out of any <label>: a
+                button inside a label is treated as the field's control, and a button
+                referenced through a label pollutes its accessible name. The label text is a
+                plain span carrying the trigger, and the input names itself with `aria-label`
+                so the trigger sits beside the label — where the spec wants it — for free. */}
+            <span className="field-label">
+              Instructions
+              <Tooltip text={INSTRUCTIONS_HINT} label="About instructions" />
+            </span>
+            <textarea
+              className="textarea"
+              aria-label="Instructions"
+              value={instructions}
+              onChange={(e) => setInstructions(e.target.value)}
+            />
+          </div>
+          <div className="field">
+            <span className="field-label">
+              Columns (comma separated)
+              <Tooltip
+                text="The fields every generated row will carry. These become the dataset's columns."
+                label="About columns"
+              />
+            </span>
+            <input
+              className="input"
+              aria-label="Columns (comma separated)"
+              value={columnsText}
+              placeholder="question, answer"
+              onChange={(e) => setColumnsText(e.target.value)}
+            />
+          </div>
+          {columns.length > 0 && (
+            <div className="field">
+              <span className="field-label">
+                Column notes (optional)
+                <Tooltip
+                  text="Optional guidance per column describing what it should contain. Blank notes steer nothing and are dropped."
+                  label="About column notes"
+                />
+              </span>
+              {/* The text field above owns the column set, so every column is locked here and
+                  none can be added — this editor only collects the per-column guidance. */}
+              <ColumnNotesEditor
+                lockedColumns={columns}
+                extraColumns={[]}
+                notes={notes}
+                notePlaceholder="What should this column contain?"
+                allowAddColumns={false}
+                onChangeNotes={setNotes}
+                onChangeExtraColumns={() => {}}
+              />
+            </div>
+          )}
+          <div className="field">
+            <span className="field-label">
+              Row count
+              <Tooltip text="How many rows to generate, from 1 to 200." label="About row count" />
+            </span>
+            <input
+              className="input"
+              aria-label="Row count"
+              type="number"
+              min={1}
+              max={200}
+              value={count}
+              onChange={(e) => setCount(Number(e.target.value))}
+            />
+          </div>
+          <LabelSchemaEditor value={schema} onChange={setSchema} />
+          <LabelMixEditor
+            labels={mixLabels}
+            percents={mixPercents}
+            enabled={mixEnabled}
+            count={count}
+            onChangeEnabled={setMixEnabled}
+            onChangePercents={setMixPercents}
           />
         </div>
-      )}
-      <label className="field">
-        <span className="field-label">Row count</span>
-        <input
-          className="select"
-          type="number"
-          min={1}
-          max={200}
-          value={count}
-          onChange={(e) => setCount(Number(e.target.value))}
-        />
-      </label>
-      <LabelSchemaEditor value={schema} onChange={setSchema} />
-      <LabelMixEditor
-        labels={mixLabels}
-        percents={mixPercents}
-        enabled={mixEnabled}
-        count={count}
-        onChangeEnabled={setMixEnabled}
-        onChangePercents={setMixPercents}
-      />
-      <div className="form-actions">
-        <Button onClick={submit} disabled={submitting || !canSubmit}>
+        <div className="modal-side">
+          <div className="preview-pane">
+            <pre className="preview-code">
+              {"{\n"}
+              {columns.map((column) => `  "column": "${column}"\n`).join("")}
+              {mixLabels.length > 0 ? `  "label": "${mixLabels.join(" | ")}"\n` : ""}
+              {"}"}
+            </pre>
+            {mixActive && (
+              <div className="preview-mix">
+                {mixLabels.map((label) => {
+                  const percent = mixPercents[label] ?? 0;
+                  return (
+                    <div key={label} className="mix-bar-row">
+                      <span className="mix-bar-label">{label}</span>
+                      <span className="mix-bar-track">
+                        <span className="mix-bar-fill" style={{ width: `${percent}%` }} />
+                      </span>
+                      <span className="mix-bar-count">{previewRows[label] ?? 0} rows</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+      <FormFooter
+        blockers={blockers}
+        ready={
+          <>
+            Generate {count} rows
+            {mixLabels.length > 0 ? ` across ${mixLabels.length} labels` : ""}
+          </>
+        }
+      >
+        <Button onClick={submit} disabled={blockers.length > 0 || submitting}>
           {submitting ? <Spinner /> : "Generate"}
         </Button>
-      </div>
+      </FormFooter>
     </div>
   );
 }
