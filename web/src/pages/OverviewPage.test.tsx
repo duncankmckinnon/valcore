@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import OverviewPage from "./OverviewPage";
 import { overview } from "../api/client";
@@ -73,7 +73,8 @@ describe("OverviewPage", () => {
 
     expect(screen.getByText("Datasets")).toBeTruthy();
     expect(screen.getByText("12")).toBeTruthy();
-    expect(screen.getByText(/5 of 12 labeled/i)).toBeTruthy();
+    // labeled_rows of total_rows — 5 labeled of the 40 total dataset rows.
+    expect(screen.getByText(/5 of 40 labeled/i)).toBeTruthy();
 
     expect(screen.getByText("Best accuracy")).toBeTruthy();
     expect(screen.getByText("91%")).toBeTruthy();
@@ -97,6 +98,45 @@ describe("OverviewPage", () => {
     expect(screen.getByText("—")).toBeTruthy();
     expect(container.textContent).not.toContain("NaN");
     expect(container.textContent).not.toContain("0%");
+  });
+
+  it("guards the latest_run accuracy too: null renders an em dash, never NaN% or 0%", async () => {
+    // The run card is present (latest_run is not null) but its accuracy is not yet
+    // measured. best_accuracy is a whole number here so the only em dash on the page
+    // must come from the run card's null accuracy.
+    // best_accuracy 0.53 -> "53%", chosen so its own rendering never contains the
+    // "0%" substring the guard below looks for; the only em dash comes from the run.
+    getMock.mockResolvedValue(
+      makeOverview({
+        best_accuracy: 0.53,
+        latest_run: {
+          id: "run-9",
+          dataset_name: "Support tickets",
+          status: "running",
+          accuracy: null,
+          finished_at: null,
+        },
+      }),
+    );
+
+    const { container } = renderPage();
+
+    await screen.findByText("Support tickets");
+
+    // In the run card the em dash sits alongside the status ("— · running"), so it
+    // is not an isolated element — assert on the composed text instead.
+    expect(container.textContent).toContain("—");
+    expect(container.textContent).not.toContain("NaN");
+    expect(container.textContent).not.toContain("0%");
+  });
+
+  it("rounds fractional accuracy to a whole percentage", async () => {
+    // 0.876 * 100 = 87.6, which must round to 88 — not truncate to 87.
+    getMock.mockResolvedValue(makeOverview({ best_accuracy: 0.876 }));
+
+    renderPage();
+
+    expect(await screen.findByText("88%")).toBeTruthy();
   });
 
   it("replaces the run card with a create-dataset prompt when latest_run is null", async () => {
