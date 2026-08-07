@@ -11,6 +11,7 @@ import LabelMixEditor from "./LabelMixEditor";
 import { TOTAL_PERCENT, fromProportions, toProportions, totalPercent } from "./labelMix";
 import type { LabelMixPercents } from "./labelMix";
 import { Button, ErrorBanner, Modal, Spinner } from "./ui";
+import { FormFooter } from "./FormFooter";
 
 type GenerateMoreRowsProps = {
   open: boolean;
@@ -63,6 +64,13 @@ export default function GenerateMoreRows({
   const countExceeds = count > maxCount;
   const canSubmit = count >= 1 && !countExceeds && !mixIncomplete;
 
+  // One reason at a time, so a blocked Generate says why instead of sitting silently
+  // disabled. Order mirrors the fields top to bottom.
+  const blockers: string[] = [];
+  if (count < 1) blockers.push("Add at least one row.");
+  if (countExceeds) blockers.push(`Rows to add must be ${maxCount} or fewer.`);
+  if (mixIncomplete) blockers.push("The label mix must total 100%.");
+
   // Notes are pruned to the dataset's columns and to non-blank values: a stored note for a
   // column since removed by an edit would fail the server's check for an unknown column.
   const columnNotes = Object.fromEntries(
@@ -91,7 +99,22 @@ export default function GenerateMoreRows({
   }
 
   return (
-    <Modal open={open} title="Generate more rows" onClose={onClose}>
+    <Modal
+      open={open}
+      title="Generate more rows"
+      description="New rows append to this dataset and reuse its stored generation settings."
+      onClose={onClose}
+      footer={
+        <FormFooter blockers={blockers}>
+          <Button variant="secondary" onClick={onClose} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={submitting || !canSubmit}>
+            {submitting ? <Spinner /> : "Generate"}
+          </Button>
+        </FormFooter>
+      }
+    >
       <div className="generate-form">
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
@@ -111,10 +134,6 @@ export default function GenerateMoreRows({
             onChange={(e) => setCount(Number(e.target.value))}
           />
         </label>
-
-        {countExceeds && (
-          <p className="destructive-warning">Rows to add must be {maxCount} or fewer.</p>
-        )}
 
         <div className="field-group">
           <label className="field">
@@ -152,15 +171,6 @@ export default function GenerateMoreRows({
           onChangeEnabled={setMixEnabled}
           onChangePercents={setMixPercents}
         />
-
-        <div className="form-actions">
-          <Button variant="secondary" onClick={onClose} disabled={submitting}>
-            Cancel
-          </Button>
-          <Button onClick={submit} disabled={submitting || !canSubmit}>
-            {submitting ? <Spinner /> : "Generate"}
-          </Button>
-        </div>
       </div>
     </Modal>
   );

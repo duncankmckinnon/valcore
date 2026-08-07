@@ -6,6 +6,7 @@ import { datasets } from "../api/client";
 import type { DatasetCreated, LabelSchema } from "../api/types";
 import { parseFile, type ParsedFile } from "./parse";
 import { Button, ErrorBanner, Select, Spinner } from "./ui";
+import { Tooltip } from "./Tooltip";
 import LabelSchemaEditor from "./LabelSchemaEditor";
 
 type Props = {
@@ -74,6 +75,11 @@ export default function DatasetUpload({ onCreated }: Props) {
     <div className="dataset-upload">
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
+      <p className="field-hint">
+        Upload a CSV or JSONL file. The header row (or each record&apos;s keys) names the
+        columns; every other row becomes a dataset row.
+      </p>
+
       <label className="field">
         <span className="field-label">Name</span>
         <input
@@ -97,7 +103,10 @@ export default function DatasetUpload({ onCreated }: Props) {
       {parsed && (
         <>
           <label className="field">
-            <span className="field-label">Label column (optional)</span>
+            <span className="field-label">
+              Label column (optional)
+              <Tooltip text="The column holding each row's ground-truth label. Naming it here stores those values as labels rather than as ordinary data columns." />
+            </span>
             <Select
               options={labelOptions}
               value={labelColumn}

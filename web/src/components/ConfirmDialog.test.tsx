@@ -92,4 +92,24 @@ describe("ConfirmDialog", () => {
     expect(screen.getByText("something broke")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Delete" })).not.toBeDisabled();
   });
+
+  it("renders the confirm and cancel actions inside the modal footer", () => {
+    const { container } = render(
+      <ConfirmDialog
+        open
+        title="Delete evaluator"
+        message="This cannot be undone."
+        onConfirm={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const footer = container.querySelector(".modal-footer");
+    expect(footer).not.toBeNull();
+    // The actions moved out of the body into the footer slot.
+    expect(container.querySelector(".modal-body .form-actions")).toBeNull();
+    expect(footer!.querySelector("button")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Delete" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+  });
 });

@@ -23,6 +23,8 @@ function madeDataset(): Dataset {
     description: "",
     columns: ["question", "answer"],
     label_schema: { kind: "categorical", labels: [], minimum: null, maximum: null },
+    row_count: 0,
+    labeled_count: 0,
   };
 }
 
@@ -68,5 +70,17 @@ describe("DatasetBlankForm", () => {
       expect.objectContaining({ name: "My set", columns: ["question", "answer"] }),
     );
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith("d1"));
+  });
+});
+
+// -- Redesigned modal chrome -------------------------------------------------
+// The redesign adds a one-line description: you define columns and a label space now and
+// add rows later.
+
+describe("DatasetBlankForm chrome", () => {
+  it("describes that rows are added later", () => {
+    render(<DatasetBlankForm onCreated={vi.fn()} />);
+
+    expect(screen.getByText(/later/i)).toBeInTheDocument();
   });
 });

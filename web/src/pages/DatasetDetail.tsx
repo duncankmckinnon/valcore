@@ -12,6 +12,7 @@ import type {
   LabelSchema,
 } from "../api/types";
 import { Button, ConfirmDialog, ErrorBanner, Spinner } from "../components/ui";
+import { PageHeader } from "../components/PageHeader";
 import DatasetSettingsModal from "../components/DatasetSettingsModal";
 import EvaluatorFromDataset from "../components/EvaluatorFromDataset";
 import GenerateMoreRows from "../components/GenerateMoreRows";
@@ -125,32 +126,32 @@ export default function DatasetDetail({ datasetId }: Props) {
       <div className="detail-breadcrumb">
         <Link to="/datasets">Datasets</Link> / {dataset.name}
       </div>
-      <div className="detail-header">
-        <div>
-          <h1>{dataset.name}</h1>
-          {dataset.description && <p className="muted">{dataset.description}</p>}
-        </div>
-        <div className="form-actions">
-          <Button variant="secondary" onClick={() => setGeneratingRows(true)}>
-            Generate more rows
-          </Button>
-          <Button variant="secondary" onClick={() => setGeneratingEvaluator(true)}>
-            Generate evaluator
-          </Button>
-          <Button variant="secondary" onClick={() => setEditing(true)}>
-            Edit
-          </Button>
-          <Button
-            variant="danger"
-            onClick={() => {
-              setDeleteError(null);
-              setConfirmingDelete(true);
-            }}
-          >
-            Delete dataset
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        title={dataset.name}
+        description={dataset.description || undefined}
+        action={
+          <div className="form-actions">
+            <Button variant="secondary" onClick={() => setGeneratingRows(true)}>
+              Generate more rows
+            </Button>
+            <Button variant="secondary" onClick={() => setGeneratingEvaluator(true)}>
+              Generate evaluator
+            </Button>
+            <Button variant="secondary" onClick={() => setEditing(true)}>
+              Edit
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                setDeleteError(null);
+                setConfirmingDelete(true);
+              }}
+            >
+              Delete dataset
+            </Button>
+          </div>
+        }
+      />
 
       {stats && (
         <div className="stats-header">

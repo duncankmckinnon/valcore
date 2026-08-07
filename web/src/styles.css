@@ -1,14 +1,39 @@
+/* -- Design tokens ---------------------------------------------------------- */
+
+/* Dark-only palette. The accent is a *light* cyan, so anything filled with it takes
+   near-black text (`--accent-text`) — white on cyan fails contrast. There is no light
+   theme and no `prefers-color-scheme` branch by design. */
 :root {
-  --bg: #f7f8fa;
-  --panel: #ffffff;
-  --border: #e2e5ea;
-  --text: #1f2430;
-  --muted: #6b7280;
-  --accent: #2f6feb;
-  --accent-text: #ffffff;
-  --danger: #d64545;
-  --success: #2f9e5b;
-  --warning: #c98a1a;
+  --bg: #1a2128;
+  --panel: #222c34;
+  --panel-sunk: #1c242b;
+  --border: #35434f;
+  --border-strong: #3f4f5c;
+  --text: #e7edf2;
+  --text-dim: #b9c6d0;
+  --muted: #8c9aa6;
+  --accent: #4dd0e1;
+  --accent-text: #0f171d;
+  --accent-wash: color-mix(in srgb, var(--accent) 13%, transparent);
+  --danger: #e5574d;
+  --success: #4cc38a;
+  --warning: #e0a83c;
+
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-h1: 22px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  --radius: 6px;
+  --radius-lg: 8px;
 }
 
 * {
@@ -26,8 +51,23 @@ body {
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   color: var(--text);
   background: var(--bg);
-  font-size: 14px;
+  font-size: var(--text-md);
 }
+
+/* A single visible focus ring for every interactive element. The pre-redesign
+   stylesheet defined none. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* -- Shell ------------------------------------------------------------------ */
 
 .layout {
   display: grid;
@@ -38,50 +78,85 @@ body {
 .nav {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 16px 12px;
+  gap: var(--space-1);
+  padding: var(--space-4) var(--space-3);
   background: var(--panel);
   border-right: 1px solid var(--border);
 }
 
 .nav-brand {
   font-weight: 700;
-  font-size: 16px;
-  margin-bottom: 16px;
-  padding: 0 8px;
+  font-size: var(--text-lg);
+  margin-bottom: var(--space-4);
+  padding: 0 var(--space-2);
+}
+
+.nav-brand-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.nav-logo {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius);
+  object-fit: contain;
+}
+
+.nav-section-label {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: var(--space-3) var(--space-2) var(--space-1);
+}
+
+.nav-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
 }
 
 .nav-link {
-  padding: 8px 10px;
-  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius);
   color: var(--text);
   text-decoration: none;
 }
 
 .nav-link:hover {
-  background: var(--bg);
+  background: var(--panel-sunk);
 }
 
 .nav-link.active {
-  background: var(--accent);
-  color: var(--accent-text);
+  color: var(--accent);
+  background: var(--accent-wash);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .content {
-  padding: 24px 32px;
+  padding: var(--space-6) var(--space-6);
   overflow: auto;
 }
 
 h1 {
-  font-size: 22px;
-  margin: 0 0 12px;
+  font-size: var(--text-h1);
+  margin: 0 0 var(--space-3);
 }
 
+/* -- Buttons ---------------------------------------------------------------- */
+
 .btn {
-  padding: 6px 12px;
-  border-radius: 6px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius);
   border: 1px solid transparent;
-  font-size: 14px;
+  font-size: var(--text-md);
   cursor: pointer;
 }
 
@@ -98,7 +173,7 @@ h1 {
 
 .btn-danger {
   background: var(--danger);
-  color: #fff;
+  color: var(--accent-text);
 }
 
 .btn:disabled {
@@ -106,20 +181,47 @@ h1 {
   cursor: not-allowed;
 }
 
+/* A button that reads as a link: no chrome, accent text. */
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}
+
+/* -- Inputs ----------------------------------------------------------------- */
+
+/* `.input` shares this rule so text inputs render identically to selects and
+   textareas — the single highest-impact fix in the redesign (18 inputs previously
+   fell back to native styling). */
+.input,
 .textarea,
 .select {
   width: 100%;
-  padding: 8px;
+  padding: var(--space-2);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   font: inherit;
-  background: var(--panel);
+  color: var(--text);
+  background: var(--panel-sunk);
+}
+
+.input:focus,
+.textarea:focus,
+.select:focus {
+  border-color: var(--accent);
+  outline: none;
 }
 
 .textarea {
   min-height: 80px;
   resize: vertical;
 }
+
+/* -- Tables ----------------------------------------------------------------- */
 
 .table {
   width: 100%;
@@ -130,7 +232,7 @@ h1 {
 .table th,
 .table td {
   text-align: left;
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border);
 }
 
@@ -140,34 +242,47 @@ h1 {
 }
 
 .table-empty {
-  padding: 24px;
+  padding: var(--space-6);
   color: var(--muted);
   text-align: center;
 }
 
+/* -- Badges ----------------------------------------------------------------- */
+
 .badge {
   display: inline-block;
-  padding: 2px 8px;
+  padding: 2px var(--space-2);
   border-radius: 999px;
-  font-size: 12px;
-  background: var(--bg);
+  font-size: var(--text-sm);
+  background: var(--panel-sunk);
   color: var(--muted);
 }
 
+/* Pale light-mode tints read as broken on dark, so each badge tints its own semantic
+   token onto transparent rather than using a hardcoded pastel. */
 .badge-success {
-  background: #e4f4ea;
+  background: color-mix(in srgb, var(--success) 15%, transparent);
   color: var(--success);
 }
 
 .badge-warning {
-  background: #f8efd9;
+  background: color-mix(in srgb, var(--warning) 15%, transparent);
   color: var(--warning);
 }
 
 .badge-danger {
-  background: #f8e0e0;
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
   color: var(--danger);
 }
+
+/* The default tone: same neutral look as the base badge, named for the interpolated
+   `badge badge-${tone}` idiom. */
+.badge-neutral {
+  background: var(--panel-sunk);
+  color: var(--muted);
+}
+
+/* -- Spinner ---------------------------------------------------------------- */
 
 .spinner {
   display: inline-block;
@@ -185,16 +300,18 @@ h1 {
   }
 }
 
+/* -- Banners ---------------------------------------------------------------- */
+
 .error-banner {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  border-radius: 6px;
-  background: #f8e0e0;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
   color: var(--danger);
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
 }
 
 .error-banner-close {
@@ -206,34 +323,277 @@ h1 {
   line-height: 1;
 }
 
+/* -- Modal ------------------------------------------------------------------ */
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: rgba(0, 0, 0, 0.55);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 100;
 }
 
+/* A column flex so a fixed header and footer can bracket a scrolling body. */
 .modal {
+  display: flex;
+  flex-direction: column;
   background: var(--panel);
-  border-radius: 8px;
-  min-width: 400px;
-  max-width: 640px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  max-width: 560px;
   max-height: 85vh;
-  overflow: auto;
+  width: 100%;
+}
+
+.modal-sm {
+  max-width: 420px;
+}
+
+.modal-md {
+  max-width: 560px;
+}
+
+.modal-lg {
+  max-width: 860px;
 }
 
 .modal-header {
-  padding: 14px 18px;
+  flex: none;
+  padding: var(--space-3) var(--space-5);
   border-bottom: 1px solid var(--border);
   font-weight: 600;
 }
 
-.modal-body {
-  padding: 18px;
+.modal-description {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  margin-top: var(--space-1);
+  font-weight: 400;
 }
+
+.modal-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: var(--space-5);
+}
+
+.modal-footer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--border);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+/* Two-column layout with the side pane on `--panel` and a dividing left border. Below
+   720px it stacks and the side pane drops to the bottom. */
+.modal-two-pane {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+}
+
+.modal-side {
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  padding: var(--space-5);
+}
+
+@media (max-width: 720px) {
+  .modal-two-pane {
+    grid-template-columns: 1fr;
+  }
+
+  .modal-side {
+    order: 1;
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+}
+
+/* -- Tooltip ---------------------------------------------------------------- */
+
+.tooltip-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.tooltip-trigger {
+  display: inline-flex;
+  align-items: center;
+  cursor: help;
+  color: var(--muted);
+}
+
+.tooltip-popover {
+  position: absolute;
+  z-index: 200;
+  bottom: calc(100% + var(--space-1));
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 160px;
+  max-width: 260px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--panel-sunk);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  font-size: var(--text-sm);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+/* -- Form footer ------------------------------------------------------------ */
+
+/* Explains why the primary action is gated instead of silently disabling it. */
+.form-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding-top: var(--space-4);
+  margin-top: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+
+.form-footer-blocker {
+  color: var(--warning);
+  font-size: var(--text-sm);
+}
+
+.form-footer-ready {
+  color: var(--success);
+  font-size: var(--text-sm);
+}
+
+.form-footer-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+/* -- Page header / empty state ---------------------------------------------- */
+
+.page-header-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.page-title {
+  font-size: var(--text-h1);
+  font-weight: 700;
+  margin: 0;
+}
+
+.page-description {
+  color: var(--muted);
+  font-size: var(--text-md);
+  margin: 0;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-6);
+  text-align: center;
+  color: var(--muted);
+}
+
+.empty-state-icon {
+  width: 40px;
+  height: 40px;
+  color: var(--border-strong);
+}
+
+.empty-state-text {
+  max-width: 360px;
+  font-size: var(--text-md);
+}
+
+/* -- Overview --------------------------------------------------------------- */
+
+.overview-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
+}
+
+.stat-card {
+  padding: var(--space-4);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.stat-card-value {
+  font-size: var(--text-h1);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-card-label {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.stat-card-sub {
+  color: var(--text-dim);
+  font-size: var(--text-sm);
+  margin-top: var(--space-1);
+}
+
+.overview-next {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-4);
+}
+
+.next-card {
+  display: block;
+  padding: var(--space-4);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.next-card:hover {
+  border-color: var(--border-strong);
+}
+
+.overview-empty {
+  padding: var(--space-6);
+  color: var(--muted);
+  text-align: center;
+}
+
+/* -- Summary strip ---------------------------------------------------------- */
+
+/* Reuses `.stat` / `.stat-value` / `.stat-label` for its children. */
+.summary-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+  padding: var(--space-4) 0;
+  margin-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+
+/* -- Modal / dialog ancillary ----------------------------------------------- */
 
 .muted {
   color: var(--muted);
@@ -245,39 +605,63 @@ h1 {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
 }
 
 .form-actions {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .field {
   display: block;
-  margin-bottom: 12px;
+  margin-bottom: var(--space-3);
 }
 
 .field-label {
   display: block;
   font-weight: 600;
   color: var(--muted);
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
 }
 
+/* -- Chips ------------------------------------------------------------------ */
+
+.chips,
 .label-chips,
 .stat-distribution {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: 999px;
+  background: var(--panel-sunk);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: var(--text-sm);
+}
+
+.chip-add {
+  border-style: dashed;
+  border-color: var(--border-strong);
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
 }
 
 .label-add,
 .label-bounds {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .chip-remove {
@@ -285,19 +669,19 @@ h1 {
   border: none;
   cursor: pointer;
   color: inherit;
-  margin-left: 4px;
+  margin-left: var(--space-1);
 }
 
 /* Matches `.field` so the mix editor spaces like the fields around it. */
 .label-mix-editor {
-  margin-bottom: 12px;
+  margin-bottom: var(--space-3);
 }
 
 .label-mix-row,
 .label-mix-footer {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   margin-bottom: 6px;
 }
 
@@ -329,9 +713,9 @@ h1 {
    on the way to the rows. */
 .generation-settings {
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 10px 14px;
-  margin-bottom: 16px;
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-4);
+  margin-bottom: var(--space-4);
 }
 
 .generation-settings summary {
@@ -341,7 +725,7 @@ h1 {
 }
 
 .generation-field {
-  margin-top: 10px;
+  margin-top: var(--space-2);
 }
 
 .generation-text {
@@ -356,13 +740,13 @@ h1 {
 
 .generation-id {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.9em;
+  font-size: var(--text-sm);
 }
 
 /* A field plus the hint describing it, spaced as one unit. Without this the hint
    sits below the field's own bottom margin and crowds the next field's label. */
 .field-group {
-  margin-bottom: 12px;
+  margin-bottom: var(--space-3);
 }
 
 .field-group .field {
@@ -371,26 +755,26 @@ h1 {
 
 .field-hint {
   color: var(--muted);
-  font-size: 0.9em;
-  margin: 4px 0 0;
+  font-size: var(--text-sm);
+  margin: var(--space-1) 0 0;
 }
 
 .upload-preview {
-  margin: 12px 0;
+  margin: var(--space-3) 0;
   overflow-x: auto;
 }
 
 .detail-breadcrumb {
   color: var(--muted);
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
 }
 
 .stats-header {
   display: flex;
   align-items: center;
-  gap: 24px;
-  padding: 14px 0;
-  margin-bottom: 12px;
+  gap: var(--space-6);
+  padding: var(--space-3) 0;
+  margin-bottom: var(--space-3);
   border-bottom: 1px solid var(--border);
 }
 
@@ -400,13 +784,13 @@ h1 {
 }
 
 .stat-value {
-  font-size: 22px;
+  font-size: var(--text-h1);
   font-weight: 700;
 }
 
 .stat-label {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .row-focused {
@@ -417,7 +801,7 @@ h1 {
 .suggested-cell {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .cell-expand {
@@ -432,7 +816,7 @@ h1 {
 
 .reasoning {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   max-width: 320px;
 }
 
@@ -442,28 +826,201 @@ h1 {
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 kbd {
-  background: var(--bg);
+  background: var(--panel-sunk);
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 1px 6px;
   font-family: ui-monospace, monospace;
 }
 
+/* -- Generate form ---------------------------------------------------------- */
+
+.generate-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* -- Export ----------------------------------------------------------------- */
+
+.export-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+/* Constrains the generated Python script inside the modal instead of letting it grow
+   the dialog unbounded. */
+.export-source {
+  overflow: auto;
+  max-height: 320px;
+  padding: var(--space-3);
+  background: var(--panel-sunk);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--text-sm);
+  white-space: pre;
+}
+
+.export-source .btn {
+  white-space: normal;
+}
+
+/* -- Instructions / tools --------------------------------------------------- */
+
+.instructions {
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--text-sm);
+  background: var(--panel-sunk);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+}
+
+.tools {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.tool-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+
+/* -- Version editor --------------------------------------------------------- */
+
+.version-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* A read-only, frozen version reads dimmer and cannot be interacted with. */
+.version-editor-frozen {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.version-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.editor-layout {
+  display: grid;
+  grid-template-columns: 1fr 260px;
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.editor-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.editor-rail {
+  position: sticky;
+  top: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.editor-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+}
+
+.editor-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  font-weight: 600;
+}
+
+.editor-section-body {
+  padding: 0 var(--space-4) var(--space-4);
+}
+
+.editor-disclosure {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+}
+
+/* -- Preview pane ----------------------------------------------------------- */
+
+.preview-pane {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+}
+
+.preview-code {
+  overflow: auto;
+  max-height: 360px;
+  padding: var(--space-3);
+  background: var(--panel-sunk);
+  border-radius: var(--radius);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--text-sm);
+  white-space: pre;
+}
+
+.mix-bar-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: 6px;
+}
+
+.mix-bar-label {
+  flex: 0 0 120px;
+  font-size: var(--text-sm);
+}
+
+.mix-bar-track {
+  flex: 1;
+  height: 10px;
+  background: var(--panel-sunk);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.mix-bar-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
 /* -- Runs ------------------------------------------------------------------- */
 
 .run-progress {
-  margin: 16px 0;
+  margin: var(--space-4) 0;
 }
 
 .run-progress-header {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 8px;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
 }
 
 .progress-count {
@@ -473,7 +1030,7 @@ kbd {
 
 .progress-bar {
   height: 10px;
-  background: var(--bg);
+  background: var(--panel-sunk);
   border: 1px solid var(--border);
   border-radius: 999px;
   overflow: hidden;
@@ -491,17 +1048,17 @@ kbd {
   gap: 6px;
   list-style: none;
   padding: 0;
-  margin: 12px 0 0;
+  margin: var(--space-3) 0 0;
 }
 
 .tick-list li {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  padding: 2px 8px;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  padding: 2px var(--space-2);
   border-radius: 999px;
-  background: var(--bg);
+  background: var(--panel-sunk);
 }
 
 .tick-dot {
@@ -520,22 +1077,22 @@ kbd {
 }
 
 .run-launcher .field {
-  margin-bottom: 14px;
+  margin-bottom: var(--space-3);
 }
 
 /* -- Metrics ---------------------------------------------------------------- */
 
 .metrics-panel {
-  margin: 16px 0;
+  margin: var(--space-4) 0;
 }
 
 .metrics-summary {
   display: flex;
   flex-wrap: wrap;
-  gap: 24px;
-  padding: 14px 0;
+  gap: var(--space-6);
+  padding: var(--space-3) 0;
   border-bottom: 1px solid var(--border);
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
 }
 
 .metric {
@@ -546,7 +1103,7 @@ kbd {
 
 .metric-label {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .metric-value {
@@ -570,8 +1127,8 @@ kbd {
 .compare-selectors {
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 12px;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
 }
 
 .toggle {
@@ -595,18 +1152,18 @@ kbd {
 
 .mode-tabs {
   display: inline-flex;
-  gap: 4px;
-  padding: 4px;
-  background: var(--bg);
+  gap: var(--space-1);
+  padding: var(--space-1);
+  background: var(--panel-sunk);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  margin-bottom: 16px;
+  border-radius: var(--radius-lg);
+  margin-bottom: var(--space-4);
 }
 
 .mode-tab {
-  padding: 6px 14px;
+  padding: 6px var(--space-4);
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: none;
   color: var(--muted);
   font: inherit;
@@ -622,11 +1179,12 @@ kbd {
 .cell-input,
 .cell-textarea {
   width: 100%;
-  padding: 4px 6px;
+  padding: var(--space-1) 6px;
   border: 1px solid var(--border);
   border-radius: 4px;
   font: inherit;
-  background: var(--panel);
+  color: var(--text);
+  background: var(--panel-sunk);
 }
 
 .cell-textarea {
@@ -645,7 +1203,7 @@ kbd {
   border: none;
   color: var(--danger);
   cursor: pointer;
-  font-size: 16px;
+  font-size: var(--text-lg);
   line-height: 1;
   padding: 2px 6px;
 }
@@ -653,54 +1211,341 @@ kbd {
 .add-row-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 0;
-  margin-top: 8px;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  margin-top: var(--space-2);
   border-top: 1px solid var(--border);
 }
 
 .field-error {
   color: var(--danger);
-  font-size: 12px;
-  margin-top: 4px;
+  font-size: var(--text-sm);
+  margin-top: var(--space-1);
 }
 
 .column-editor {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
 }
 
 .column-editor-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .destructive-warning {
-  padding: 10px 14px;
-  border-radius: 6px;
-  background: #f8efd9;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--warning) 15%, transparent);
   color: var(--warning);
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
 }
 
 .editable-title {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   cursor: text;
 }
 
 .editable-title-input {
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   font: inherit;
-  background: var(--panel);
+  color: var(--text);
+  background: var(--panel-sunk);
 }
 
 .confirm-dialog-message {
-  margin: 0 0 16px;
+  margin: 0 0 var(--space-4);
+}
+
+/* -- Detail headers --------------------------------------------------------- */
+
+.detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.detail-header-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.detail-description {
+  color: var(--text-dim);
+  margin: var(--space-2) 0 0;
+  max-width: 640px;
+}
+
+.evaluator-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* -- Version bar ------------------------------------------------------------ */
+
+.version-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  margin-bottom: var(--space-4);
+}
+
+.version-bar-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+/* -- Config diff ------------------------------------------------------------ */
+
+.config-diff {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.config-diff-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.config-diff-field {
+  font-weight: 600;
+}
+
+.config-diff-label {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.config-diff-values {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* Removed value: danger-tinted so the direction of the change reads at a glance. */
+.config-diff-before {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border-radius: var(--radius);
+  padding: 2px var(--space-2);
+  text-decoration: line-through;
+}
+
+/* Added value. */
+.config-diff-after {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+  border-radius: var(--radius);
+  padding: 2px var(--space-2);
+}
+
+.config-diff-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.config-diff-buttons {
+  display: flex;
+  gap: var(--space-2);
+}
+
+/* -- Capabilities editor ---------------------------------------------------- */
+
+.capability {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  margin-bottom: var(--space-2);
+  background: var(--panel);
+}
+
+.capability-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.capability-config {
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+
+/* -- Output fields editor --------------------------------------------------- */
+
+.output-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.output-field-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.output-field-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.output-field-bounds {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.output-field-required {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+/* -- Column notes editor ---------------------------------------------------- */
+
+.column-notes-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.column-note-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* A locked note is derived, not user-editable: dim it and drop pointer interaction. */
+.column-note-locked {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.column-note-name {
+  flex: 0 0 160px;
+  font-weight: 600;
+}
+
+.column-note-add {
+  align-self: flex-start;
+  border-style: dashed;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  padding: var(--space-1) var(--space-2);
+}
+
+/* -- Label schema / space --------------------------------------------------- */
+
+.label-schema-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.label-space {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* A field laid out inline with its neighbour rather than stacked. */
+.field-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+/* -- Refine panel ----------------------------------------------------------- */
+
+.refine-box {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  padding: var(--space-4);
+  margin: var(--space-4) 0;
+}
+
+/* -- Forms: blank / upload / settings --------------------------------------- */
+
+.blank-form,
+.dataset-upload,
+.dataset-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* -- Labeling grid ---------------------------------------------------------- */
+
+.labeling-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.labeling-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--panel);
+}
+
+.labeling-table th,
+.labeling-table td {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+/* -- Metrics per label ------------------------------------------------------ */
+
+.metrics-per-label {
+  margin-top: var(--space-4);
+}
+
+/* -- Run ticks -------------------------------------------------------------- */
+
+/* The success tick, distinct from `.tick-error`. */
+.tick-ok {
+  color: var(--success);
 }

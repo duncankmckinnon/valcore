@@ -97,6 +97,8 @@ function madeDataset(): Dataset {
     description: "desc",
     columns: ["question", "answer"],
     label_schema: { kind: "categorical", labels: ["good", "bad"], minimum: null, maximum: null },
+    row_count: 5,
+    labeled_count: 5,
   };
 }
 
@@ -125,6 +127,20 @@ afterEach(() => {
 });
 
 describe("DatasetDetail", () => {
+  it("carries the title area in a single level-1 heading over its breadcrumb", async () => {
+    renderDetail();
+
+    await screen.findByText("header:question");
+
+    // The breadcrumb back to the list stays alongside the adopted PageHeader.
+    expect(screen.getByRole("link", { name: "Datasets" })).toBeTruthy();
+    const headings = screen.getAllByRole("heading", { level: 1 });
+    expect(headings).toHaveLength(1);
+    expect(headings[0].textContent).toBe("My set");
+    // The description still renders below the title.
+    expect(screen.getByText("desc")).toBeTruthy();
+  });
+
   it("opens the settings modal from Edit and re-renders the grid headers after a shape change", async () => {
     renderDetail();
 

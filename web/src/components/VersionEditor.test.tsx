@@ -224,3 +224,170 @@ describe("VersionEditor: draft mode", () => {
     expect(evaluators.copyVersion).not.toHaveBeenCalled();
   });
 });
+
+// The single collapsible disclosure ("Capabilities & tools") is the only button in the
+// editor carrying aria-expanded, so it can be found without depending on its label text or
+// on any styling class. Every other section is required to render with no disclosure at all.
+function disclosureButton(): HTMLButtonElement {
+  const expandable = screen
+    .getAllByRole("button")
+    .filter((button) => button.hasAttribute("aria-expanded"));
+  expect(expandable.length).toBe(1);
+  return expandable[0] as HTMLButtonElement;
+}
+
+// The info affordance beside a field label is the nearest ancestor button to that field's
+// control. Climbing from the control avoids coupling to whether the field wraps in a
+// <label> or a <div>, and to whatever accessible name the tooltip trigger carries.
+function tooltipTriggerNear(control: HTMLElement): HTMLElement {
+  let node = control.parentElement;
+  while (node) {
+    const buttons = within(node).queryAllByRole("button");
+    if (buttons.length > 0) {
+      return buttons[0];
+    }
+    node = node.parentElement;
+  }
+  throw new Error("no tooltip trigger found near the given control");
+}
+
+describe("VersionEditor: sectioned layout", () => {
+  it("renders the four non-collapsible sections' fields without any interaction", () => {
+    render(<VersionEditor version={makeVersion()} evaluatorId="e1" config={config} />);
+
+    // Identity
+    expect(screen.getByLabelText("Version name")).not.toBeNull();
+    expect(screen.getByLabelText("Model")).not.toBeNull();
+    // Judgment
+    expect(screen.getByLabelText("Instructions")).not.toBeNull();
+    expect(screen.getByLabelText("Prompt template")).not.toBeNull();
+    // Inputs — the chips editor's add box
+    expect(screen.getByLabelText("Add required column")).not.toBeNull();
+    // Output contract
+    expect(screen.getByLabelText("Score kind")).not.toBeNull();
+    expect(screen.getByLabelText("Score field")).not.toBeNull();
+    expect(screen.getByLabelText("Field 0 name")).not.toBeNull();
+  });
+
+  it("collapses Capabilities & tools by default, hiding its fields and reporting aria-expanded=false", () => {
+    render(<VersionEditor version={makeVersion()} evaluatorId="e1" config={config} />);
+
+    // config supplies FileSystem/Shell capabilities and a row_get tool; all live in the
+    // one collapsible section, so none are in the DOM until it is opened.
+    expect(screen.queryByRole("checkbox", { name: "FileSystem" })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "Shell" })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "row_get" })).toBeNull();
+
+    expect(disclosureButton().getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("reveals the capability and tool fields and flips aria-expanded when the disclosure is clicked", async () => {
+    const user = userEvent.setup();
+    render(<VersionEditor version={makeVersion()} evaluatorId="e1" config={config} />);
+
+    await user.click(disclosureButton());
+
+    expect(disclosureButton().getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("checkbox", { name: "FileSystem" })).not.toBeNull();
+    expect(screen.getByRole("checkbox", { name: "Shell" })).not.toBeNull();
+    expect(screen.getByRole("checkbox", { name: "row_get" })).not.toBeNull();
+  });
+
+  it("shows the frozen banner and renders the visible fields read-only for a frozen version", () => {
+    render(
+      <VersionEditor version={makeVersion({ frozen: true })} evaluatorId="e1" config={config} />,
+    );
+
+    expect(screen.getByText("Frozen")).not.toBeNull();
+    expect(screen.getByText(/read-only/i)).not.toBeNull();
+    expect((screen.getByLabelText("Version name") as HTMLInputElement).readOnly).toBe(true);
+    expect((screen.getByLabelText("Instructions") as HTMLTextAreaElement).readOnly).toBe(true);
+    expect((screen.getByLabelText("Model") as HTMLSelectElement).disabled).toBe(true);
+  });
+});
+
+describe("VersionEditor: form footer", () => {
+  it("surfaces a blocker and disables Save when a field is invalid", async () => {
+    const user = userEvent.setup();
+    render(<VersionEditor version={makeVersion()} evaluatorId="e1" config={config} />);
+
+    const save = screen.getByRole("button", { name: "Save changes" });
+    expect((save as HTMLButtonElement).disabled).toBe(false);
+
+    await user.clear(screen.getByLabelText("Version name"));
+
+    // The footer explains the block via a role=status region (distinct from the inline
+    // field errors, which keep role=alert), and Save is disabled.
+    const blocker = screen.getByRole("status");
+    expect(blocker.textContent?.trim().length ?? 0).toBeGreaterThan(0);
+    expect((save as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("shows no blocker and enables Save with the dynamic label when the version is valid", () => {
+    render(<VersionEditor version={makeVersion()} evaluatorId="e1" config={config} />);
+
+    // Not saving and no errors, so the footer carries no status blocker.
+    expect(screen.queryByRole("status")).toBeNull();
+    const save = screen.getByRole("button", { name: "Save changes" });
+    expect((save as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+describe("VersionEditor: rail preview", () => {
+  it("lists one line per output field derived from the field names", () => {
+    render(<VersionEditor version={makeVersion()} evaluatorId="e1" config={config} />);
+
+    // The preview renders a `"field": "…"` line per output field; the field names appear
+    // as quoted keys, which the output-field editor (input values, not text) never emits.
+    expect(screen.getByText(/"verdict":/)).not.toBeNull();
+    expect(screen.getByText(/"confidence":/)).not.toBeNull();
+    expect(screen.queryByText(/"missing_field":/)).toBeNull();
+  });
+
+  it("updates the preview when an output field is removed", async () => {
+    const user = userEvent.setup();
+    render(<VersionEditor version={makeVersion()} evaluatorId="e1" config={config} />);
+
+    expect(screen.getByText(/"verdict":/)).not.toBeNull();
+
+    // Removing `verdict` (field 0) leaves a numeric score on `confidence`, so the form stays
+    // otherwise coherent while the preview drops the removed field's line.
+    await user.click(screen.getByRole("button", { name: "Remove field 0" }));
+
+    expect(screen.queryByText(/"verdict":/)).toBeNull();
+    expect(screen.getByText(/"confidence":/)).not.toBeNull();
+  });
+
+  it("keeps the refine panel available in the rail", () => {
+    render(<VersionEditor version={makeVersion()} evaluatorId="e1" config={config} />);
+
+    expect(screen.getByLabelText("Refine instruction")).not.toBeNull();
+  });
+});
+
+describe("VersionEditor: field tooltips", () => {
+  it("opens the model tooltip and exposes its explanatory text", async () => {
+    const user = userEvent.setup();
+    render(<VersionEditor version={makeVersion()} evaluatorId="e1" config={config} />);
+
+    const trigger = tooltipTriggerNear(screen.getByLabelText("Model"));
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    await user.click(trigger);
+
+    const popover = screen.getByRole("tooltip");
+    expect(popover.textContent?.trim().length ?? 0).toBeGreaterThan(0);
+  });
+
+  it("explains in the prompt-template tooltip that braced names must match required columns", async () => {
+    const user = userEvent.setup();
+    render(<VersionEditor version={makeVersion()} evaluatorId="e1" config={config} />);
+
+    const trigger = tooltipTriggerNear(screen.getByLabelText("Prompt template"));
+    await user.click(trigger);
+
+    // The requirement is explicit: the copy must tie braced names to the required columns.
+    const popover = screen.getByRole("tooltip");
+    expect(popover.textContent ?? "").toMatch(/required columns/i);
+  });
+});

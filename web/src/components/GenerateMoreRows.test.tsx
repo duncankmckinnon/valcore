@@ -31,6 +31,8 @@ function madeDataset(overrides: Partial<Dataset> = {}): Dataset {
     description: "support questions",
     columns: ["question", "answer"],
     label_schema: { kind: "categorical", labels: ["pass", "fail"], minimum: null, maximum: null },
+    row_count: 0,
+    labeled_count: 0,
     ...overrides,
   };
 }
@@ -234,5 +236,64 @@ describe("GenerateMoreRows", () => {
 
     await waitFor(() => expect(screen.getByLabelText("Instructions")).toHaveValue("be subtle"));
     expect(props.onGenerated).not.toHaveBeenCalled();
+  });
+});
+
+// -- Redesigned modal chrome -------------------------------------------------
+// The redesign adds a description, moves the actions into the footer, and routes the
+// submit gate through FormFooter so a blocked submit says *why* it is blocked instead of
+// staying silently disabled.
+
+describe("GenerateMoreRows chrome", () => {
+  it("describes that new rows append and reuse the stored settings", () => {
+    renderModal();
+
+    expect(screen.getByText(/append|stored settings|reuse/i)).toBeInTheDocument();
+  });
+
+  it("keeps the Cancel action wired to onClose from the footer", async () => {
+    const user = userEvent.setup();
+    const props = renderModal();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(props.onClose).toHaveBeenCalled();
+  });
+
+  it("shows the blocking reason in the footer and disables Generate", async () => {
+    const user = userEvent.setup();
+    renderModal({ maxCount: 50 });
+
+    const count = screen.getByLabelText("Rows to add");
+    await user.clear(count);
+    await user.type(count, "51");
+
+    // FormFooter renders the first blocker as a status region rather than leaving the
+    // button silently disabled.
+    const blocker = screen.getByRole("status");
+    expect(blocker.textContent).toMatch(/50/);
+    expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
+  });
+
+  it("shows no blocker and enables Generate on a valid state", () => {
+    // The ready path of FormFooter: a satisfiable form carries no status region and the
+    // primary action is live.
+    renderModal();
+
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("button", { name: "Generate" })).not.toBeDisabled();
+  });
+
+  it("surfaces the empty-count blocker and disables Generate at zero rows", async () => {
+    // Emptying the number field drives count below one, which is the first blocker in the
+    // top-to-bottom order.
+    const user = userEvent.setup();
+    renderModal();
+
+    const count = screen.getByLabelText("Rows to add");
+    await user.clear(count);
+
+    expect(screen.getByRole("status").textContent).toMatch(/at least one row/i);
+    expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
   });
 });

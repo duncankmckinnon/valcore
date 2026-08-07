@@ -45,6 +45,9 @@ export default function DatasetBlankForm({ onCreated }: DatasetBlankFormProps) {
   return (
     <div className="blank-form">
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      <p className="field-hint">
+        Define the columns and label space now; add rows to the dataset later.
+      </p>
       <label className="field">
         <span className="field-label">Name</span>
         <input className="select" value={name} onChange={(e) => setName(e.target.value)} />

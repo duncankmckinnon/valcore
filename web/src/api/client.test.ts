@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, api, datasets, evaluators } from "./client";
+import { ApiError, api, datasets, evaluators, overview } from "./client";
+import type { Dataset, Overview } from "./types";
 
 function jsonResponse(body: unknown, init: { status?: number } = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -337,5 +338,100 @@ describe("ApiError detail", () => {
     expect(error).toBeInstanceOf(ApiError);
     if (!(error instanceof ApiError)) throw error;
     expect(error.detail).toBeNull();
+  });
+});
+
+// The Overview endpoint is read-only and drives the new landing page. It follows the
+// same GET-and-parse shape as the other resource getters, so it must both hit the
+// right path and surface an ApiError on a non-OK response.
+describe("overview client helper", () => {
+  it("overview.get GETs /api/overview and returns the parsed body", async () => {
+    const body: Overview = {
+      evaluator_count: 3,
+      dataset_count: 2,
+      run_count: 5,
+      total_rows: 120,
+      labeled_rows: 80,
+      best_accuracy: 0.92,
+      latest_run: {
+        id: "run1",
+        dataset_name: "Support tickets",
+        status: "completed",
+        accuracy: 0.88,
+        finished_at: "2026-08-07T12:00:00Z",
+      },
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(body));
+
+    const result = await overview.get();
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/overview");
+    // No method means the default GET; overview is strictly read-only.
+    expect(init?.method ?? "GET").toBe("GET");
+    expect(result).toEqual(body);
+  });
+
+  it("overview.get tolerates a null latest_run and null best_accuracy on an empty workspace", async () => {
+    const body: Overview = {
+      evaluator_count: 0,
+      dataset_count: 0,
+      run_count: 0,
+      total_rows: 0,
+      labeled_rows: 0,
+      best_accuracy: null,
+      latest_run: null,
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(body));
+
+    const result = await overview.get();
+
+    expect(result.latest_run).toBeNull();
+    expect(result.best_accuracy).toBeNull();
+  });
+
+  it("overview.get surfaces an ApiError on a non-OK response", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(
+        { error: { type: "Error", message: "overview unavailable" } },
+        { status: 500 },
+      ),
+    );
+
+    const error = await overview.get().catch((e) => e);
+
+    expect(error).toBeInstanceOf(ApiError);
+    if (!(error instanceof ApiError)) throw error;
+    expect(error.status).toBe(500);
+    expect(error.message).toBe("overview unavailable");
+  });
+});
+
+// The dataset list items now carry row and label counts. This exercises that the
+// Dataset type accepts the two new required fields and that a list response round-trips
+// them unchanged.
+describe("dataset count fields", () => {
+  it("datasets.list round-trips row_count and labeled_count on each item", async () => {
+    const items: Dataset[] = [
+      {
+        id: "d1",
+        created_at: "2026-08-07T00:00:00Z",
+        name: "Support tickets",
+        description: "",
+        columns: ["input", "output"],
+        label_schema: { kind: "categorical", labels: ["pass", "fail"], minimum: null, maximum: null },
+        row_count: 42,
+        labeled_count: 30,
+      },
+    ];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(items));
+
+    const result = await datasets.list();
+
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/datasets");
+    expect(result).toEqual(items);
+    expect(result[0].row_count).toBe(42);
+    expect(result[0].labeled_count).toBe(30);
   });
 });

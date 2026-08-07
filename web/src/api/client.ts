@@ -16,6 +16,7 @@ import type {
   GeneratedConfig,
   LabelMix,
   LabelSchema,
+  Overview,
   RefinedConfig,
   RowPatch,
   RowsGenerate,
@@ -171,6 +172,10 @@ export const datasets = {
   patchRow: (rowId: string, data: RowPatch) =>
     api<DatasetRow>(`/api/datasets/rows/${rowId}`, { method: "PATCH", ...jsonBody(data) }),
   stats: (id: string) => api<DatasetStats>(`/api/datasets/${id}/stats`),
+};
+
+export const overview = {
+  get: () => api<Overview>("/api/overview"),
 };
 
 export const runs = {
