@@ -296,6 +296,30 @@ describe("EvaluatorDetail: rename and delete evaluator", () => {
     expect(screen.getByRole("heading", { name: "My Eval" })).toBeTruthy();
   });
 
+  it("calls evaluators.update when the description is edited", async () => {
+    vi.mocked(api).mockResolvedValue(config);
+    vi.mocked(evaluators.get).mockResolvedValue(makeDetail({ description: "Checks answers." }));
+    vi.mocked(evaluators.update).mockResolvedValue(makeDetail({ description: "Checks tone." }));
+    const user = userEvent.setup();
+    renderDetail();
+
+    // PageHeader now wraps the description in its own <p>, and the click that opens
+    // the inline editor is delegated from a wrapper. Clicking the description text
+    // must still switch into edit mode and commit through evaluators.update.
+    await user.click(await screen.findByText("Checks answers."));
+    const input = screen.getByLabelText("Description");
+    await user.clear(input);
+    await user.type(input, "Checks tone.");
+    await user.tab();
+
+    await waitFor(() =>
+      expect(evaluators.update).toHaveBeenCalledWith(
+        "e1",
+        expect.objectContaining({ description: "Checks tone." }),
+      ),
+    );
+  });
+
   it("confirms then calls remove and navigates back to the list", async () => {
     vi.mocked(api).mockResolvedValue(config);
     vi.mocked(evaluators.get).mockResolvedValue(makeDetail());
