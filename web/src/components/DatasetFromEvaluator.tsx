@@ -13,6 +13,7 @@ import LabelMixEditor from "./LabelMixEditor";
 import { TOTAL_PERCENT, toProportions, totalPercent } from "./labelMix";
 import type { LabelMixPercents } from "./labelMix";
 import { Button, ErrorBanner, Modal, Spinner } from "./ui";
+import { Tooltip } from "./Tooltip";
 
 type DatasetFromEvaluatorProps = {
   open: boolean;
@@ -96,7 +97,22 @@ export default function DatasetFromEvaluator({
   }
 
   return (
-    <Modal open={open} title="Generate dataset" onClose={onClose}>
+    <Modal
+      open={open}
+      title="Generate dataset"
+      description="The column shape is derived from the evaluator; your instructions only steer the content generated into it."
+      onClose={onClose}
+      footer={
+        <div className="modal-actions">
+          <Button variant="secondary" onClick={onClose} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={submitting || !canSubmit}>
+            {submitting ? <Spinner /> : "Generate"}
+          </Button>
+        </div>
+      }
+    >
       <div className="generate-form">
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
@@ -106,7 +122,10 @@ export default function DatasetFromEvaluator({
         </label>
 
         <div className="field">
-          <span className="field-label">Columns</span>
+          <span className="field-label">
+            Columns
+            <Tooltip text="Extra columns must be named explicitly here — the model never invents columns you did not ask for." />
+          </span>
           <ColumnNotesEditor
             lockedColumns={version.required_columns}
             extraColumns={extraColumns}
@@ -191,15 +210,6 @@ export default function DatasetFromEvaluator({
         {countExceeds && (
           <p className="destructive-warning">Row count must be {maxCount} or fewer.</p>
         )}
-
-        <div className="form-actions">
-          <Button variant="secondary" onClick={onClose} disabled={submitting}>
-            Cancel
-          </Button>
-          <Button onClick={submit} disabled={submitting || !canSubmit}>
-            {submitting ? <Spinner /> : "Generate"}
-          </Button>
-        </div>
       </div>
     </Modal>
   );

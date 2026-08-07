@@ -59,23 +59,29 @@ export function ExportModal({ open, evaluatorId, versionId, onClose }: ExportMod
   };
 
   return (
-    <Modal open={open} title="Export evaluator" onClose={onClose}>
-      <ErrorBanner error={error} onDismiss={() => setError(null)} />
-      {loading ? (
-        <Spinner />
-      ) : (
-        <>
-          <div className="export-actions">
+    <Modal
+      open={open}
+      title="Export evaluator"
+      description="A standalone Python script that runs this evaluator on its own, without valcore installed."
+      size="lg"
+      onClose={onClose}
+      footer={
+        <div className="export-actions">
+          {/* Copy is withheld until the script has loaded, so there is never a live copy
+              action with nothing to write. */}
+          {!loading && (
             <Button variant="secondary" onClick={copy} disabled={!source}>
               {copied ? "Copied" : "Copy"}
             </Button>
-            <Button variant="secondary" onClick={onClose}>
-              Close
-            </Button>
-          </div>
-          <pre className="export-source">{source}</pre>
-        </>
-      )}
+          )}
+          <Button variant="secondary" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      }
+    >
+      <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      {loading ? <Spinner /> : <pre className="export-source">{source}</pre>}
     </Modal>
   );
 }
