@@ -54,6 +54,18 @@ uv tool install valcore
 
 Either way you get an `valcore` command on your `PATH`.
 
+## Web UI
+
+`valcore serve` opens a dark-themed web UI with four surfaces:
+
+- **Overview** — the landing page, summarizing what you have and pointing to the next
+  step.
+- **Evaluators** — author, version, and validate LLM-as-judge evaluators.
+- **Datasets** — build and edit the datasets evaluators run over, by hand or generated
+  from a description.
+- **Runs** — inspect completed runs, their metrics, and per-row scores, and compare runs
+  against each other.
+
 ## Quickstart
 
 Store your gateway API key, then start the app:
