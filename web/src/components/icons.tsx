@@ -4,7 +4,7 @@
 
 import type { SVGProps } from "react";
 
-export function InfoIcon(props: SVGProps<SVGSVGElement>) {
+export function InfoIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
   return (
     <svg
       viewBox="0 0 16 16"
