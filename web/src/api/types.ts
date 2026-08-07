@@ -73,6 +73,30 @@ export interface Dataset {
   description: string;
   columns: string[];
   label_schema: LabelSchema | EmptyLabelSchema;
+  row_count: number;
+  labeled_count: number;
+}
+
+// The most recent run, surfaced on the overview landing page. `accuracy` is read
+// server-side out of the run's untyped metrics and returned as a typed float.
+export interface LatestRun {
+  id: string;
+  dataset_name: string;
+  status: RunStatus;
+  accuracy: number | null;
+  finished_at: string | null;
+}
+
+// A read-only snapshot of the workspace for the landing page. Every count is
+// server-computed; `best_accuracy` and `latest_run` are null on an empty workspace.
+export interface Overview {
+  evaluator_count: number;
+  dataset_count: number;
+  run_count: number;
+  total_rows: number;
+  labeled_rows: number;
+  best_accuracy: number | null;
+  latest_run: LatestRun | null;
 }
 
 export interface DatasetRow {
