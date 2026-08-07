@@ -211,6 +211,44 @@ def test_overview_best_accuracy_ignores_unfinished_runs(store: Store) -> None:
 
 
 @pytest.mark.parametrize(
+    "terminal_status",
+    [
+        RunStatus.COMPLETED_WITH_ERRORS,
+        RunStatus.FAILED,
+        RunStatus.CANCELLED,
+    ],
+)
+def test_overview_ignores_non_completed_terminal_states(
+    store: Store, terminal_status: RunStatus
+) -> None:
+    # Only the strict COMPLETED terminal state feeds best_accuracy / latest_run; a run that
+    # ended in any other terminal state must not count even though it carries a higher score.
+    version_id = _make_version(store)
+    dataset_id = store.create_dataset("d", "", ["question"], CATEGORICAL_SCHEMA).id
+
+    _finish_run(
+        store,
+        version_id,
+        dataset_id,
+        metrics={"accuracy": 0.5},
+        finished_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    _finish_run(
+        store,
+        version_id,
+        dataset_id,
+        metrics={"accuracy": 0.99},
+        finished_at=datetime(2026, 6, 1, tzinfo=UTC),
+        status=terminal_status,
+    )
+
+    overview = store.overview()
+    assert _field(overview, "best_accuracy") == pytest.approx(0.5)
+    # The completed run — not the later-finishing non-completed one — is the latest.
+    assert _field(_field(overview, "latest_run"), "status") == RunStatus.COMPLETED
+
+
+@pytest.mark.parametrize(
     "metrics",
     [
         None,
