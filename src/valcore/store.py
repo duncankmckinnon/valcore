@@ -698,6 +698,9 @@ class Store:
 
             latest_run: LatestRun | None = None
             if completed:
+                # Only COMPLETED runs reach here, and the runner always stamps ``finished_at``
+                # on that transition, so ``_as_utc`` cannot return ``None`` for this run — which
+                # is why ``LatestRun.finished_at`` is non-optional.
                 run, dataset_name = completed[0]
                 latest_run = LatestRun(
                     id=run.id,

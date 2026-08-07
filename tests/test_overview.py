@@ -470,3 +470,40 @@ async def test_get_datasets_includes_counts(client: httpx.AsyncClient, store: St
     assert by_id[empty.id]["name"] == "empty"
     assert by_id[empty.id]["columns"] == ["question"]
     assert by_id[empty.id]["label_schema"] == CATEGORICAL_SCHEMA
+
+
+@pytest.mark.anyio
+async def test_get_dataset_detail_omits_counts(client: httpx.AsyncClient, store: Store) -> None:
+    # Counts belong only on the list endpoint, which can fill them from a grouped query. The
+    # detail endpoint must not advertise ``row_count``/``labeled_count`` at all rather than
+    # report a fabricated zero for a dataset that actually has rows.
+    dataset = store.create_dataset("has-rows", "", ["question"], CATEGORICAL_SCHEMA)
+    rows = store.add_rows(dataset.id, [{"question": "a"}, {"question": "b"}])
+    store.set_label(rows[0].id, {"value": "good"}, LabelSource.MANUAL)
+
+    resp = await client.get(f"/api/datasets/{dataset.id}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert "row_count" not in body
+    assert "labeled_count" not in body
+    # The truthful counts remain available via the dedicated stats endpoint.
+    stats = await client.get(f"/api/datasets/{dataset.id}/stats")
+    assert stats.json()["total"] == 2
+    assert stats.json()["labeled"] == 1
+
+
+@pytest.mark.anyio
+async def test_created_dataset_response_omits_counts(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    # The nested dataset in a create response likewise omits the counts, so it cannot
+    # contradict the sibling ``row_count`` the create response reports directly.
+    resp = await client.post(
+        "/api/datasets",
+        json={"name": "fresh", "columns": ["question"], "label_schema": CATEGORICAL_SCHEMA},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "row_count" not in body
+    assert "labeled_count" not in body

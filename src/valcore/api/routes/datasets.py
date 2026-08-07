@@ -118,11 +118,7 @@ class DatasetUpdate(BaseModel):
 
 
 class DatasetOut(BaseModel):
-    """A dataset as returned to the client.
-
-    ``row_count`` and ``labeled_count`` are additive: existing fields keep their names and
-    types so current callers are unaffected.
-    """
+    """A dataset as returned to the client."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -132,8 +128,20 @@ class DatasetOut(BaseModel):
     description: str
     columns: list[str]
     label_schema: dict
-    row_count: int = 0
-    labeled_count: int = 0
+
+
+class DatasetSummaryOut(DatasetOut):
+    """A dataset in the list response, carrying its row and labeled-row counts.
+
+    The counts are exposed only where the list endpoint can fill them from a single grouped
+    query. Single-dataset endpoints return the plain ``DatasetOut`` and surface counts via
+    ``GET /api/datasets/{id}/stats`` instead, so no response advertises a count it would have
+    to fabricate as zero. Every field the bare ``DatasetOut`` exposed survives unchanged, so
+    current callers reading only those are unaffected.
+    """
+
+    row_count: int
+    labeled_count: int
 
 
 class DatasetCreatedOut(BaseModel):
@@ -236,9 +244,9 @@ def _prepare_row(record: dict, columns: list[str], label_column: str | None) -> 
 
 
 @router.get("")
-async def list_datasets(store: StoreDep) -> list[DatasetOut]:
-    """List every dataset."""
-    return [DatasetOut.model_validate(ds) for ds in store.list_datasets()]
+async def list_datasets(store: StoreDep) -> list[DatasetSummaryOut]:
+    """List every dataset with its row and labeled-row counts."""
+    return [DatasetSummaryOut.model_validate(ds) for ds in store.list_datasets()]
 
 
 @router.post("")
