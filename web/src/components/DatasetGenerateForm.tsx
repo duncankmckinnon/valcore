@@ -124,7 +124,9 @@ export default function DatasetGenerateForm({ onCreated, initial }: DatasetGener
     <div className="generate-form">
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
       <div className="modal-two-pane">
-        <div className="modal-main">
+        {/* The grid's first child is the main column; the stylesheet targets `.modal-two-pane`
+            and `.modal-side` directly, so this wrapper carries no class of its own. */}
+        <div>
           <label className="field">
             <span className="field-label">Name</span>
             <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
@@ -226,7 +228,9 @@ export default function DatasetGenerateForm({ onCreated, initial }: DatasetGener
               {"}"}
             </pre>
             {mixActive && (
-              <div className="preview-mix">
+              // Unclassed wrapper: the mix bars group under `.preview-pane`, which owns the
+              // spacing, so no dedicated container class is defined in the stylesheet.
+              <div>
                 {mixLabels.map((label) => {
                   const percent = mixPercents[label] ?? 0;
                   return (
@@ -235,7 +239,9 @@ export default function DatasetGenerateForm({ onCreated, initial }: DatasetGener
                       <span className="mix-bar-track">
                         <span className="mix-bar-fill" style={{ width: `${percent}%` }} />
                       </span>
-                      <span className="mix-bar-count">{previewRows[label] ?? 0} rows</span>
+                      {/* No `.mix-bar-count` exists; the apportioned count reuses the defined
+                          `.mix-bar-label` so it inherits the same type treatment. */}
+                      <span className="mix-bar-label">{previewRows[label] ?? 0} rows</span>
                     </div>
                   );
                 })}
