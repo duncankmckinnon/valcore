@@ -263,3 +263,26 @@ describe("EvaluatorFromDataset", () => {
     expect(generateMock).not.toHaveBeenCalled();
   });
 });
+
+// -- Redesigned modal chrome -------------------------------------------------
+// The redesign adds a description (the shape is derived from the dataset; criteria and
+// notes only steer content) and moves the actions into the footer. This direction locks
+// the dataset's columns with no add-column affordance, so it gains no extra-columns
+// tooltip — only the description and the relocated actions.
+
+describe("EvaluatorFromDataset chrome", () => {
+  it("describes that the shape is derived and the inputs only steer content", () => {
+    renderModal();
+
+    expect(screen.getByText(/derived|steer/i)).toBeInTheDocument();
+  });
+
+  it("keeps the Cancel action wired to onClose from the footer", async () => {
+    const user = userEvent.setup();
+    const { onClose } = renderModal();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(onClose).toHaveBeenCalled();
+  });
+});

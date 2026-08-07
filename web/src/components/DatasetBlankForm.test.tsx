@@ -70,3 +70,15 @@ describe("DatasetBlankForm", () => {
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith("d1"));
   });
 });
+
+// -- Redesigned modal chrome -------------------------------------------------
+// The redesign adds a one-line description: you define columns and a label space now and
+// add rows later.
+
+describe("DatasetBlankForm chrome", () => {
+  it("describes that rows are added later", () => {
+    render(<DatasetBlankForm onCreated={vi.fn()} />);
+
+    expect(screen.getByText(/later/i)).toBeInTheDocument();
+  });
+});

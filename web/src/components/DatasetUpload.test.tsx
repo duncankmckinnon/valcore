@@ -81,3 +81,28 @@ describe("DatasetUpload", () => {
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
   });
 });
+
+// -- Redesigned modal chrome -------------------------------------------------
+// The redesign adds a one-line description of the accepted file shape and a tooltip on
+// the label-column field explaining what a label column is.
+
+describe("DatasetUpload chrome", () => {
+  it("describes the accepted file shape", () => {
+    render(<DatasetUpload onCreated={vi.fn()} />);
+
+    // The field label already names the formats once; the added description names them a
+    // second time, so more than one node mentions the format.
+    expect(screen.getAllByText(/JSONL/i).length).toBeGreaterThan(1);
+  });
+
+  it("explains the label column via a tooltip once a file is chosen", async () => {
+    render(<DatasetUpload onCreated={vi.fn()} />);
+
+    await userEvent.upload(screen.getByLabelText("File (CSV or JSONL)"), csvFile());
+    await waitFor(() => expect(columnHeaders()).toEqual(["text", "label"]));
+
+    await userEvent.click(screen.getByRole("button", { name: /more information/i }));
+
+    expect(screen.getByRole("tooltip").textContent).toMatch(/label/i);
+  });
+});

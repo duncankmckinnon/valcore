@@ -236,3 +236,40 @@ describe("GenerateMoreRows", () => {
     expect(props.onGenerated).not.toHaveBeenCalled();
   });
 });
+
+// -- Redesigned modal chrome -------------------------------------------------
+// The redesign adds a description, moves the actions into the footer, and routes the
+// submit gate through FormFooter so a blocked submit says *why* it is blocked instead of
+// staying silently disabled.
+
+describe("GenerateMoreRows chrome", () => {
+  it("describes that new rows append and reuse the stored settings", () => {
+    renderModal();
+
+    expect(screen.getByText(/append|stored settings|reuse/i)).toBeInTheDocument();
+  });
+
+  it("keeps the Cancel action wired to onClose from the footer", async () => {
+    const user = userEvent.setup();
+    const props = renderModal();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(props.onClose).toHaveBeenCalled();
+  });
+
+  it("shows the blocking reason in the footer and disables Generate", async () => {
+    const user = userEvent.setup();
+    renderModal({ maxCount: 50 });
+
+    const count = screen.getByLabelText("Rows to add");
+    await user.clear(count);
+    await user.type(count, "51");
+
+    // FormFooter renders the first blocker as a status region rather than leaving the
+    // button silently disabled.
+    const blocker = screen.getByRole("status");
+    expect(blocker.textContent).toMatch(/50/);
+    expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
+  });
+});
