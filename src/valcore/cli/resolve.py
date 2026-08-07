@@ -10,8 +10,8 @@ from collections.abc import Callable, Sequence
 from typing import TypeVar
 
 from valcore.errors import ContractError, NotFoundError
-from valcore.models import Dataset, Evaluator, EvaluatorVersion
-from valcore.store import Store
+from valcore.models import Evaluator, EvaluatorVersion
+from valcore.store import DatasetSummary, Store
 
 _MIN_PREFIX = 4
 
@@ -66,8 +66,12 @@ def resolve_evaluator(store: Store, ref: str) -> Evaluator:
     )
 
 
-def resolve_dataset(store: Store, ref: str) -> Dataset:
-    """Resolve ``ref`` to a dataset by exact name or unique id prefix."""
+def resolve_dataset(store: Store, ref: str) -> DatasetSummary:
+    """Resolve ``ref`` to a dataset by exact name or unique id prefix.
+
+    ``list_datasets`` yields ``DatasetSummary`` (a dataset plus its counts), so that is what
+    resolution returns; callers that only read ``.id``/``.name`` are unaffected.
+    """
     return _resolve(
         store.list_datasets(),
         ref,
