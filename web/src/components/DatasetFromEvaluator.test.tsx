@@ -113,6 +113,8 @@ function madeCreated(): DatasetCreated {
       description: "",
       columns: ["question", "answer"],
       label_schema: { kind: "categorical", labels: ["accurate", "inaccurate"], minimum: null, maximum: null },
+      row_count: 5,
+      labeled_count: 0,
     },
     row_count: 5,
   };

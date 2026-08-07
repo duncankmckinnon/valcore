@@ -31,6 +31,8 @@ function madeDataset(overrides: Partial<Dataset> = {}): Dataset {
     description: "support questions",
     columns: ["question", "answer"],
     label_schema: { kind: "categorical", labels: ["pass", "fail"], minimum: null, maximum: null },
+    row_count: 0,
+    labeled_count: 0,
     ...overrides,
   };
 }

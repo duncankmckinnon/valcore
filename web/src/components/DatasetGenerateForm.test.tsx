@@ -29,6 +29,8 @@ function madeCreated(): DatasetCreated {
       description: "",
       columns: ["question"],
       label_schema: { kind: "categorical", labels: ["pass", "fail"], minimum: null, maximum: null },
+      row_count: 10,
+      labeled_count: 0,
     },
     row_count: 10,
   };

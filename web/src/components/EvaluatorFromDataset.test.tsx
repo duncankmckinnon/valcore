@@ -65,6 +65,8 @@ function madeDataset(overrides: Partial<Dataset> = {}): Dataset {
     description: "desc",
     columns: ["question", "answer"],
     label_schema: LABELLED_SCHEMA,
+    row_count: 0,
+    labeled_count: 0,
     ...overrides,
   };
 }

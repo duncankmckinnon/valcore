@@ -23,6 +23,8 @@ function madeDataset(): Dataset {
     description: "",
     columns: ["question", "answer"],
     label_schema: { kind: "categorical", labels: [], minimum: null, maximum: null },
+    row_count: 0,
+    labeled_count: 0,
   };
 }
 

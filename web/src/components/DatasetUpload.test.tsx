@@ -62,6 +62,8 @@ describe("DatasetUpload", () => {
         description: "",
         columns: ["text"],
         label_schema: { kind: "categorical", labels: [], minimum: null, maximum: null },
+        row_count: 2,
+        labeled_count: 0,
       },
       row_count: 2,
     });
