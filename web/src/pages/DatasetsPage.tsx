@@ -2,18 +2,19 @@
 // authoring paths (blank, upload, generate). When the route carries an :id, the
 // single-dataset detail view is shown instead.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { datasets } from "../api/client";
-import type { Dataset, DatasetStats, LabelSchema } from "../api/types";
+import type { Dataset, LabelSchema } from "../api/types";
 import { Badge, Button, ErrorBanner, Modal, Spinner, Table } from "../components/ui";
+import { PageHeader } from "../components/PageHeader";
+import { EmptyState } from "../components/EmptyState";
+import { DatasetIcon } from "../components/icons";
 import DatasetBlankForm from "../components/DatasetBlankForm";
 import DatasetGenerateForm from "../components/DatasetGenerateForm";
 import type { GenerateFormInitial } from "../components/DatasetGenerateForm";
 import DatasetUpload from "../components/DatasetUpload";
 import DatasetDetail from "./DatasetDetail";
-
-type Listing = { dataset: Dataset; stats: DatasetStats | null };
 
 type CreateMode = "blank" | "upload" | "generate";
 
@@ -31,7 +32,7 @@ export default function DatasetsPage() {
 
 function DatasetsList() {
   const navigate = useNavigate();
-  const [listings, setListings] = useState<Listing[] | null>(null);
+  const [listings, setListings] = useState<Dataset[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [creating, setCreating] = useState(false);
   const [mode, setMode] = useState<CreateMode>("blank");
@@ -40,20 +41,11 @@ function DatasetsList() {
   const [seed, setSeed] = useState<GenerateFormInitial | undefined>(undefined);
   const [seedEpoch, setSeedEpoch] = useState(0);
 
+  // The per-dataset row_count and labeled_count now ride on the list response, so the
+  // summary strip and table columns need no per-row stats fetch.
   const load = useCallback(() => {
     setError(null);
-    datasets
-      .list()
-      .then(async (all) => {
-        const withStats = await Promise.all(
-          all.map(async (dataset) => ({
-            dataset,
-            stats: await datasets.stats(dataset.id).catch(() => null),
-          })),
-        );
-        setListings(withStats);
-      })
-      .catch(setError);
+    datasets.list().then(setListings).catch(setError);
   }, []);
 
   useEffect(() => {
@@ -93,60 +85,95 @@ function DatasetsList() {
     navigate(`/datasets/${datasetId}`);
   }
 
+  // Workspace-wide totals summed from the per-dataset counts on the list response.
+  // Percent labeled is a whole percentage; with no rows anywhere it is undefined and
+  // renders an em dash rather than NaN%.
+  const summary = useMemo(() => {
+    const items = listings ?? [];
+    const totalRows = items.reduce((sum, dataset) => sum + dataset.row_count, 0);
+    const totalLabeled = items.reduce((sum, dataset) => sum + dataset.labeled_count, 0);
+    const percent = totalRows === 0 ? "—" : `${Math.round((totalLabeled / totalRows) * 100)}%`;
+    return { count: items.length, totalRows, percent };
+  }, [listings]);
+
   return (
     <section>
-      <div className="page-header">
-        <h1>Datasets</h1>
-        <div className="form-actions">
-          <Button onClick={openCreate}>New dataset</Button>
-        </div>
-      </div>
+      <PageHeader
+        title="Datasets"
+        description="Labeled examples an evaluator is scored against — generated, imported from CSV, or derived from an existing evaluator."
+        action={
+          <div className="form-actions">
+            <Button onClick={openCreate}>New dataset</Button>
+          </div>
+        }
+      />
 
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
       {listings === null ? (
         <Spinner />
       ) : (
-        <Table
-          rows={listings}
-          rowKey={(listing) => listing.dataset.id}
-          empty="No datasets yet. Create, upload, or generate one to get started."
-          columns={[
-            {
-              header: "Name",
-              cell: (listing) => (
-                <Link to={`/datasets/${listing.dataset.id}`}>{listing.dataset.name}</Link>
-              ),
-            },
-            {
-              header: "Rows",
-              cell: (listing) => listing.stats?.total ?? "—",
-            },
-            {
-              header: "Labeled",
-              cell: (listing) =>
-                listing.stats ? (
-                  <Badge tone={listing.stats.unlabeled === 0 ? "success" : "neutral"}>
-                    {listing.stats.labeled} / {listing.stats.total}
-                  </Badge>
-                ) : (
-                  "—"
+        <>
+          {listings.length > 0 && (
+            <div className="summary-strip">
+              <div className="stat">
+                <span className="stat-value">{summary.count}</span>
+                <span className="stat-label">datasets</span>
+              </div>
+              <div className="stat">
+                <span className="stat-value">{summary.totalRows}</span>
+                <span className="stat-label">total rows</span>
+              </div>
+              <div className="stat">
+                <span className="stat-value">{summary.percent}</span>
+                <span className="stat-label">labeled</span>
+              </div>
+            </div>
+          )}
+
+          <Table
+            rows={listings}
+            rowKey={(dataset) => dataset.id}
+            empty={
+              <EmptyState
+                icon={<DatasetIcon size={32} />}
+                message="A dataset is rows plus a label space that an evaluator is measured against."
+                action={<Button onClick={openCreate}>Create dataset</Button>}
+              />
+            }
+            columns={[
+              {
+                header: "Name",
+                cell: (dataset) => <Link to={`/datasets/${dataset.id}`}>{dataset.name}</Link>,
+              },
+              {
+                header: "Rows",
+                cell: (dataset) => dataset.row_count,
+              },
+              {
+                header: "Labeled",
+                cell: (dataset) =>
+                  dataset.labeled_count === dataset.row_count && dataset.row_count > 0 ? (
+                    <Badge tone="success">complete</Badge>
+                  ) : (
+                    `${dataset.labeled_count} / ${dataset.row_count}`
+                  ),
+              },
+              {
+                header: "",
+                cell: (dataset) => (
+                  <Button
+                    variant="secondary"
+                    aria-label={`Duplicate ${dataset.name}`}
+                    onClick={() => duplicate(dataset)}
+                  >
+                    Duplicate
+                  </Button>
                 ),
-            },
-            {
-              header: "",
-              cell: (listing) => (
-                <Button
-                  variant="secondary"
-                  aria-label={`Duplicate ${listing.dataset.name}`}
-                  onClick={() => duplicate(listing.dataset)}
-                >
-                  Duplicate
-                </Button>
-              ),
-            },
-          ]}
-        />
+              },
+            ]}
+          />
+        </>
       )}
 
       <Modal open={creating} title="New dataset" onClose={() => setCreating(false)}>
