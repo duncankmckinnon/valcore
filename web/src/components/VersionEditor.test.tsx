@@ -378,4 +378,16 @@ describe("VersionEditor: field tooltips", () => {
     const popover = screen.getByRole("tooltip");
     expect(popover.textContent?.trim().length ?? 0).toBeGreaterThan(0);
   });
+
+  it("explains in the prompt-template tooltip that braced names must match required columns", async () => {
+    const user = userEvent.setup();
+    render(<VersionEditor version={makeVersion()} evaluatorId="e1" config={config} />);
+
+    const trigger = tooltipTriggerNear(screen.getByLabelText("Prompt template"));
+    await user.click(trigger);
+
+    // The requirement is explicit: the copy must tie braced names to the required columns.
+    const popover = screen.getByRole("tooltip");
+    expect(popover.textContent ?? "").toMatch(/required columns/i);
+  });
 });
