@@ -215,4 +215,46 @@ describe("DatasetsPage", () => {
     expect(emptyState).not.toBeNull();
     expect(within(emptyState as HTMLElement).getByRole("button")).toBeTruthy();
   });
+
+  it("omits the summary strip entirely when there are no datasets", async () => {
+    listMock.mockResolvedValue([]);
+    const { container } = renderPage();
+
+    await screen.findByText(/measured against/i);
+
+    // No datasets → no summed figures to show, so the strip and its stat cells
+    // are absent rather than rendering zeros.
+    expect(container.querySelector(".summary-strip")).toBeNull();
+    expect(container.querySelector(".stat-value")).toBeNull();
+  });
+
+  it("shows each dataset's own row_count in the Rows column", async () => {
+    listMock.mockResolvedValue([
+      madeDataset({ id: "d1", name: "Alpha", row_count: 7, labeled_count: 3 }),
+      madeDataset({ id: "d2", name: "Beta", row_count: 13, labeled_count: 9 }),
+    ]);
+    const { container } = renderPage();
+
+    await screen.findByRole("link", { name: "Alpha" });
+
+    // The per-row Rows cell reflects that dataset's row_count directly. Table cells
+    // carry the raw number; scope to <td> to avoid colliding with the .stat-value
+    // summary figures (total rows is 20, distinct from either row's 7 or 13).
+    const cellTexts = Array.from(container.querySelectorAll("td")).map((td) => td.textContent);
+    expect(cellTexts).toContain("7");
+    expect(cellTexts).toContain("13");
+  });
+
+  it("rounds percent labeled to a whole number", async () => {
+    // 1 of 3 labeled → 33.33…% rounds to 33%.
+    listMock.mockResolvedValue([
+      madeDataset({ id: "d1", name: "Alpha", row_count: 3, labeled_count: 1 }),
+    ]);
+    renderPage();
+
+    await screen.findByRole("link", { name: "Alpha" });
+
+    expect(screen.getByText("33%", { selector: ".stat-value" })).toBeTruthy();
+    expect(screen.queryByText(/33\.\d/)).toBeNull();
+  });
 });
