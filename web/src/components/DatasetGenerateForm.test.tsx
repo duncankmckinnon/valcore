@@ -361,3 +361,113 @@ describe("DatasetGenerateForm prefill", () => {
     expect(payload.count).toBe(4);
   });
 });
+
+describe("DatasetGenerateForm blockers", () => {
+  // The old silent `canSubmit` becomes a derived `blockers` list surfaced through
+  // FormFooter, which shows one instruction at a time in a role=status region. The
+  // gating is unchanged — only the explanation is new.
+  it("blocks on the name first when the form is empty", () => {
+    render(<DatasetGenerateForm onCreated={vi.fn()} />);
+
+    expect(screen.getByText("Add a name")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
+  });
+
+  it("advances the blocker one field at a time, in order", async () => {
+    const user = userEvent.setup();
+    render(<DatasetGenerateForm onCreated={vi.fn()} />);
+
+    // A name is missing first.
+    expect(screen.getByText("Add a name")).toBeInTheDocument();
+
+    // Filling it advances to the description — the earlier blocker is gone, not stacked.
+    await user.type(screen.getByLabelText("Name"), "Synth");
+    expect(screen.queryByText("Add a name")).toBeNull();
+    expect(screen.getByText("Add a description")).toBeInTheDocument();
+
+    // Then columns, once the description is in place.
+    await user.type(screen.getByLabelText("Description"), "support questions");
+    expect(screen.queryByText("Add a description")).toBeNull();
+    expect(screen.getByText("Add at least one column")).toBeInTheDocument();
+  });
+
+  it("clears every blocker and enables Generate once the essentials are set", async () => {
+    const user = userEvent.setup();
+    render(<DatasetGenerateForm onCreated={vi.fn()} />);
+
+    await user.type(screen.getByLabelText("Name"), "Synth");
+    await user.type(screen.getByLabelText("Description"), "support questions");
+    await user.type(screen.getByLabelText("Columns (comma separated)"), "question");
+
+    // With no schema labels there is no mix to complete, so nothing is left to block on.
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("button", { name: "Generate" })).not.toBeDisabled();
+  });
+
+  it("blocks with the mix instruction while the label mix falls short of 100%", async () => {
+    const user = userEvent.setup();
+    render(<DatasetGenerateForm onCreated={vi.fn()} />);
+
+    await fillBasics(user);
+    await user.click(screen.getByRole("checkbox", { name: /prescribe label distribution/i }));
+    // 40 + 50 = 90: a live mix that does not total 100 must block and explain why.
+    const pass = screen.getByLabelText("Percent for pass");
+    await user.clear(pass);
+    await user.type(pass, "40");
+    const fail = screen.getByLabelText("Percent for fail");
+    await user.clear(fail);
+    await user.type(fail, "50");
+
+    expect(screen.getByText("Label mix must total 100%")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
+  });
+});
+
+describe("DatasetGenerateForm guidance", () => {
+  it("explains the instructions field through a tooltip rather than inline prose", async () => {
+    const user = userEvent.setup();
+    render(<DatasetGenerateForm onCreated={vi.fn()} />);
+
+    // Nothing is revealed until the user asks for it.
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /instructions/i }));
+
+    const tip = screen.getByRole("tooltip");
+    // The longer hint that used to sit inline now lives here: it steers content,
+    // difficulty and the mix of cases, and blank falls back to the description.
+    expect(tip.textContent).toMatch(/difficulty/i);
+    expect(tip.textContent).toMatch(/description alone/i);
+  });
+
+  it("previews one line per column and re-derives it as the columns change", async () => {
+    const user = userEvent.setup();
+    render(<DatasetGenerateForm onCreated={vi.fn()} />);
+
+    const columns = screen.getByLabelText("Columns (comma separated)");
+    await user.type(columns, "question");
+
+    // The row shape lists the named column; a not-yet-typed column is absent.
+    expect(screen.getByText(/"question"/)).toBeInTheDocument();
+    expect(screen.queryByText(/"answer"/)).toBeNull();
+
+    // Adding a column updates the derived preview without a submit.
+    await user.type(columns, ", answer");
+    expect(screen.getByText(/"answer"/)).toBeInTheDocument();
+  });
+
+  it("adds a label line to the preview once the schema has labels", async () => {
+    const user = userEvent.setup();
+    render(<DatasetGenerateForm onCreated={vi.fn()} />);
+
+    await user.type(screen.getByLabelText("Columns (comma separated)"), "question");
+    // No labels defined yet, so the shape carries no label line.
+    expect(screen.queryByText(/"label"/)).toBeNull();
+
+    const labelInput = screen.getByPlaceholderText("Add a label");
+    await user.type(labelInput, "pass");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+
+    expect(screen.getByText(/"label"/)).toBeInTheDocument();
+  });
+});
