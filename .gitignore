@@ -231,3 +231,5 @@ valcore.db-shm
 valcore.db-wal
 valcore.db*
 web/dist/
+
+.superpowers/
