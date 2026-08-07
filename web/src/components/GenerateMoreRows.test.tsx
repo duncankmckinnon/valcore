@@ -272,4 +272,26 @@ describe("GenerateMoreRows chrome", () => {
     expect(blocker.textContent).toMatch(/50/);
     expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
   });
+
+  it("shows no blocker and enables Generate on a valid state", () => {
+    // The ready path of FormFooter: a satisfiable form carries no status region and the
+    // primary action is live.
+    renderModal();
+
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("button", { name: "Generate" })).not.toBeDisabled();
+  });
+
+  it("surfaces the empty-count blocker and disables Generate at zero rows", async () => {
+    // Emptying the number field drives count below one, which is the first blocker in the
+    // top-to-bottom order.
+    const user = userEvent.setup();
+    renderModal();
+
+    const count = screen.getByLabelText("Rows to add");
+    await user.clear(count);
+
+    expect(screen.getByRole("status").textContent).toMatch(/at least one row/i);
+    expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
+  });
 });
