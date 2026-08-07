@@ -115,6 +115,19 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+describe("EvaluatorDetail: page chrome", () => {
+  it("renders exactly one level-1 heading for the evaluator name", async () => {
+    vi.mocked(api).mockResolvedValue(config);
+    vi.mocked(evaluators.get).mockResolvedValue(makeDetail({ name: "My Eval" }));
+    renderDetail();
+
+    // Adopting PageHeader must not leave a second, nested <h1> behind; the editable
+    // title stays the single level-1 heading.
+    expect(await screen.findByRole("heading", { level: 1, name: "My Eval" })).toBeTruthy();
+    expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
+  });
+});
+
 describe("EvaluatorDetail: draft editor", () => {
   it("renders the draft editor for an evaluator with no versions, not 'No versions yet.'", async () => {
     vi.mocked(api).mockResolvedValue(config);
