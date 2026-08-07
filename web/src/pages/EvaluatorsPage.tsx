@@ -11,6 +11,11 @@ import EvaluatorDetail from "./EvaluatorDetail";
 import { VersionEditor } from "../components/VersionEditor";
 import type { AppConfig } from "../components/VersionEditor";
 import { Badge, Button, ErrorBanner, Modal, Spinner, Table, TextArea } from "../components/ui";
+import { PageHeader } from "../components/PageHeader";
+import { EmptyState } from "../components/EmptyState";
+import { FormFooter } from "../components/FormFooter";
+import { Tooltip } from "../components/Tooltip";
+import { EvaluatorIcon } from "../components/icons";
 
 type EvaluatorRow = Evaluator & {
   active_version: { version_name: string } | null;
@@ -62,13 +67,18 @@ function EvaluatorsList() {
     api<AppConfig>("/api/config").then(setConfig).catch(setError);
   }, []);
 
-  const valid =
-    mode === "scratch"
-      ? name.trim() !== ""
-      : name.trim() !== "" && criteria.trim() !== "";
+  // One reason at a time, so a blocked primary action says why instead of sitting
+  // silently disabled. Order mirrors the fields top to bottom.
+  const blockers: string[] = [];
+  if (name.trim() === "") {
+    blockers.push("Add a name");
+  }
+  if (mode === "criteria" && criteria.trim() === "") {
+    blockers.push("Describe the criteria");
+  }
 
   const submit = async () => {
-    if (!valid) {
+    if (blockers.length > 0) {
       return;
     }
     setBusy(true);
@@ -101,9 +111,7 @@ function EvaluatorsList() {
   if (receivedDraft && config) {
     return (
       <section>
-        <div className="page-header">
-          <h1>{receivedDraft.name}</h1>
-        </div>
+        <PageHeader title={receivedDraft.name} />
         <VersionEditor
           version={null}
           evaluatorId=""
@@ -122,18 +130,31 @@ function EvaluatorsList() {
 
   return (
     <section>
-      <div className="page-header">
-        <h1>Evaluators</h1>
-        <Button variant="primary" onClick={() => setCreating(true)}>
-          New evaluator
-        </Button>
-      </div>
+      <PageHeader
+        title="Evaluators"
+        description="Reusable LLM-as-judge configs that score dataset rows."
+        action={
+          <Button variant="primary" onClick={() => setCreating(true)}>
+            New evaluator
+          </Button>
+        }
+      />
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
       <Table<EvaluatorRow>
         rows={rows}
         rowKey={(row) => row.id}
-        empty="No evaluators yet."
+        empty={
+          <EmptyState
+            icon={<EvaluatorIcon />}
+            message="An evaluator is a prompt plus an output contract that grades rows."
+            action={
+              <Button variant="primary" onClick={() => setCreating(true)}>
+                Create evaluator
+              </Button>
+            }
+          />
+        }
         columns={[
           {
             header: "Name",
@@ -157,66 +178,105 @@ function EvaluatorsList() {
         ]}
       />
 
-      <Modal open={creating} title="New evaluator" onClose={() => setCreating(false)}>
-        <div className="mode-tabs" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={mode === "scratch"}
-            className={`mode-tab ${mode === "scratch" ? "mode-tab-active" : ""}`.trim()}
-            onClick={() => setMode("scratch")}
-          >
-            From scratch
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={mode === "criteria"}
-            className={`mode-tab ${mode === "criteria" ? "mode-tab-active" : ""}`.trim()}
-            onClick={() => setMode("criteria")}
-          >
-            From criteria
-          </button>
-        </div>
-        <label className="field">
-          <span className="field-label">Name</span>
-          <input
-            className="input"
-            aria-label="Evaluator name"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
-        </label>
-        {mode === "scratch" ? (
-          <label className="field">
-            <span className="field-label">Description</span>
-            <TextArea
-              aria-label="Description"
-              rows={4}
-              placeholder="What does this evaluator check?"
-              value={description}
-              onChange={(event) => setDescription(event.target.value)}
-            />
-          </label>
-        ) : (
-          <label className="field">
-            <span className="field-label">Criteria</span>
-            <TextArea
-              aria-label="Criteria"
-              rows={8}
-              placeholder="Describe what a good response looks like…"
-              value={criteria}
-              onChange={(event) => setCriteria(event.target.value)}
-            />
-          </label>
-        )}
-        <div className="modal-actions">
-          <Button variant="secondary" onClick={() => setCreating(false)} disabled={busy}>
-            Cancel
-          </Button>
-          <Button variant="primary" onClick={submit} disabled={busy || !valid}>
-            {busy ? <Spinner /> : mode === "scratch" ? "Create" : "Generate"}
-          </Button>
+      <Modal
+        open={creating}
+        title="New evaluator"
+        description="Start blank and write the first version yourself, or describe your criteria and let a model draft one."
+        size="lg"
+        onClose={() => setCreating(false)}
+        footer={
+          <FormFooter blockers={blockers}>
+            <Button variant="secondary" onClick={() => setCreating(false)} disabled={busy}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              onClick={submit}
+              disabled={busy || blockers.length > 0}
+            >
+              {busy ? <Spinner /> : mode === "scratch" ? "Create" : "Generate"}
+            </Button>
+          </FormFooter>
+        }
+      >
+        <div className="modal-two-pane">
+          <div>
+            <div className="mode-tabs" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === "scratch"}
+                className={`mode-tab ${mode === "scratch" ? "mode-tab-active" : ""}`.trim()}
+                onClick={() => setMode("scratch")}
+              >
+                From scratch
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === "criteria"}
+                className={`mode-tab ${mode === "criteria" ? "mode-tab-active" : ""}`.trim()}
+                onClick={() => setMode("criteria")}
+              >
+                From criteria
+              </button>
+            </div>
+            <label className="field">
+              <span className="field-label">Name</span>
+              <input
+                className="input"
+                aria-label="Evaluator name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+              />
+            </label>
+            {mode === "scratch" ? (
+              <label className="field">
+                <span className="field-label">Description</span>
+                <TextArea
+                  aria-label="Description"
+                  rows={4}
+                  placeholder="What does this evaluator check?"
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                />
+              </label>
+            ) : (
+              // Not a wrapping <label>: the Tooltip trigger is a second labelable
+              // control, so the textarea leans on its aria-label alone to stay the one
+              // element matched by "Criteria".
+              <div className="field">
+                <span className="field-label">
+                  Criteria
+                  <Tooltip text="Describe what a good response looks like. This becomes the first version of the evaluator." />
+                </span>
+                <TextArea
+                  aria-label="Criteria"
+                  rows={8}
+                  placeholder="Describe what a good response looks like…"
+                  value={criteria}
+                  onChange={(event) => setCriteria(event.target.value)}
+                />
+              </div>
+            )}
+          </div>
+          <aside className="modal-side">
+            {mode === "criteria" ? (
+              <>
+                <p>What happens next:</p>
+                <ol>
+                  <li>A model drafts instructions, a prompt template, and output fields.</li>
+                  <li>You land in the version editor to review the draft.</li>
+                  <li>Nothing is saved until you choose to save.</li>
+                </ol>
+                <p>Generation takes several seconds.</p>
+              </>
+            ) : (
+              <p>
+                You get an empty evaluator and author the first version yourself.
+              </p>
+            )}
+          </aside>
         </div>
       </Modal>
     </section>
