@@ -365,3 +365,34 @@ describe("label mix", () => {
     expect(screen.queryByRole("checkbox", { name: /prescribe label distribution/i })).toBeNull();
   });
 });
+
+// -- Redesigned modal chrome -------------------------------------------------
+// The redesign adds a description (the shape is derived from the evaluator; instructions
+// only steer content), a tooltip explaining the extra-columns field, and moves the
+// actions into the footer.
+
+describe("DatasetFromEvaluator chrome", () => {
+  it("describes that the shape is derived and instructions only steer content", () => {
+    renderModal();
+
+    expect(screen.getByText(/derived|steer/i)).toBeInTheDocument();
+  });
+
+  it("keeps the Cancel action wired to onClose from the footer", async () => {
+    const user = userEvent.setup();
+    const props = renderModal();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(props.onClose).toHaveBeenCalled();
+  });
+
+  it("explains via a tooltip that extra columns are never invented by the model", async () => {
+    const user = userEvent.setup();
+    renderModal();
+
+    await user.click(screen.getByRole("button", { name: /more information/i }));
+
+    expect(screen.getByRole("tooltip").textContent).toMatch(/invent|named explicitly/i);
+  });
+});

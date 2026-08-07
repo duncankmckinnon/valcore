@@ -182,3 +182,23 @@ describe("DatasetSettingsModal", () => {
     expect(body.column_renames).toBeUndefined();
   });
 });
+
+// -- Redesigned modal chrome -------------------------------------------------
+// The redesign gives the modal a one-line description and moves its actions into the
+// footer. The actions keep their accessible names, so they are still located by role.
+
+describe("DatasetSettingsModal chrome", () => {
+  it("describes that edits shape future generation, not existing rows", () => {
+    renderModal();
+
+    expect(screen.getByText(/future generation|existing rows/i)).toBeInTheDocument();
+  });
+
+  it("keeps the Cancel action wired to onClose from the footer", async () => {
+    const props = renderModal();
+
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(props.onClose).toHaveBeenCalled();
+  });
+});
