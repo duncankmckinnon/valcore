@@ -65,6 +65,8 @@ function madeDataset(overrides: Partial<Dataset> = {}): Dataset {
     description: "desc",
     columns: ["question", "answer"],
     label_schema: LABELLED_SCHEMA,
+    row_count: 0,
+    labeled_count: 0,
     ...overrides,
   };
 }
@@ -261,5 +263,28 @@ describe("EvaluatorFromDataset", () => {
     await user.type(screen.getByLabelText("Criteria"), "Judge answer quality.");
     expect(screen.getByRole("button", { name: "Generate evaluator" })).not.toBeDisabled();
     expect(generateMock).not.toHaveBeenCalled();
+  });
+});
+
+// -- Redesigned modal chrome -------------------------------------------------
+// The redesign adds a description (the shape is derived from the dataset; criteria and
+// notes only steer content) and moves the actions into the footer. This direction locks
+// the dataset's columns with no add-column affordance, so it gains no extra-columns
+// tooltip — only the description and the relocated actions.
+
+describe("EvaluatorFromDataset chrome", () => {
+  it("describes that the shape is derived and the inputs only steer content", () => {
+    renderModal();
+
+    expect(screen.getByText(/derived|steer/i)).toBeInTheDocument();
+  });
+
+  it("keeps the Cancel action wired to onClose from the footer", async () => {
+    const user = userEvent.setup();
+    const { onClose } = renderModal();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(onClose).toHaveBeenCalled();
   });
 });

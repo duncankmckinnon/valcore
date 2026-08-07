@@ -13,12 +13,18 @@ import type {
   OutputField,
   ScoreKind,
 } from "../api/types";
-import { CapabilitiesEditor } from "./CapabilitiesEditor";
-import { OutputFieldsEditor } from "./OutputFieldsEditor";
+import { FormFooter } from "./FormFooter";
 import { RefinePanel } from "./RefinePanel";
+import {
+  CapabilitiesSection,
+  IdentitySection,
+  InputsSection,
+  JudgmentSection,
+  OutputContractSection,
+} from "./VersionEditorSections";
 import { validateVersion } from "./versionValidation";
 import type { VersionErrors } from "./versionValidation";
-import { Badge, Button, ErrorBanner, Select, Spinner, TextArea } from "./ui";
+import { Badge, Button, ErrorBanner, Spinner } from "./ui";
 
 export type AppConfig = {
   models: string[];
@@ -130,6 +136,34 @@ function syncScoreLabels(form: FormState): FormState {
   }
   return form;
 }
+
+// Error keys in the order their fields appear down the editor, so the footer surfaces the
+// earliest unmet requirement first.
+const BLOCKER_ORDER: (keyof VersionErrors)[] = [
+  "version_name",
+  "model",
+  "instructions",
+  "prompt_template",
+  "required_columns",
+  "output_fields",
+  "score_kind",
+  "score_field",
+  "score_labels",
+];
+
+// Each blocker is an instruction ("do X"), not a restatement of the inline error, since it
+// tells the user what to do to unblock Save.
+const BLOCKER_TEXT: Partial<Record<keyof VersionErrors, string>> = {
+  version_name: "Enter a version name",
+  model: "Choose a model",
+  instructions: "Add judging instructions",
+  prompt_template: "Match the prompt template's braces to the required columns",
+  required_columns: "Add at least one required column",
+  output_fields: "Fix the output fields",
+  score_kind: "Fix the score kind",
+  score_field: "Select a score field",
+  score_labels: "Align the score labels with the score field",
+};
 
 export function VersionEditor({
   version,
@@ -258,6 +292,12 @@ export function VersionEditor({
 
   const saveLabel = version === null ? "Create version" : frozen ? "Save as new version" : "Save changes";
 
+  // One footer blocker per populated error, phrased as an action and ordered by the section
+  // the field lives in, so the first (and only shown) blocker points at the earliest problem.
+  const blockers = BLOCKER_ORDER.filter((key) => errors[key])
+    .map((key) => BLOCKER_TEXT[key])
+    .filter((text): text is string => Boolean(text));
+
   return (
     <div className="version-editor">
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
@@ -268,169 +308,90 @@ export function VersionEditor({
         </p>
       )}
 
-      <label className="field">
-        <span className="field-label">Version name</span>
-        <input
-          className="input"
-          aria-label="Version name"
-          value={form.version_name}
-          readOnly={frozen}
-          onChange={(event) => update("version_name", event.target.value)}
-        />
-        {fieldError("version_name")}
-      </label>
+      <div className="editor-layout">
+        <div className="editor-main">
+          <IdentitySection
+            versionName={form.version_name}
+            model={form.model}
+            models={config.models}
+            frozen={frozen}
+            onVersionName={(value) => update("version_name", value)}
+            onModel={(value) => update("model", value)}
+            versionNameError={fieldError("version_name")}
+            modelError={fieldError("model")}
+          />
 
-      <label className="field">
-        <span className="field-label">Model</span>
-        <Select
-          aria-label="Model"
-          disabled={frozen}
-          value={form.model}
-          options={config.models.map((model) => ({ value: model, label: model }))}
-          onChange={(event) => update("model", event.target.value)}
-        />
-        {fieldError("model")}
-      </label>
+          <JudgmentSection
+            instructions={form.instructions}
+            promptTemplate={form.prompt_template}
+            frozen={frozen}
+            onInstructions={(value) => update("instructions", value)}
+            onPromptTemplate={(value) => update("prompt_template", value)}
+            instructionsError={fieldError("instructions")}
+            promptTemplateError={fieldError("prompt_template")}
+          />
 
-      <label className="field">
-        <span className="field-label">Instructions</span>
-        <TextArea
-          aria-label="Instructions"
-          className="instructions"
-          rows={12}
-          value={form.instructions}
-          readOnly={frozen}
-          onChange={(event) => update("instructions", event.target.value)}
-        />
-        {fieldError("instructions")}
-      </label>
+          <InputsSection
+            columns={form.required_columns}
+            columnDraft={columnDraft}
+            frozen={frozen}
+            onColumnDraft={setColumnDraft}
+            onAddColumn={addColumn}
+            onRemoveColumn={removeColumn}
+            columnsError={fieldError("required_columns")}
+          />
 
-      <label className="field">
-        <span className="field-label">Prompt template</span>
-        <TextArea
-          aria-label="Prompt template"
-          value={form.prompt_template}
-          readOnly={frozen}
-          onChange={(event) => update("prompt_template", event.target.value)}
-        />
-        {fieldError("prompt_template")}
-      </label>
+          <OutputContractSection
+            outputFields={form.output_fields}
+            scoreKind={form.score_kind}
+            scoreField={form.score_field}
+            scoreFieldOptions={scoreFieldOptions}
+            frozen={frozen}
+            onOutputFields={(fields) =>
+              setForm((prev) => syncScoreLabels({ ...prev, output_fields: fields }))
+            }
+            onScoreKind={(kind) => setScoreKind(kind)}
+            onScoreField={(value) =>
+              setForm((prev) => syncScoreLabels({ ...prev, score_field: value }))
+            }
+            outputFieldsError={fieldError("output_fields")}
+            scoreKindError={fieldError("score_kind")}
+            scoreFieldError={fieldError("score_field")}
+            scoreLabelsError={fieldError("score_labels")}
+          />
 
-      <div className="field">
-        <span className="field-label">Required columns</span>
-        <div className="chips">
-          {form.required_columns.map((column) => (
-            <span key={column} className="chip">
-              {column}
-              {!frozen && (
-                <button
-                  type="button"
-                  className="chip-remove"
-                  aria-label={`Remove column ${column}`}
-                  onClick={() => removeColumn(column)}
-                >
-                  ×
-                </button>
-              )}
-            </span>
-          ))}
-        </div>
-        {!frozen && (
-          <div className="chip-add">
-            <input
-              className="input"
-              aria-label="Add required column"
-              value={columnDraft}
-              onChange={(event) => setColumnDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  addColumn();
-                }
-              }}
-            />
-            <Button variant="secondary" onClick={addColumn}>
-              Add
+          <CapabilitiesSection
+            availableCapabilities={config.capabilities}
+            capabilities={form.capabilities}
+            availableTools={config.tools}
+            tools={form.tools}
+            frozen={frozen}
+            onCapabilities={(capabilities) => update("capabilities", capabilities)}
+            onToggleTool={toggleTool}
+          />
+
+          <FormFooter blockers={blockers} ready="Ready to save.">
+            <Button variant="primary" onClick={handleSave} disabled={saving || hasErrors}>
+              {saving ? <Spinner /> : saveLabel}
             </Button>
+          </FormFooter>
+        </div>
+
+        <div className="editor-rail">
+          <div className="preview-pane">
+            <span className="field-label">Returns</span>
+            <pre className="preview-code">
+              <div>{"{"}</div>
+              {form.output_fields.map((field, index) => (
+                <div key={index}>{`  "${field.name}": "…"`}</div>
+              ))}
+              <div>{"}"}</div>
+            </pre>
           </div>
-        )}
-        {fieldError("required_columns")}
-      </div>
 
-      <div className="field">
-        <span className="field-label">Output fields</span>
-        <OutputFieldsEditor
-          fields={form.output_fields}
-          readOnly={frozen}
-          onChange={(fields) => setForm((prev) => syncScoreLabels({ ...prev, output_fields: fields }))}
-        />
-        {fieldError("output_fields")}
-      </div>
-
-      <label className="field">
-        <span className="field-label">Score kind</span>
-        <Select
-          aria-label="Score kind"
-          disabled={frozen}
-          value={form.score_kind}
-          options={[
-            { value: "categorical", label: "categorical" },
-            { value: "numeric", label: "numeric" },
-          ]}
-          onChange={(event) => setScoreKind(event.target.value as ScoreKind)}
-        />
-        {fieldError("score_kind")}
-      </label>
-
-      <label className="field">
-        <span className="field-label">Score field</span>
-        <Select
-          aria-label="Score field"
-          disabled={frozen}
-          value={form.score_field}
-          options={scoreFieldOptions.map((field) => ({ value: field.name, label: field.name }))}
-          onChange={(event) =>
-            setForm((prev) => syncScoreLabels({ ...prev, score_field: event.target.value }))
-          }
-        />
-        {fieldError("score_field")}
-        {fieldError("score_labels")}
-      </label>
-
-      <div className="field">
-        <span className="field-label">Capabilities</span>
-        <CapabilitiesEditor
-          available={config.capabilities}
-          value={form.capabilities}
-          readOnly={frozen}
-          onChange={(capabilities) => update("capabilities", capabilities)}
-        />
-      </div>
-
-      <div className="field">
-        <span className="field-label">Tools</span>
-        <div className="tools">
-          {config.tools.map((name) => (
-            <label key={name} className="tool-toggle">
-              <input
-                type="checkbox"
-                checked={form.tools.includes(name)}
-                disabled={frozen}
-                onChange={(event) => toggleTool(name, event.target.checked)}
-              />
-              {name}
-            </label>
-          ))}
+          <RefinePanel config={asConfig()} onApply={applyRefine} />
         </div>
       </div>
-
-      <div className="version-editor-actions">
-        <Button variant="primary" onClick={handleSave} disabled={saving || hasErrors}>
-          {saving ? <Spinner /> : saveLabel}
-        </Button>
-      </div>
-
-      <RefinePanel config={asConfig()} onApply={applyRefine} />
     </div>
   );
 }

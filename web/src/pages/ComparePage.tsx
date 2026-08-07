@@ -6,6 +6,9 @@ import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { runs } from "../api/client";
 import type { CompareOut, Run } from "../api/types";
+import { EmptyState } from "../components/EmptyState";
+import { CompareIcon } from "../components/icons";
+import { PageHeader } from "../components/PageHeader";
 import { Badge, ErrorBanner, Select, Spinner, Table } from "../components/ui";
 
 function runLabel(run: Run): string {
@@ -82,7 +85,10 @@ export default function ComparePage() {
       <div className="detail-breadcrumb">
         <Link to="/runs">Runs</Link> / Compare
       </div>
-      <h1>Compare runs</h1>
+      <PageHeader
+        title="Compare"
+        description="See where two runs disagree, row by row."
+      />
 
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
@@ -98,6 +104,13 @@ export default function ComparePage() {
       </div>
 
       {loading && <Spinner />}
+
+      {!loading && (!a || !b) && (
+        <EmptyState
+          icon={<CompareIcon />}
+          message="Pick two runs above to see where they disagree, row by row."
+        />
+      )}
 
       {comparison && (
         <>

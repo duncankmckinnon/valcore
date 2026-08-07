@@ -105,8 +105,34 @@ export default function DatasetSettingsModal({
     await send(built.body, false);
   }
 
+  const footer = pending ? (
+    <div className="modal-actions">
+      <Button variant="secondary" onClick={() => setPending(null)} disabled={submitting}>
+        Cancel
+      </Button>
+      <Button onClick={() => send(pending.body, true)} disabled={submitting}>
+        {submitting ? <Spinner /> : "Save anyway"}
+      </Button>
+    </div>
+  ) : (
+    <div className="modal-actions">
+      <Button variant="secondary" onClick={onClose} disabled={submitting}>
+        Cancel
+      </Button>
+      <Button onClick={onSave} disabled={submitting}>
+        {submitting ? <Spinner /> : "Save"}
+      </Button>
+    </div>
+  );
+
   return (
-    <Modal open={open} title="Dataset settings" onClose={onClose}>
+    <Modal
+      open={open}
+      title="Dataset settings"
+      description="The stored generation settings for this dataset. Editing them shapes future generation, not the existing rows."
+      onClose={onClose}
+      footer={footer}
+    >
       <div className="dataset-settings">
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
@@ -161,27 +187,8 @@ export default function DatasetSettingsModal({
           </p>
         )}
 
-        {pending ? (
-          <>
-            <p className="destructive-warning">{pending.count} rows will lose their label.</p>
-            <div className="form-actions">
-              <Button variant="secondary" onClick={() => setPending(null)} disabled={submitting}>
-                Cancel
-              </Button>
-              <Button onClick={() => send(pending.body, true)} disabled={submitting}>
-                {submitting ? <Spinner /> : "Save anyway"}
-              </Button>
-            </div>
-          </>
-        ) : (
-          <div className="form-actions">
-            <Button variant="secondary" onClick={onClose} disabled={submitting}>
-              Cancel
-            </Button>
-            <Button onClick={onSave} disabled={submitting}>
-              {submitting ? <Spinner /> : "Save"}
-            </Button>
-          </div>
+        {pending && (
+          <p className="destructive-warning">{pending.count} rows will lose their label.</p>
         )}
       </div>
     </Modal>

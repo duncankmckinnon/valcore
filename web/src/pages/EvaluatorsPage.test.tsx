@@ -162,3 +162,126 @@ describe("EvaluatorsPage: new-evaluator modal", () => {
     expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
   });
 });
+
+describe("EvaluatorsPage: page chrome", () => {
+  it("renders a single level-1 heading titled 'Evaluators'", async () => {
+    vi.mocked(evaluators.list).mockResolvedValue([]);
+    vi.mocked(api).mockResolvedValue(config);
+    renderPage();
+
+    // PageHeader owns the one and only <h1>; the page must not mint a second one.
+    expect(await screen.findByRole("heading", { level: 1, name: "Evaluators" })).toBeTruthy();
+    expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
+  });
+
+  it("shows an explanatory empty state with its own create action when there are no evaluators", async () => {
+    vi.mocked(evaluators.list).mockResolvedValue([]);
+    vi.mocked(api).mockResolvedValue(config);
+    const user = userEvent.setup();
+    renderPage();
+
+    // The bare "No evaluators yet." string is replaced by an explanation of what an
+    // evaluator is: a prompt plus an output contract that grades rows.
+    expect(await screen.findByText(/output contract/i)).toBeTruthy();
+    expect(screen.queryByText("No evaluators yet.")).toBeNull();
+
+    // The empty state carries its own call to action, distinct from the header's
+    // "New evaluator" button, and it opens the same create modal.
+    await user.click(screen.getByRole("button", { name: "Create evaluator" }));
+    expect(screen.getByRole("tablist")).toBeTruthy();
+  });
+});
+
+describe("EvaluatorsPage: create modal guidance", () => {
+  async function openModal() {
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "New evaluator" }));
+    return user;
+  }
+
+  it("blocks Create with an empty name and explains 'Add a name'", async () => {
+    vi.mocked(evaluators.list).mockResolvedValue([]);
+    vi.mocked(api).mockResolvedValue(config);
+    await openModal();
+
+    expect(screen.getByText("Add a name")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+  });
+
+  it("in criteria mode with a name but no criteria explains 'Describe the criteria'", async () => {
+    vi.mocked(evaluators.list).mockResolvedValue([]);
+    vi.mocked(api).mockResolvedValue(config);
+    const user = await openModal();
+
+    await user.click(screen.getByRole("tab", { name: "From criteria" }));
+    await user.type(screen.getByLabelText("Evaluator name"), "Concise judge");
+
+    // With the name filled the "Add a name" blocker clears and the criteria blocker
+    // takes its place; the primary action stays disabled.
+    expect(screen.queryByText("Add a name")).toBeNull();
+    expect(screen.getByText("Describe the criteria")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
+  });
+
+  it("shows the three-step generation explanation only in criteria mode", async () => {
+    vi.mocked(evaluators.list).mockResolvedValue([]);
+    vi.mocked(api).mockResolvedValue(config);
+    const user = await openModal();
+
+    // Scratch mode explains you author the first version yourself, and shows none of
+    // the criteria-only guidance about generation.
+    expect(screen.getByText(/empty evaluator/i)).toBeTruthy();
+    expect(screen.queryByText(/several seconds/i)).toBeNull();
+    expect(screen.queryByText(/nothing is saved/i)).toBeNull();
+
+    await user.click(screen.getByRole("tab", { name: "From criteria" }));
+
+    // Criteria mode explains the draft -> review -> save flow and warns it is slow.
+    expect(screen.getByText(/version editor/i)).toBeTruthy();
+    expect(screen.getByText(/nothing is saved/i)).toBeTruthy();
+    expect(screen.getByText(/several seconds/i)).toBeTruthy();
+    expect(screen.queryByText(/empty evaluator/i)).toBeNull();
+  });
+
+  it("has a tooltip beside the Criteria label", async () => {
+    vi.mocked(evaluators.list).mockResolvedValue([]);
+    vi.mocked(api).mockResolvedValue(config);
+    const user = await openModal();
+
+    await user.click(screen.getByRole("tab", { name: "From criteria" }));
+
+    // The hand-rolled Tooltip exposes an info trigger; clicking it reveals a popover
+    // explaining the criteria becomes the first version.
+    const trigger = screen.getByRole("button", { name: "More information" });
+    await user.click(trigger);
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+  });
+
+  it("keeps tab roles and aria-selected in sync as the mode changes", async () => {
+    vi.mocked(evaluators.list).mockResolvedValue([]);
+    vi.mocked(api).mockResolvedValue(config);
+    const user = await openModal();
+
+    expect(screen.getByRole("tab", { name: "From scratch", selected: true })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "From criteria", selected: false })).toBeTruthy();
+
+    await user.click(screen.getByRole("tab", { name: "From criteria" }));
+
+    expect(screen.getByRole("tab", { name: "From criteria", selected: true })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "From scratch", selected: false })).toBeTruthy();
+  });
+
+  it("labels the primary action 'Create' in scratch mode and 'Generate' in criteria mode", async () => {
+    vi.mocked(evaluators.list).mockResolvedValue([]);
+    vi.mocked(api).mockResolvedValue(config);
+    const user = await openModal();
+
+    expect(screen.getByRole("button", { name: "Create" })).toBeTruthy();
+
+    await user.click(screen.getByRole("tab", { name: "From criteria" }));
+
+    expect(screen.getByRole("button", { name: "Generate" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Create" })).toBeNull();
+  });
+});

@@ -12,6 +12,7 @@ import { ExportModal } from "../components/ExportModal";
 import type { AppConfig } from "../components/VersionEditor";
 import { VersionEditor } from "../components/VersionEditor";
 import { Badge, Button, ConfirmDialog, ErrorBanner, Select, Spinner } from "../components/ui";
+import { PageHeader } from "../components/PageHeader";
 
 type EvaluatorDetailData = {
   id: string;
@@ -162,57 +163,69 @@ export default function EvaluatorDetail({ id }: EvaluatorDetailProps) {
   return (
     <section className="evaluator-detail">
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
-      <div className="detail-header">
-        <div>
-          {editingTitle ? (
-            <input
-              className="editable-title-input"
-              aria-label="Evaluator name"
-              autoFocus
-              value={titleValue}
-              onChange={(event) => setTitleValue(event.target.value)}
-              onBlur={() => void commitTitle()}
-            />
-          ) : (
-            <h1
-              className="editable-title"
-              onClick={() => {
-                setTitleValue(detail.name);
-                setEditingTitle(true);
-              }}
-            >
-              {detail.name}
-            </h1>
-          )}
-          {editingDescription ? (
-            <input
-              className="editable-title-input"
-              aria-label="Description"
-              autoFocus
-              value={descriptionValue}
-              onChange={(event) => setDescriptionValue(event.target.value)}
-              onBlur={() => void commitDescription()}
-            />
-          ) : (
-            <p
-              className="detail-description editable-title"
-              onClick={() => {
-                setDescriptionValue(detail.description);
-                setEditingDescription(true);
-              }}
-            >
-              {detail.description || "Add a description…"}
-            </p>
-          )}
-        </div>
-        <div className="detail-header-actions">
-          <Button variant="danger" onClick={() => setDeleteEvaluatorOpen(true)}>
-            Delete evaluator
-          </Button>
-          <Button variant="secondary" onClick={() => navigate("/evaluators")}>
-            Back
-          </Button>
-        </div>
+      {/* PageHeader owns the <h1>, so the click that opens the inline editors can no
+          longer live on the title/description nodes themselves — a click on the heading
+          targets the <h1>, not its child. Delegating from a wrapper lets the click reach
+          a handler while keeping PageHeader's single-heading contract intact. */}
+      <div
+        onClick={(event) => {
+          const el = event.target as HTMLElement;
+          // Buttons and the editors' own inputs handle their own clicks; only the
+          // static title/description text should switch into edit mode.
+          if (el.closest("input, button, a")) {
+            return;
+          }
+          if (el.closest("h1")) {
+            setTitleValue(detail.name);
+            setEditingTitle(true);
+          } else if (el.closest("p")) {
+            setDescriptionValue(detail.description);
+            setEditingDescription(true);
+          }
+        }}
+      >
+        <PageHeader
+          title={
+            editingTitle ? (
+              <input
+                className="editable-title-input"
+                aria-label="Evaluator name"
+                autoFocus
+                value={titleValue}
+                onChange={(event) => setTitleValue(event.target.value)}
+                onBlur={() => void commitTitle()}
+              />
+            ) : (
+              <span className="editable-title">{detail.name}</span>
+            )
+          }
+          description={
+            editingDescription ? (
+              <input
+                className="editable-title-input"
+                aria-label="Description"
+                autoFocus
+                value={descriptionValue}
+                onChange={(event) => setDescriptionValue(event.target.value)}
+                onBlur={() => void commitDescription()}
+              />
+            ) : (
+              <span className="detail-description editable-title">
+                {detail.description || "Add a description…"}
+              </span>
+            )
+          }
+          action={
+            <div className="detail-header-actions">
+              <Button variant="danger" onClick={() => setDeleteEvaluatorOpen(true)}>
+                Delete evaluator
+              </Button>
+              <Button variant="secondary" onClick={() => navigate("/evaluators")}>
+                Back
+              </Button>
+            </div>
+          }
+        />
       </div>
 
       {detail.versions.length > 0 && (

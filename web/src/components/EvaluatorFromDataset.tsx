@@ -65,7 +65,22 @@ export function EvaluatorFromDataset({
   };
 
   return (
-    <Modal open={open} title="Generate evaluator" onClose={onClose}>
+    <Modal
+      open={open}
+      title="Generate evaluator"
+      description="The column shape is derived from the dataset; your criteria and notes only steer the generated judge."
+      onClose={onClose}
+      footer={
+        <div className="modal-actions">
+          <Button variant="secondary" onClick={onClose} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={submit} disabled={!canSubmit}>
+            Generate evaluator
+          </Button>
+        </div>
+      }
+    >
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
       <label className="field">
@@ -126,14 +141,6 @@ export function EvaluatorFromDataset({
         )}
       </div>
 
-      <div className="modal-actions">
-        <Button variant="secondary" onClick={onClose} disabled={submitting}>
-          Cancel
-        </Button>
-        <Button variant="primary" onClick={submit} disabled={!canSubmit}>
-          Generate evaluator
-        </Button>
-      </div>
     </Modal>
   );
 }

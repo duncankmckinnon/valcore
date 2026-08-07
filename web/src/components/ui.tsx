@@ -7,6 +7,7 @@ import type {
   SelectHTMLAttributes,
   TextareaHTMLAttributes,
 } from "react";
+import { useEffect, useId } from "react";
 import { ApiError } from "../api/client";
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -113,19 +114,65 @@ export function ErrorBanner({ error, onDismiss }: ErrorBannerProps) {
 type ModalProps = {
   open: boolean;
   title?: ReactNode;
+  description?: ReactNode;
+  footer?: ReactNode;
+  size?: "sm" | "md" | "lg";
   onClose: () => void;
   children: ReactNode;
 };
 
-export function Modal({ open, title, onClose, children }: ModalProps) {
+export function Modal({
+  open,
+  title,
+  description,
+  footer,
+  size = "md",
+  onClose,
+  children,
+}: ModalProps) {
+  const titleId = useId();
+  const descriptionId = useId();
+
+  // Escape closes the modal. The listener only exists while open, so a stray
+  // Escape after close (or unmount) can never fire onClose.
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open, onClose]);
+
   if (!open) {
     return null;
   }
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
-        {title && <div className="modal-header">{title}</div>}
+      <div
+        className={`modal modal-${size}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={title ? titleId : undefined}
+        aria-describedby={description ? descriptionId : undefined}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {(title || description) && (
+          <div className="modal-header">
+            {title && <div id={titleId}>{title}</div>}
+            {description && (
+              <div id={descriptionId} className="modal-description">
+                {description}
+              </div>
+            )}
+          </div>
+        )}
         <div className="modal-body">{children}</div>
+        {footer && <div className="modal-footer">{footer}</div>}
       </div>
     </div>
   );
@@ -158,7 +205,21 @@ export function ConfirmDialog({
     error instanceof ApiError && error.type === "ReferencedError" ? error : null;
   const runCount = referenced ? Number(referenced.detail?.run_count ?? 0) : 0;
   return (
-    <Modal open={open} title={title} onClose={onClose}>
+    <Modal
+      open={open}
+      title={title}
+      onClose={onClose}
+      footer={
+        <div className="form-actions">
+          <Button variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={onConfirm} disabled={busy || referenced !== null}>
+            {busy ? <Spinner /> : confirmLabel}
+          </Button>
+        </div>
+      }
+    >
       <p className="confirm-dialog-message">{message}</p>
       {referenced ? (
         <p className="destructive-warning">
@@ -167,14 +228,6 @@ export function ConfirmDialog({
       ) : (
         <ErrorBanner error={error} />
       )}
-      <div className="form-actions">
-        <Button variant="secondary" onClick={onClose}>
-          Cancel
-        </Button>
-        <Button variant="primary" onClick={onConfirm} disabled={busy || referenced !== null}>
-          {busy ? <Spinner /> : confirmLabel}
-        </Button>
-      </div>
     </Modal>
   );
 }
