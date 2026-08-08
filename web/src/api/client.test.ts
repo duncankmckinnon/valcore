@@ -142,6 +142,163 @@ describe("evaluator version path bug", () => {
   });
 });
 
+// The new export endpoints return a `{files: {name -> contents}}` envelope for
+// both entities and both forms. `exportFiles` unwraps to the inner map so callers
+// never see the envelope, mirroring how `exportScript` returns just `.source`.
+// `split` is a JSON-only query param ("true" for the split layout, "false" for
+// bundled); the "code" form never sends it. The dataset variant threads an
+// optional `versionId` into `version_id`, omitting the param entirely when absent.
+describe("export files client helpers", () => {
+  it("evaluators.exportFiles code GETs export.py with no split param", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ files: { "refusal.py": "def evaluate(): ..." } }));
+
+    await evaluators.exportFiles("v1", "code", "bundled");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/evaluators/versions/v1/export.py");
+    expect(init?.method ?? "GET").toBe("GET");
+    // The code form is a single-file Python script; layout must not leak a query param.
+    expect(String(url)).not.toContain("split");
+  });
+
+  it("evaluators.exportFiles code ignores a split layout and sends no query param", async () => {
+    // Even when the caller asks for "split", the code form is a single Python
+    // script; layout must not leak into the URL for the "code" branch.
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ files: { "refusal.py": "def evaluate(): ..." } }));
+
+    await evaluators.exportFiles("v1", "code", "split");
+
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/evaluators/versions/v1/export.py");
+    expect(String(url)).not.toContain("split");
+    expect(String(url)).not.toContain("?");
+  });
+
+  it("evaluators.exportFiles json bundled GETs export.json with split=false", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ files: { "refusal.json": "{}" } }));
+
+    await evaluators.exportFiles("v1", "json", "bundled");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/evaluators/versions/v1/export.json?split=false");
+    expect(init?.method ?? "GET").toBe("GET");
+  });
+
+  it("evaluators.exportFiles json split GETs export.json with split=true", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ files: { "refusal.agent.json": "{}" } }));
+
+    await evaluators.exportFiles("v1", "json", "split");
+
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/evaluators/versions/v1/export.json?split=true");
+  });
+
+  it("evaluators.exportFiles resolves to the inner files map", async () => {
+    const files = { "refusal.agent.json": "{}", "refusal.dataset.json": "{}" };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ files }));
+
+    const result = await evaluators.exportFiles("v1", "json", "split");
+
+    expect(result).toEqual(files);
+  });
+
+  it("evaluators.exportFiles surfaces a non-OK response as a rejection", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ error: { type: "NotFoundError", message: "no such version" } }, { status: 404 }),
+    );
+
+    const error = await evaluators.exportFiles("missing", "json", "bundled").catch((e) => e);
+
+    expect(error).toBeInstanceOf(ApiError);
+    if (!(error instanceof ApiError)) throw error;
+    expect(error.status).toBe(404);
+    expect(error.type).toBe("NotFoundError");
+  });
+
+  it("datasets.exportFiles code GETs export.py with no query params", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ files: { "refusal_dataset.py": "# ..." } }));
+
+    await datasets.exportFiles("d1", "code", { layout: "bundled" });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/datasets/d1/export.py");
+    expect(init?.method ?? "GET").toBe("GET");
+    expect(String(url)).not.toContain("split");
+    expect(String(url)).not.toContain("version_id");
+  });
+
+  it("datasets.exportFiles code drops version_id and layout even when supplied", async () => {
+    // The code form is a bare .py module: neither a provided versionId nor a
+    // "split" layout may surface as a query param on the "code" branch.
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ files: { "refusal_dataset.py": "# ..." } }));
+
+    await datasets.exportFiles("d1", "code", { versionId: "v1", layout: "split" });
+
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/datasets/d1/export.py");
+    expect(String(url)).not.toContain("version_id");
+    expect(String(url)).not.toContain("split");
+    expect(String(url)).not.toContain("?");
+  });
+
+  it("datasets.exportFiles json includes version_id when given", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ files: { "refusal.json": "{}" } }));
+
+    await datasets.exportFiles("d1", "json", { versionId: "v1", layout: "bundled" });
+
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/datasets/d1/export.json?version_id=v1&split=false");
+  });
+
+  it("datasets.exportFiles json omits version_id entirely when not supplied", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ files: { "refusal.json": "{}" } }));
+
+    await datasets.exportFiles("d1", "json", { layout: "split" });
+
+    const [url] = fetchMock.mock.calls[0];
+    // Absent optional params are dropped, never string-concatenated as `version_id=undefined`.
+    expect(url).toBe("/api/datasets/d1/export.json?split=true");
+    expect(String(url)).not.toContain("version_id");
+  });
+
+  it("datasets.exportFiles resolves to the inner files map", async () => {
+    const files = { "refusal.dataset.json": "{}" };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ files }));
+
+    const result = await datasets.exportFiles("d1", "json", { layout: "bundled" });
+
+    expect(result).toEqual(files);
+  });
+
+  it("datasets.exportFiles surfaces a non-OK response as a rejection", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ error: { type: "NotFoundError", message: "no such dataset" } }, { status: 404 }),
+    );
+
+    const error = await datasets.exportFiles("missing", "json", { layout: "bundled" }).catch((e) => e);
+
+    expect(error).toBeInstanceOf(ApiError);
+    if (!(error instanceof ApiError)) throw error;
+    expect(error.status).toBe(404);
+  });
+});
+
 describe("manual CRUD helpers", () => {
   it("evaluators.update PATCHes /api/evaluators/{id}", async () => {
     const fetchMock = vi

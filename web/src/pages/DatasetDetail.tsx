@@ -14,6 +14,7 @@ import type {
 import { Button, ConfirmDialog, ErrorBanner, Spinner } from "../components/ui";
 import { PageHeader } from "../components/PageHeader";
 import DatasetSettingsModal from "../components/DatasetSettingsModal";
+import { ExportModal } from "../components/ExportModal";
 import EvaluatorFromDataset from "../components/EvaluatorFromDataset";
 import GenerateMoreRows from "../components/GenerateMoreRows";
 import GenerationSettings from "../components/GenerationSettings";
@@ -37,6 +38,7 @@ export default function DatasetDetail({ datasetId }: Props) {
   const [generatingRows, setGeneratingRows] = useState(false);
   const [gridEpoch, setGridEpoch] = useState(0);
   const [generatingEvaluator, setGeneratingEvaluator] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<unknown>(null);
@@ -137,6 +139,9 @@ export default function DatasetDetail({ datasetId }: Props) {
             <Button variant="secondary" onClick={() => setGeneratingEvaluator(true)}>
               Generate evaluator
             </Button>
+            <Button variant="secondary" onClick={() => setExporting(true)}>
+              Export
+            </Button>
             <Button variant="secondary" onClick={() => setEditing(true)}>
               Edit
             </Button>
@@ -215,6 +220,14 @@ export default function DatasetDetail({ datasetId }: Props) {
         onGenerated={onEvaluatorGenerated}
         onClose={() => setGeneratingEvaluator(false)}
       />
+
+      {exporting && (
+        <ExportModal
+          open={exporting}
+          subject={{ kind: "dataset", datasetId }}
+          onClose={() => setExporting(false)}
+        />
+      )}
 
       <ConfirmDialog
         open={confirmingDelete}
