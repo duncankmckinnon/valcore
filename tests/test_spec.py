@@ -18,6 +18,7 @@ from valcore.models import (
     DatasetRow,
     EvaluatorVersion,
     LabelSource,
+    OutputField,
     ScoreKind,
 )
 from valcore.spec import (
@@ -29,6 +30,7 @@ from valcore.spec import (
     valcore_meta,
     version_to_spec,
 )
+from valcore.store import Store, create_engine, init_db
 
 
 def make_version(**overrides: object) -> EvaluatorVersion:
@@ -396,3 +398,86 @@ def test_label_schema_empty_when_no_case_has_a_label() -> None:
     )
     _name, _columns, label_schema, _prepared = evals_to_dataset_fields(ds, None)
     assert label_schema == {}
+
+
+def test_label_schema_bool_labels_fall_through_to_empty() -> None:
+    # Booleans are neither string-categorical nor (per the explicit isinstance guard) numeric,
+    # so a dataset of purely boolean labels resolves to the empty "no ground truth" schema.
+    ds = EvalsDataset[dict, bool, dict](
+        name="c",
+        cases=[
+            Case(name="1", inputs={"q": "x"}, expected_output=True),
+            Case(name="2", inputs={"q": "y"}, expected_output=False),
+        ],
+    )
+    _name, _columns, label_schema, _prepared = evals_to_dataset_fields(ds, None)
+    assert label_schema == {}
+
+
+# --- integration: prepared rows are accepted by the real store ----------------
+
+
+def test_prepared_rows_load_into_store(tmp_path) -> None:
+    """The prepared-row shape must be exactly what ``Store.add_prepared_rows`` accepts.
+
+    The other tests assert the dict shape in isolation; this drives it through the real store
+    to prove the keys are valid ``DatasetRow`` fields and that a string ``label_source`` is
+    accepted (SQLModel table rows store it as the raw enum value, which compares equal).
+    """
+    engine = create_engine(tmp_path / "eval.db")
+    init_db(engine)
+    store = Store(engine)
+
+    source = VDataset(name="refusal-quality", columns=["question", "answer"])
+    evals = dataset_to_evals(source, make_rows(), [])
+    name, columns, _label_schema, prepared = evals_to_dataset_fields(
+        evals, valcore_meta(make_version())
+    )
+
+    dataset = store.create_dataset(name=name, description="", columns=columns, label_schema={})
+    created = store.add_prepared_rows(dataset.id, prepared)
+
+    assert [r.data for r in created] == [
+        {"question": "Q1", "answer": "A1"},
+        {"question": "Q2", "answer": "A2"},
+    ]
+    labeled, unlabeled = created
+    assert labeled.label == {"value": "refusal"}
+    assert labeled.label_source == LabelSource.MANUAL
+    assert labeled.note == "a note"
+    # ids are regenerated on import; original case names are not reused.
+    assert labeled.id != make_rows()[0].id
+    # An unlabeled row carries no label and no provenance.
+    assert unlabeled.label is None
+    assert unlabeled.label_source is None
+    assert unlabeled.note is None
+    # Indices are assigned by the store, not carried from the exported ``idx``.
+    assert [r.idx for r in created] == [0, 1]
+
+
+# --- integration: spec_to_version_fields reconstructs a valid version ---------
+
+
+def test_spec_to_version_fields_reconstructs_a_valid_version() -> None:
+    """The importer's fields must build a real ``EvaluatorVersion`` with round-tripped outputs."""
+    original = make_version(capabilities=[{"name": "CodeMode", "config": {"max_retries": 2}}])
+    spec = version_to_spec(original)
+    fields = spec_to_version_fields(spec, valcore_meta(original))
+
+    rebuilt = EvaluatorVersion(evaluator_id="ev1", **fields)
+    assert rebuilt.model == original.model
+    assert rebuilt.version_name == original.version_name
+    assert rebuilt.instructions == original.instructions
+    assert rebuilt.score_kind == ScoreKind.CATEGORICAL
+    assert rebuilt.score_labels == ["refusal", "partial", "answer"]
+    assert rebuilt.tools == ["regex_search"]
+    assert rebuilt.capabilities == [{"name": "CodeMode", "config": {"max_retries": 2}}]
+
+    # Each reconstructed output field is a valid OutputField, and the enum survives.
+    fields_models = [OutputField(**f) for f in rebuilt.output_fields]
+    assert fields_models[0].name == "score"
+    assert fields_models[0].type.value == "enum"
+    assert fields_models[0].enum_values == ["refusal", "partial", "answer"]
+
+    # And the rebuilt version re-encodes to the identical schema.
+    assert output_fields_to_schema(rebuilt) == output_fields_to_schema(original)
