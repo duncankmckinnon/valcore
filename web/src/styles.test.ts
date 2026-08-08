@@ -113,6 +113,12 @@ const CONTRACT_CLASSES = [
   "mix-bar-fill",
   // Summary strip.
   "summary-strip",
+  // Export modal.
+  "export-format",
+  "export-layout",
+  "export-file",
+  "export-file-name",
+  "export-file-actions",
 ];
 
 // Every design token the contract publishes on :root. Later tasks reference these in the
