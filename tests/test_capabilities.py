@@ -11,13 +11,13 @@ import dataclasses
 import importlib
 
 import pytest
+
+from valcore import capabilities, export, models
 from valcore.capabilities import (
     CAPABILITY_REGISTRY,
     VALID_CAPABILITIES,
     CapabilityEntry,
 )
-
-from valcore import capabilities, export, models
 from valcore.errors import ConfigError
 from valcore.export import render_script
 from valcore.factory import build_capabilities
@@ -101,6 +101,37 @@ def test_codemode_module_is_the_deep_runtime_path() -> None:
     because that is what ``build_capabilities`` imports at run time.
     """
     assert CAPABILITY_REGISTRY["CodeMode"].module == "pydantic_ai_harness.code_mode"
+
+
+# The exact ``from <module> import <class>`` line each capability emitted before the
+# refactor. ``render_script`` output is contractually byte-identical (locked decision #6),
+# and CodeMode/FileSystem/Shell historically rendered from the ``pydantic_ai_harness`` root
+# even though the live runtime imports them from a deep module. ``test_export.py`` only pins
+# CodeMode, so without this table a dropped ``render_module`` would silently repoint the
+# other two to their deep paths with no failing test.
+_ORIGINAL_RENDER_IMPORTS: dict[str, str] = {
+    "CodeMode": "from pydantic_ai_harness import CodeMode",
+    "FileSystem": "from pydantic_ai_harness import FileSystem",
+    "Shell": "from pydantic_ai_harness import Shell",
+    "SubAgents": "from pydantic_ai_harness.subagents import SubAgents",
+    "Planning": "from pydantic_ai_harness.planning import Planning",
+}
+
+
+@pytest.mark.parametrize("name", sorted(EXPECTED_CAPABILITY_NAMES))
+def test_render_script_import_line_is_byte_identical_per_capability(name: str) -> None:
+    """Every capability renders the same import line it did before consolidation.
+
+    ``script_module`` (``render_module`` falling back to ``module``) is what preserves the
+    root re-export path for the three capabilities that used it, keeping ``render_script``
+    byte-identical while the runtime still imports the deep module.
+    """
+    entry = CAPABILITY_REGISTRY[name]
+    rendered = f"from {entry.script_module} import {entry.class_name}"
+    assert rendered == _ORIGINAL_RENDER_IMPORTS[name]
+
+    src = render_script(_make_version(capabilities=[{"name": name, "config": {}}]))
+    assert _ORIGINAL_RENDER_IMPORTS[name] in src
 
 
 # --- VALID_CAPABILITIES -------------------------------------------------------
