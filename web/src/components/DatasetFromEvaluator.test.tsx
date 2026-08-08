@@ -8,13 +8,15 @@
 // puts in the payload, and how it reacts to the label toggle — rather than the
 // editor's internals.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import DatasetFromEvaluator from "./DatasetFromEvaluator";
 import { ApiError } from "../api/client";
 import type { DatasetCreated, EvaluatorVersion } from "../api/types";
+import { GATEWAY_BLOCKER, useSetup } from "./useSetup";
+import type { UseSetupResult } from "./useSetup";
 
 // Hoisted so the mock factory (evaluated during import) can capture the same spy
 // the tests assert against.
@@ -28,11 +30,36 @@ vi.mock("../api/client", async (importOriginal) => {
   };
 });
 
+vi.mock("./useSetup", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./useSetup")>();
+  return { ...actual, useSetup: vi.fn() };
+});
+
 const navigate = vi.fn();
 
 vi.mock("react-router-dom", async () => {
   const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
   return { ...actual, useNavigate: () => navigate };
+});
+
+const useSetupMock = vi.mocked(useSetup);
+
+/** Drives the mocked hook straight to a loaded state, skipping loading/error entirely. */
+function mockGatewayReady(gatewayReady: boolean): void {
+  const result: UseSetupResult = {
+    status: null,
+    gatewayReady,
+    loading: false,
+    error: null,
+    refetch: vi.fn(),
+  };
+  useSetupMock.mockReturnValue(result);
+}
+
+beforeEach(() => {
+  // Every pre-existing test in this file exercises form validity, not gateway gating, so
+  // the default keeps the key "present" and leaves their assertions undisturbed.
+  mockGatewayReady(true);
 });
 
 // Stub of the fully-controlled ColumnNotesEditor. It echoes the props that matter
@@ -396,5 +423,65 @@ describe("DatasetFromEvaluator chrome", () => {
     await user.click(screen.getByRole("button", { name: /more information/i }));
 
     expect(screen.getByRole("tooltip").textContent).toMatch(/invent|named explicitly/i);
+  });
+});
+
+describe("DatasetFromEvaluator gateway gating", () => {
+  it("disables Generate and shows the gateway blocker when the key is missing", async () => {
+    mockGatewayReady(false);
+    const user = userEvent.setup();
+    renderModal();
+
+    await user.type(screen.getByLabelText("Dataset name"), "Support QA");
+
+    expect(screen.getByText(GATEWAY_BLOCKER)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
+    expect(generateMock).not.toHaveBeenCalled();
+  });
+
+  it("governs Generate by the form's own validity alone once the key is present", async () => {
+    // The unmodified "ready" case: naming the dataset with a present key enables Generate.
+    mockGatewayReady(true);
+    const user = userEvent.setup();
+    renderModal();
+
+    await user.type(screen.getByLabelText("Dataset name"), "Support QA");
+
+    expect(screen.queryByText(GATEWAY_BLOCKER)).toBeNull();
+    expect(screen.getByRole("button", { name: "Generate" })).not.toBeDisabled();
+  });
+
+  it("shows the gateway blocker instead of a form-validity blocker when both apply", async () => {
+    // The row count also exceeds the cap, but a missing key blocks regardless of what else
+    // is wrong, and only one instruction is shown at a time.
+    mockGatewayReady(false);
+    const user = userEvent.setup();
+    renderModal({ maxCount: 50 });
+
+    await user.type(screen.getByLabelText("Dataset name"), "Support QA");
+    const count = screen.getByLabelText("Row count");
+    await user.clear(count);
+    await user.type(count, "999");
+
+    expect(screen.getByText(GATEWAY_BLOCKER)).toBeInTheDocument();
+    expect(screen.queryByText(/must be 50 or fewer/i)).toBeNull();
+    expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
+  });
+
+  it("keeps the dataset name, instructions, and column editing usable while the key is missing", async () => {
+    mockGatewayReady(false);
+    const user = userEvent.setup();
+    renderModal();
+
+    await user.type(screen.getByLabelText("Dataset name"), "Support QA");
+    await user.type(screen.getByLabelText("Instructions"), "half should be edge cases");
+    await user.click(screen.getByRole("button", { name: "add extra column" }));
+    await user.click(screen.getByRole("button", { name: "set answer note" }));
+
+    expect(screen.getByLabelText("Dataset name")).toHaveValue("Support QA");
+    expect(screen.getByLabelText("Instructions")).toHaveValue("half should be edge cases");
+    expect(screen.getByTestId("extra-column")).toHaveTextContent("context");
+    // The form is now internally valid, yet the missing key still blocks the action.
+    expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
   });
 });

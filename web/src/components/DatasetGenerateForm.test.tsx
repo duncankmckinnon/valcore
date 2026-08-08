@@ -3,12 +3,14 @@
 // the schema the user is editing, and it reaches the API as proportions rather than
 // percents; `instructions` are omitted when blank so `description` keeps driving the prompt.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import DatasetGenerateForm from "./DatasetGenerateForm";
 import { datasets } from "../api/client";
 import type { DatasetCreated } from "../api/types";
+import { GATEWAY_BLOCKER, useSetup } from "./useSetup";
+import type { UseSetupResult } from "./useSetup";
 
 vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
@@ -18,7 +20,31 @@ vi.mock("../api/client", async (importOriginal) => {
   };
 });
 
+vi.mock("./useSetup", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./useSetup")>();
+  return { ...actual, useSetup: vi.fn() };
+});
+
 const generateMock = vi.mocked(datasets.generate);
+const useSetupMock = vi.mocked(useSetup);
+
+/** Drives the mocked hook straight to a loaded state, skipping loading/error entirely. */
+function mockGatewayReady(gatewayReady: boolean): void {
+  const result: UseSetupResult = {
+    status: null,
+    gatewayReady,
+    loading: false,
+    error: null,
+    refetch: vi.fn(),
+  };
+  useSetupMock.mockReturnValue(result);
+}
+
+beforeEach(() => {
+  // Every pre-existing test in this file exercises form validity, not gateway gating, so
+  // the default keeps the key "present" and leaves their assertions undisturbed.
+  mockGatewayReady(true);
+});
 
 function madeCreated(): DatasetCreated {
   return {
@@ -471,5 +497,57 @@ describe("DatasetGenerateForm guidance", () => {
     await user.click(screen.getByRole("button", { name: "Add" }));
 
     expect(screen.getByText(/"label"/)).toBeInTheDocument();
+  });
+});
+
+describe("DatasetGenerateForm gateway gating", () => {
+  it("disables Generate and shows the gateway blocker when the key is missing", () => {
+    mockGatewayReady(false);
+    render(<DatasetGenerateForm onCreated={vi.fn()} />);
+
+    expect(screen.getByText(GATEWAY_BLOCKER)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
+  });
+
+  it("governs Generate by the form's own validity alone once the key is present", async () => {
+    // The unmodified "ready" case: filling the essentials with a present key enables Generate.
+    mockGatewayReady(true);
+    const user = userEvent.setup();
+    render(<DatasetGenerateForm onCreated={vi.fn()} />);
+
+    await user.type(screen.getByLabelText("Name"), "Synth");
+    await user.type(screen.getByLabelText("Description"), "support questions");
+    await user.type(screen.getByLabelText("Columns (comma separated)"), "question");
+
+    expect(screen.queryByText(GATEWAY_BLOCKER)).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("button", { name: "Generate" })).not.toBeDisabled();
+  });
+
+  it("shows the gateway blocker instead of a form-validity blocker when both apply", () => {
+    // The form is also missing its name, but a missing key blocks regardless of what else
+    // is missing, and only one instruction is shown at a time.
+    mockGatewayReady(false);
+    render(<DatasetGenerateForm onCreated={vi.fn()} />);
+
+    expect(screen.getByText(GATEWAY_BLOCKER)).toBeInTheDocument();
+    expect(screen.queryByText("Add a name")).toBeNull();
+    expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
+  });
+
+  it("keeps name, description, and column fields editable while the key is missing", async () => {
+    mockGatewayReady(false);
+    const user = userEvent.setup();
+    render(<DatasetGenerateForm onCreated={vi.fn()} />);
+
+    await user.type(screen.getByLabelText("Name"), "Synth");
+    await user.type(screen.getByLabelText("Description"), "support questions");
+    await user.type(screen.getByLabelText("Columns (comma separated)"), "question");
+
+    expect(screen.getByLabelText("Name")).toHaveValue("Synth");
+    expect(screen.getByLabelText("Description")).toHaveValue("support questions");
+    expect(screen.getByLabelText("Columns (comma separated)")).toHaveValue("question");
+    // The form is now internally valid, yet the missing key still blocks the action.
+    expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
   });
 });

@@ -1,12 +1,14 @@
 // Tests for the top-up modal. Coverage focuses on the prefill (stored settings become the
 // starting point) and on shape being fixed by the dataset rather than the form.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import GenerateMoreRows from "./GenerateMoreRows";
 import { datasets } from "../api/client";
 import type { Dataset, DatasetGeneration, DatasetRow } from "../api/types";
+import { GATEWAY_BLOCKER, useSetup } from "./useSetup";
+import type { UseSetupResult } from "./useSetup";
 
 vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
@@ -16,7 +18,31 @@ vi.mock("../api/client", async (importOriginal) => {
   };
 });
 
+vi.mock("./useSetup", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./useSetup")>();
+  return { ...actual, useSetup: vi.fn() };
+});
+
 const generateRowsMock = vi.mocked(datasets.generateRows);
+const useSetupMock = vi.mocked(useSetup);
+
+/** Drives the mocked hook straight to a loaded state, skipping loading/error entirely. */
+function mockGatewayReady(gatewayReady: boolean): void {
+  const result: UseSetupResult = {
+    status: null,
+    gatewayReady,
+    loading: false,
+    error: null,
+    refetch: vi.fn(),
+  };
+  useSetupMock.mockReturnValue(result);
+}
+
+beforeEach(() => {
+  // Every pre-existing test in this file exercises form validity, not gateway gating, so
+  // the default keeps the key "present" and leaves their assertions undisturbed.
+  mockGatewayReady(true);
+});
 
 afterEach(() => {
   cleanup();
@@ -294,6 +320,60 @@ describe("GenerateMoreRows chrome", () => {
     await user.clear(count);
 
     expect(screen.getByRole("status").textContent).toMatch(/at least one row/i);
+    expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
+  });
+});
+
+describe("GenerateMoreRows gateway gating", () => {
+  it("disables Generate and shows the gateway blocker when the key is missing", () => {
+    mockGatewayReady(false);
+    renderModal();
+
+    const blocker = screen.getByRole("status");
+    expect(blocker.textContent).toBe(GATEWAY_BLOCKER);
+    expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
+  });
+
+  it("governs Generate by the form's own validity alone once the key is present", () => {
+    // The unmodified "ready" case: a satisfiable form with a present key carries no status
+    // region and the primary action is live.
+    mockGatewayReady(true);
+    renderModal();
+
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("button", { name: "Generate" })).not.toBeDisabled();
+  });
+
+  it("shows the gateway blocker instead of the row-count blocker when both apply", async () => {
+    // The row count also exceeds the cap, but a missing key blocks regardless of what else
+    // is wrong, and FormFooter shows only one instruction at a time.
+    mockGatewayReady(false);
+    const user = userEvent.setup();
+    renderModal({ maxCount: 50 });
+
+    const count = screen.getByLabelText("Rows to add");
+    await user.clear(count);
+    await user.type(count, "51");
+
+    const blocker = screen.getByRole("status");
+    expect(blocker.textContent).toBe(GATEWAY_BLOCKER);
+    expect(screen.queryByText(/must be 50 or fewer/i)).toBeNull();
+    expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
+  });
+
+  it("keeps Rows to add and Instructions editable while the key is missing", async () => {
+    mockGatewayReady(false);
+    const user = userEvent.setup();
+    renderModal({ generation: null });
+
+    const count = screen.getByLabelText("Rows to add");
+    await user.clear(count);
+    await user.type(count, "5");
+    await user.type(screen.getByLabelText("Instructions"), "be subtle");
+
+    expect(count).toHaveValue(5);
+    expect(screen.getByLabelText("Instructions")).toHaveValue("be subtle");
+    // Still blocked by the missing key even though the form itself is now valid.
     expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
   });
 });
