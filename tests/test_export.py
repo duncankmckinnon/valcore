@@ -350,6 +350,42 @@ def test_dataset_module_has_no_valcore_dependency() -> None:
     assert "refusal-quality" in ns["__doc__"]
 
 
+def test_dataset_module_emits_metadata_only_when_present() -> None:
+    """Row provenance renders as metadata= only for rows that carry any; bare rows omit it."""
+    from valcore.models import LabelSource
+
+    rows = [
+        DatasetRow(
+            dataset_id="d1",
+            idx=0,
+            data={"question": "Q1", "answer": "A1"},
+            label={"value": "refusal"},
+            note="checked by hand",
+            label_reasoning="clear refusal",
+            label_source=LabelSource.MANUAL,
+            suggested_label="answer",
+        ),
+        DatasetRow(
+            dataset_id="d1",
+            idx=1,
+            data={"question": "Q2", "answer": "A2"},
+            label={"value": "answer"},
+        ),
+    ]
+    src = render_dataset_module(_dataset(), rows)
+    # Exactly one row carries provenance, so exactly one metadata= argument is emitted.
+    assert src.count("metadata=") == 1
+    ns = _exec_script(src)
+    ds = ns["DATASET"]
+    assert ds.cases[0].metadata == {
+        "note": "checked by hand",
+        "label_reasoning": "clear refusal",
+        "label_source": "manual",  # the enum is flattened to its string value
+        "suggested_label": "answer",
+    }
+    assert ds.cases[1].metadata is None
+
+
 def test_dataset_module_uses_repr_so_values_round_trip() -> None:
     """Strings with quotes and nested dict inputs survive intact via repr()."""
     rows = [
@@ -467,6 +503,34 @@ def test_judge_module_includes_tools_and_capabilities_when_present() -> None:
     assert "def regex_search" in src
     # The rendered module is still valid, importable Python end-to-end.
     _exec_script(src)
+
+
+def test_judge_module_reads_split_agent_json_at_document_root(tmp_path) -> None:
+    """A split .agent.json has agent keys at the root; the doc.get("agent", doc) fallback loads it.
+
+    Guards the split-package path: the same rendered evaluator must handle both the bundle (agent
+    nested under "agent") and the split form (agent keys hoisted to the document root beside a
+    valcore block).
+    """
+    ns = _exec_script(render_judge_module(_categorical_version(), "eval.agent.json"))
+    judge_cls = ns["ValcoreJudge"]
+
+    bundle = _judge_package()
+    split_doc = {**bundle["agent"], "valcore": bundle["valcore"]}
+    pkg_path = tmp_path / "eval.agent.json"
+    pkg_path.write_text(json.dumps(split_doc))
+
+    dataset = EvalsDataset[dict, str, dict](
+        name="d",
+        cases=[Case(name="row-1", inputs={"text": "hello"}, expected_output="good")],
+        evaluators=[judge_cls(package=str(pkg_path))],
+    )
+
+    async def task(inputs: dict) -> str:
+        return "good"
+
+    report = dataset.evaluate_sync(task)
+    assert report.cases[0].labels["ValcoreJudge"].value == "good"
 
 
 def test_judge_module_reuses_output_model_renderer() -> None:
