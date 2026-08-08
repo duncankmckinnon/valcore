@@ -25,7 +25,17 @@ from valcore.config import apply_gateway_key, load_config, save_config, set_key
 from valcore.config_io import EvalPackage
 from valcore.errors import ContractError, ValcoreError
 from valcore.export import render_dataset_module, render_judge_module, render_script
-from valcore.models import EvaluatorVersion, Run, RunKind, RunStatus, ScoreKind, validate_version
+from valcore.models import (
+    Dataset,
+    DatasetRow,
+    Evaluator,
+    EvaluatorVersion,
+    Run,
+    RunKind,
+    RunStatus,
+    ScoreKind,
+    validate_version,
+)
 from valcore.paths import config_path
 from valcore.runner import RunEvent, execute_run
 from valcore.settings import get_settings
@@ -223,7 +233,7 @@ def export(
         raise click.UsageError("--split needs -o to name the two files it writes.")
 
     store = _store(ctx)
-    ver = None
+    ev = ver = None
     if evaluator is not None:
         ev = resolve_evaluator(store, evaluator)
         ver = resolve_version(store, ev, version_name)
@@ -235,10 +245,15 @@ def export(
     if fmt == "code":
         _export_code(ver, ds, rows, output)
     else:
-        _export_json(ver, ds, rows, output, split)
+        _export_json(ev, ver, ds, rows, output, split)
 
 
-def _export_code(ver, ds, rows, output: Path | None) -> None:
+def _export_code(
+    ver: EvaluatorVersion | None,
+    ds: Dataset | None,
+    rows: list[DatasetRow] | None,
+    output: Path | None,
+) -> None:
     """Emit the Python-code form: a standalone script and/or a dataset module."""
     if ver is not None and ds is not None:
         if output is None:
@@ -256,7 +271,14 @@ def _export_code(ver, ds, rows, output: Path | None) -> None:
         _write_artifact(output, content, output)
 
 
-def _export_json(ver, ds, rows, output: Path | None, split: bool) -> None:
+def _export_json(
+    ev: Evaluator | None,
+    ver: EvaluatorVersion | None,
+    ds: Dataset | None,
+    rows: list[DatasetRow] | None,
+    output: Path | None,
+    split: bool,
+) -> None:
     """Emit the JSON eval-package form, writing the companion judge module beside a config file."""
     pkg = None
     if ver is not None:
@@ -266,11 +288,8 @@ def _export_json(ver, ds, rows, output: Path | None, split: bool) -> None:
         pkg = ds_pkg if pkg is None else pkg.merge(ds_pkg)
 
     mode = "split" if split else "bundled"
-    stem = (
-        output.stem
-        if output is not None
-        else _slug(ver.version_name if ver is not None else ds.name)
-    )
+    # Slugify the evaluator (not version) name, or the dataset name, for a stdout stem.
+    stem = output.stem if output is not None else _slug(ev.name if ev is not None else ds.name)
     files = pkg.to_text(stem, mode)
 
     if output is None:
@@ -324,8 +343,8 @@ def import_(ctx: click.Context, path: Path, name: str | None) -> None:
     if version_fields is not None:
         ev_name = pkg.spec.name or path.stem
         evaluator = store.create_evaluator(ev_name)
+        # create_version already makes the new version the evaluator's active one (store.py).
         version = store.create_version(evaluator.id, **version_fields)
-        store.update_evaluator(evaluator.id, active_version_id=version.id)
         click.echo(f"evaluator {evaluator.id} {evaluator.name} (version {version.id})")
 
 
