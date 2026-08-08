@@ -70,14 +70,14 @@ async def push_dataset(
         ) from exc
 
     evals_dataset = dataset_to_evals(dataset, rows, evaluators=[])
-    client = AsyncLogfireAPIClient(api_key=resolved_key)
     try:
-        detail = await client.push_dataset(
-            evals_dataset,
-            name=name,
-            description=description,
-            on_case_conflict=on_conflict,
-        )
+        async with AsyncLogfireAPIClient(api_key=resolved_key) as client:
+            detail = await client.push_dataset(
+                evals_dataset,
+                name=name,
+                description=description,
+                on_case_conflict=on_conflict,
+            )
     except Exception as exc:
         raise ContractError(str(exc)) from exc
 
