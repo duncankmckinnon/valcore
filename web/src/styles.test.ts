@@ -119,6 +119,13 @@ const CONTRACT_CLASSES = [
   "export-file",
   "export-file-name",
   "export-file-actions",
+  // Setup card.
+  "setup-card",
+  "setup-key",
+  "setup-key-required",
+  "setup-key-optional",
+  "setup-command",
+  "setup-summary",
 ];
 
 // Every design token the contract publishes on :root. Later tasks reference these in the
