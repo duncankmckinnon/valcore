@@ -48,7 +48,14 @@ vi.mock("../api/client", async (importOriginal) => {
   return {
     ...actual,
     api: vi.fn(),
-    datasets: { ...actual.datasets, get: vi.fn(), stats: vi.fn(), remove: vi.fn() },
+    datasets: {
+      ...actual.datasets,
+      get: vi.fn(),
+      stats: vi.fn(),
+      remove: vi.fn(),
+      // The header's Export action opens the real ExportModal, which fetches through this.
+      exportFiles: vi.fn(),
+    },
     // `create`/`createVersion` are stubbed so a stray persistence call from the modal
     // wiring would be observable: the generate flow must hand back a draft, never save.
     evaluators: {
@@ -69,6 +76,7 @@ const createMock = vi.mocked(evaluators.create);
 const createVersionMock = vi.mocked(evaluators.createVersion);
 const apiMock = vi.mocked(api);
 const listMock = vi.mocked(evaluators.list);
+const exportFilesMock = vi.mocked(datasets.exportFiles);
 
 function madeDraft(): GeneratedConfig {
   return {
@@ -248,5 +256,53 @@ describe("DatasetDetail", () => {
     expect(await screen.findByText(/2 runs depend on this/i)).toBeTruthy();
     expect(screen.queryByText("datasets index")).toBeNull();
     expect(screen.getByRole("heading", { name: "My set" })).toBeTruthy();
+  });
+
+  it("offers an Export action in the header alongside the other dataset actions", async () => {
+    renderDetail();
+
+    await screen.findByText("header:question");
+
+    // The action sits in the header next to Edit / Delete; the modal has not opened yet.
+    expect(screen.getByRole("button", { name: "Export" })).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "Export dataset" })).toBeNull();
+  });
+
+  it("opens the export modal on click and fetches this dataset's code export", async () => {
+    exportFilesMock.mockResolvedValue({ "my_set.py": "# pydantic_evals.Dataset module" });
+    renderDetail();
+
+    await screen.findByText("header:question");
+    await userEvent.click(screen.getByRole("button", { name: "Export" }));
+
+    // The real ExportModal opens on Code and renders one named block per emitted file.
+    expect(await screen.findByRole("dialog", { name: "Export dataset" })).toBeTruthy();
+    expect(await screen.findByText("my_set.py")).toBeTruthy();
+
+    // Dataset Code is fetched for this id in the default bundled layout. The dataset page
+    // exports the dataset alone, so no evaluator version id is threaded through.
+    await waitFor(() => expect(exportFilesMock).toHaveBeenCalledTimes(1));
+    const [id, format, opts] = exportFilesMock.mock.calls[0];
+    expect(id).toBe("d1");
+    expect(format).toBe("code");
+    expect(opts.layout).toBe("bundled");
+    expect(opts.versionId).toBeUndefined();
+  });
+
+  it("unmounts the export modal when it is closed", async () => {
+    exportFilesMock.mockResolvedValue({ "my_set.py": "# pydantic_evals.Dataset module" });
+    renderDetail();
+
+    await screen.findByText("header:question");
+    await userEvent.click(screen.getByRole("button", { name: "Export" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Export dataset" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+
+    // Gating the modal on local `exporting` state means closing removes it from the tree,
+    // matching how EvaluatorDetail tears down its own export modal.
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Export dataset" })).toBeNull(),
+    );
   });
 });
