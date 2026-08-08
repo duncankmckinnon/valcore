@@ -366,6 +366,31 @@ def test_export_json_evaluator_stdout_notes_omitted_companion(runner, store, db_
     assert "valcore_judge.py" in result.stderr
 
 
+def test_export_json_refuses_to_clobber_derived_companion(runner, store, db_path, tmp_path):
+    # Locked decision: the -o path may be overwritten (the user chose it), but a sibling file a
+    # multi-file export derives — here the companion module — must never silently replace an
+    # existing file the user did not name.
+    out = tmp_path / "pkg.json"
+    existing = tmp_path / "valcore_judge.py"
+    existing.write_text("# precious, do not clobber\n")
+
+    result = _invoke(runner, db_path, "export", "judge", "--format", "json", "-o", str(out))
+    assert result.exit_code != 0
+    # The pre-existing sibling is left exactly as it was.
+    assert existing.read_text() == "# precious, do not clobber\n"
+
+
+def test_export_json_overwrites_the_named_output(runner, store, db_path, tmp_path):
+    # The -o target itself is fair game: the user named it, so a stale file there is replaced.
+    out = tmp_path / "pkg.json"
+    out.write_text("stale")
+
+    result = _invoke(runner, db_path, "export", "judge", "--format", "json", "-o", str(out))
+    assert result.exit_code == 0
+    pkg = EvalPackage.from_text(out.read_text())
+    assert pkg.spec is not None
+
+
 # -- import -------------------------------------------------------------------
 
 
