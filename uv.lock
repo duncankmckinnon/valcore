@@ -2678,10 +2678,16 @@ dependencies = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 
+[package.optional-dependencies]
+logfire = [
+    { name = "logfire" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "anyio" },
     { name = "httpx" },
+    { name = "logfire" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -2693,6 +2699,7 @@ dev = [
 requires-dist = [
     { name = "click" },
     { name = "fastapi" },
+    { name = "logfire", marker = "extra == 'logfire'", specifier = ">=4.39,<5" },
     { name = "pydantic-ai", specifier = ">=2.19,<3" },
     { name = "pydantic-ai-harness", extras = ["code-mode"], specifier = ">=0.12,<1" },
     { name = "pydantic-settings" },
@@ -2700,11 +2707,13 @@ requires-dist = [
     { name = "sqlmodel" },
     { name = "uvicorn", extras = ["standard"] },
 ]
+provides-extras = ["logfire"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "anyio" },
     { name = "httpx" },
+    { name = "logfire", specifier = ">=4.39,<5" },
     { name = "pre-commit", specifier = ">=4,<5" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
