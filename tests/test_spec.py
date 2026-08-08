@@ -6,7 +6,10 @@ the reverse ``output_schema`` map, capability round trips, and row/case mapping 
 renderers and the importer depend on, before any of that code exists.
 """
 
+import json
+
 import pytest
+from pydantic import TypeAdapter
 from pydantic_ai.agent.spec import AgentSpec
 from pydantic_evals import Dataset as EvalsDataset
 from pydantic_evals.dataset import Case
@@ -481,3 +484,132 @@ def test_spec_to_version_fields_reconstructs_a_valid_version() -> None:
 
     # And the rebuilt version re-encodes to the identical schema.
     assert output_fields_to_schema(rebuilt) == output_fields_to_schema(original)
+
+
+# --- OutputT generic derived from the dataset's label schema ------------------
+
+
+def _resolved_output_type(evals: EvalsDataset) -> object:
+    """Pull the concrete ``OutputT`` pydantic resolved for a ``dataset_to_evals`` result.
+
+    Pydantic records the arguments a generic model was parameterized with on the class, not
+    the instance, so the schema a hosted push would infer is read the same way here.
+    """
+    return evals.__class__.__pydantic_generic_metadata__["args"][1]
+
+
+def test_output_type_schema_is_label_enum_for_categorical_dataset() -> None:
+    dataset = VDataset(
+        name="d",
+        columns=["question", "answer"],
+        label_schema={"kind": "categorical", "labels": ["a", "b"]},
+    )
+    evals = dataset_to_evals(dataset, make_rows(), [])
+    schema = TypeAdapter(_resolved_output_type(evals)).json_schema()
+    assert schema == {"enum": ["a", "b"], "type": "string"}
+
+
+def test_output_type_schema_is_number_for_numeric_dataset() -> None:
+    dataset = VDataset(name="d", columns=["question", "answer"], label_schema={"kind": "numeric"})
+    evals = dataset_to_evals(dataset, make_rows(), [])
+    schema = TypeAdapter(_resolved_output_type(evals)).json_schema()
+    assert schema == {"type": "number"}
+
+
+def test_output_type_schema_is_string_for_empty_label_schema() -> None:
+    dataset = VDataset(name="d", columns=["question", "answer"], label_schema={})
+    evals = dataset_to_evals(dataset, make_rows(), [])
+    schema = TypeAdapter(_resolved_output_type(evals)).json_schema()
+    assert schema == {"type": "string"}
+
+
+@pytest.mark.parametrize(
+    "label_schema",
+    [
+        pytest.param({"kind": "categorical", "labels": ["a", "b"]}, id="categorical"),
+        pytest.param({"kind": "numeric"}, id="numeric"),
+        pytest.param({}, id="empty"),
+    ],
+)
+def test_output_type_schema_is_never_the_empty_schema(label_schema: dict) -> None:
+    # The bug this fixes: `object` infers to `{}`, which must never come back for any label kind.
+    dataset = VDataset(name="d", columns=["q"], label_schema=label_schema)
+    evals = dataset_to_evals(dataset, make_rows(), [])
+    assert TypeAdapter(_resolved_output_type(evals)).json_schema() != {}
+
+
+# --- byte identity of the serialized dataset -----------------------------------
+
+
+def test_dataset_to_evals_serialization_is_byte_identical_to_object_generic() -> None:
+    """The generics fix is schema-only: the serialized dataset bytes must not change.
+
+    Computes the ``[dict, object, dict]`` baseline from the same cases the fixed
+    implementation produces, rather than hardcoding a blob, so the comparison tracks the
+    real row mapping instead of a frozen snapshot of it.
+    """
+    dataset = VDataset(
+        name="refusal-quality",
+        columns=["question", "answer"],
+        label_schema={"kind": "categorical", "labels": ["refusal", "partial", "answer"]},
+    )
+    rows = make_rows()
+    evaluators: list[dict] = []
+
+    fixed = dataset_to_evals(dataset, rows, evaluators)
+    baseline = EvalsDataset[dict, object, dict](
+        name=dataset.name, cases=fixed.cases, evaluators=evaluators
+    )
+
+    fixed_bytes = json.dumps(fixed.model_dump(mode="json", by_alias=True), sort_keys=True)
+    baseline_bytes = json.dumps(baseline.model_dump(mode="json", by_alias=True), sort_keys=True)
+    assert fixed_bytes == baseline_bytes
+
+
+# --- import path is unaffected by the OutputT change ---------------------------
+
+
+def test_from_dict_still_parses_dataset_to_evals_output() -> None:
+    """The importer always reads back through the plain ``object`` generic (see ``config_io``);
+    the fix must not disturb that path.
+    """
+    dataset = VDataset(
+        name="refusal-quality",
+        columns=["question", "answer"],
+        label_schema={"kind": "categorical", "labels": ["refusal", "partial", "answer"]},
+    )
+    evals = dataset_to_evals(dataset, make_rows(), [])
+    dumped = evals.model_dump(mode="json", by_alias=True)
+
+    reloaded = EvalsDataset[dict, object, dict].from_dict(dumped)
+    assert reloaded.name == "refusal-quality"
+    assert reloaded.cases[0].inputs == {"question": "Q1", "answer": "A1"}
+    assert reloaded.cases[0].expected_output == "refusal"
+
+
+def test_label_outside_categorical_set_still_serializes_and_reimports() -> None:
+    """Pins that ``OutputT`` is descriptive metadata only, never a validating constraint.
+
+    ``expected_output="nope"`` against a declared ``["refusal", "answer"]`` label set must not
+    raise: hand-labeled data with a stray value must still export and re-import.
+    """
+    dataset = VDataset(
+        name="d",
+        columns=["question", "answer"],
+        label_schema={"kind": "categorical", "labels": ["refusal", "answer"]},
+    )
+    rows = [
+        DatasetRow(
+            dataset_id="d1",
+            idx=0,
+            data={"question": "Q1", "answer": "A1"},
+            label={"value": "nope"},
+        )
+    ]
+
+    evals = dataset_to_evals(dataset, rows, [])
+    assert evals.cases[0].expected_output == "nope"
+
+    dumped = evals.model_dump(mode="json", by_alias=True)
+    reloaded = EvalsDataset[dict, object, dict].from_dict(dumped)
+    assert reloaded.cases[0].expected_output == "nope"
