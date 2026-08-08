@@ -4,6 +4,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from sqlmodel import select
 
 from valcore.errors import (
     ContractError,
@@ -938,6 +939,23 @@ def test_set_experiment_then_get_experiment_round_trips(store: Store) -> None:
     assert stored.run_id == run.id
     assert stored.experiment_name == "nightly-eval"
     assert stored.case_count == 42
+
+
+def test_set_experiment_replaces_rather_than_accumulates(store: Store) -> None:
+    """A second ``set_experiment`` call replaces the row rather than adding a second one."""
+    version_id, dataset_id = _make_run_prereqs(store)
+    run = store.create_run(RunKind.EVAL, version_id, dataset_id, concurrency=1)
+
+    store.set_experiment(run.id, experiment_name="exp1", case_count=1)
+    store.set_experiment(run.id, experiment_name="exp2", case_count=2)
+
+    stored = store.get_experiment(run.id)
+    assert stored.experiment_name == "exp2"
+    assert stored.case_count == 2
+
+    with session_scope(store.engine) as session:
+        rows = session.exec(select(ExperimentRun).where(ExperimentRun.run_id == run.id)).all()
+        assert len(rows) == 1
 
 
 def test_get_experiment_missing_run_raises(store: Store) -> None:
