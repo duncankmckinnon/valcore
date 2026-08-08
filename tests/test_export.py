@@ -1,10 +1,19 @@
 """Tests for rendering an EvaluatorVersion to a standalone Python script."""
 
+import json
+
 import pytest
 from pydantic import ValidationError
+from pydantic_evals import Case
+from pydantic_evals import Dataset as EvalsDataset
 
-from valcore.export import render_script
-from valcore.models import EvaluatorVersion, ScoreKind
+from valcore.export import (
+    render_dataset_module,
+    render_judge_module,
+    render_script,
+    render_tool_sources,
+)
+from valcore.models import Dataset, DatasetRow, EvaluatorVersion, ScoreKind
 
 
 def _make_version(**overrides: object) -> EvaluatorVersion:
@@ -234,3 +243,237 @@ def test_docstring_names_version_and_gateway_key() -> None:
     doc = ns["__doc__"]
     assert "my-eval" in doc
     assert "PYDANTIC_AI_GATEWAY_API_KEY" in doc
+
+
+# --- render_script regression --------------------------------------------------
+
+
+def test_render_script_output_is_deterministic() -> None:
+    """render_script is a pure function of its version: repeated calls are byte-identical.
+
+    The code-renderer additions must not perturb the existing script output. The strongest
+    guard remains the existing render_script tests above continuing to pass unmodified; this
+    only pins that the render itself has no hidden nondeterminism (set ordering, etc.).
+    """
+    version = _tools_version()
+    assert render_script(version) == render_script(version)
+
+
+# --- render_tool_sources -------------------------------------------------------
+
+
+def test_render_tool_sources_returns_imports_and_source() -> None:
+    """A named tool yields its import block and its verbatim source for embedding."""
+    imports, source = render_tool_sources(["regex_search"])
+    assert "import re" in imports
+    assert "def regex_search" in source
+
+
+def test_render_tool_sources_empty_for_no_names() -> None:
+    """An empty name list yields empty import and source blocks."""
+    imports, source = render_tool_sources([])
+    assert imports == ""
+    assert source == ""
+
+
+def test_render_tool_sources_source_execs_and_is_callable() -> None:
+    """The rendered source is runnable on its own once its imports are provided."""
+    imports, source = render_tool_sources(["regex_search"])
+    ns = _exec_script(imports + "\n\n" + source)
+    assert ns["regex_search"]("a1b2c3", r"\d") == ["1", "2", "3"]
+
+
+# --- render_dataset_module -----------------------------------------------------
+
+
+def _dataset() -> Dataset:
+    """A small categorical dataset used by the dataset-module tests."""
+    return Dataset(
+        name="refusal-quality",
+        columns=["question", "answer"],
+        label_schema={"kind": "categorical", "labels": ["refusal", "answer"]},
+    )
+
+
+def _dataset_rows() -> list[DatasetRow]:
+    """Three rows: two labelled, one unlabelled, to exercise expected_output omission."""
+    return [
+        DatasetRow(
+            dataset_id="d1",
+            idx=0,
+            data={"question": "Q1", "answer": "A1"},
+            label={"value": "refusal"},
+        ),
+        DatasetRow(
+            dataset_id="d1",
+            idx=1,
+            data={"question": "Q2", "answer": "A2"},
+            label={"value": "answer"},
+        ),
+        DatasetRow(
+            dataset_id="d1",
+            idx=2,
+            data={"question": "Q3", "answer": "A3"},
+            label=None,
+        ),
+    ]
+
+
+def test_dataset_module_builds_pydantic_evals_dataset() -> None:
+    """The module execs to a DATASET whose cases mirror the source rows."""
+    ns = _exec_script(render_dataset_module(_dataset(), _dataset_rows()))
+    ds = ns["DATASET"]
+    assert isinstance(ds, EvalsDataset)
+    assert ds.name == "refusal-quality"
+    assert len(ds.cases) == 3
+    assert ds.cases[0].inputs == {"question": "Q1", "answer": "A1"}
+    assert ds.cases[0].expected_output == "refusal"
+    assert ds.cases[1].expected_output == "answer"
+
+
+def test_dataset_module_omits_expected_output_for_unlabelled_row() -> None:
+    """A row with no label produces a Case with expected_output unset (None)."""
+    ns = _exec_script(render_dataset_module(_dataset(), _dataset_rows()))
+    ds = ns["DATASET"]
+    assert ds.cases[2].expected_output is None
+    # Only the two labelled rows emit an expected_output= argument in the source.
+    src = render_dataset_module(_dataset(), _dataset_rows())
+    assert src.count("expected_output=") == 2
+
+
+def test_dataset_module_has_no_valcore_dependency() -> None:
+    """The dataset module imports nothing from valcore and names the dataset in its docstring."""
+    src = render_dataset_module(_dataset(), _dataset_rows())
+    assert "import valcore" not in src
+    assert "from valcore" not in src
+    ns = _exec_script(src)
+    assert "refusal-quality" in ns["__doc__"]
+
+
+def test_dataset_module_uses_repr_so_values_round_trip() -> None:
+    """Strings with quotes and nested dict inputs survive intact via repr()."""
+    rows = [
+        DatasetRow(
+            dataset_id="d1",
+            idx=0,
+            data={"question": 'He said "hi"', "answer": {"nested": [1, 2]}},
+            label={"value": "refusal"},
+        ),
+    ]
+    ns = _exec_script(render_dataset_module(_dataset(), rows))
+    case = ns["DATASET"].cases[0]
+    assert case.inputs == {"question": 'He said "hi"', "answer": {"nested": [1, 2]}}
+
+
+# --- render_judge_module -------------------------------------------------------
+
+
+def _judge_package(model: str = "test") -> dict:
+    """A bundled package matching the categorical version's rendered OutputModel.
+
+    ``model`` defaults to the ``test`` known-model name so the judge runs under pydantic-ai's
+    TestModel with no live gateway key.
+    """
+    return {
+        "kind": "valcore/eval-package",
+        "version": 1,
+        "agent": {
+            "model": model,
+            "name": "v1",
+            "instructions": "Judge the row.",
+            "output_schema": {
+                "type": "object",
+                "properties": {
+                    "verdict": {"type": "string", "enum": ["good", "bad"], "description": "x"}
+                },
+                "required": ["verdict"],
+            },
+        },
+        "valcore": {
+            "prompt_template": "Input: {text}",
+            "required_columns": ["text"],
+            "score_field": "verdict",
+            "score_kind": "categorical",
+            "score_labels": ["good", "bad"],
+            "tools": [],
+        },
+    }
+
+
+def test_judge_module_returns_categorical_label(tmp_path) -> None:
+    """The exec'd ValcoreJudge scores a case to its categorical label under TestModel."""
+    ns = _exec_script(render_judge_module(_categorical_version(), "package.json"))
+    judge_cls = ns["ValcoreJudge"]
+
+    pkg_path = tmp_path / "package.json"
+    pkg_path.write_text(json.dumps(_judge_package()))
+
+    dataset = EvalsDataset[dict, str, dict](
+        name="d",
+        cases=[Case(name="row-1", inputs={"text": "hello"}, expected_output="good")],
+        evaluators=[judge_cls(package=str(pkg_path))],
+    )
+
+    async def task(inputs: dict) -> str:
+        return "good"
+
+    report = dataset.evaluate_sync(task)
+    assert report.cases[0].labels["ValcoreJudge"].value == "good"
+
+
+def test_judge_module_agent_output_is_real_model() -> None:
+    """Building the agent as evaluate() does yields a real OutputModel, not a dict.
+
+    Guards the output_type precedence fact: without an explicit output_type the agent would
+    fall back to StructuredDict and getattr on the result would break at run time.
+    """
+    ns = _exec_script(render_judge_module(_categorical_version(), "package.json"))
+    pkg = _judge_package()
+    agent = ns["Agent"].from_spec(
+        ns["AgentSpec"].from_dict(pkg["agent"]),
+        output_type=ns["OutputModel"],
+        defer_model_check=True,
+    )
+    result = agent.run_sync(pkg["valcore"]["prompt_template"].format(text="hi"))
+    assert isinstance(result.output, ns["OutputModel"])
+    assert getattr(result.output, pkg["valcore"]["score_field"]) == "good"
+
+
+def test_judge_module_imports_neither_valcore_nor_yaml() -> None:
+    """The companion module is self-contained: no valcore import and no yaml anywhere."""
+    src = render_judge_module(_categorical_version(), "package.json")
+    assert "import valcore" not in src
+    assert "from valcore" not in src
+    assert "yaml" not in src
+
+
+def test_judge_module_omits_tools_and_capabilities_when_none() -> None:
+    """A version with no tools and no capabilities emits neither keyword argument."""
+    src = render_judge_module(_categorical_version(), "package.json")
+    assert "tools=" not in src
+    assert "custom_capability_types=" not in src
+
+
+def test_judge_module_includes_tools_and_capabilities_when_present() -> None:
+    """A version with tools and a capability inlines the tool and imports the capability."""
+    version = _make_version(
+        tools=["regex_search"],
+        capabilities=[{"name": "CodeMode", "config": {"max_retries": 3}}],
+    )
+    src = render_judge_module(version, "package.json")
+    assert "tools=[regex_search]" in src
+    assert "custom_capability_types=[CodeMode]" in src
+    assert "from pydantic_ai_harness import CodeMode" in src
+    assert "def regex_search" in src
+    # The rendered module is still valid, importable Python end-to-end.
+    _exec_script(src)
+
+
+def test_judge_module_reuses_output_model_renderer() -> None:
+    """The judge's OutputModel matches render_script's — same private renderer, no drift."""
+    version = _categorical_version()
+    judge_src = render_judge_module(version, "package.json")
+    script_ns = _exec_script(render_script(version))
+    judge_ns = _exec_script(judge_src)
+    assert set(judge_ns["OutputModel"].model_fields) == set(script_ns["OutputModel"].model_fields)
+    assert "from typing import Literal" in judge_src
