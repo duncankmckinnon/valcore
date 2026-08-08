@@ -8,13 +8,14 @@ detection in ``from_text``, and the round-trip guarantees, before any of that co
 
 import json
 import warnings
+from dataclasses import dataclass
 
 import pytest
 from pydantic_ai.agent.spec import AgentSpec
 from pydantic_evals import Dataset as EvalsDataset
 from pydantic_evals.evaluators import Evaluator, EvaluatorContext
-from valcore.config_io import EvalPackage, ValcoreMeta
 
+from valcore.config_io import EvalPackage, ValcoreMeta
 from valcore.errors import ContractError
 from valcore.models import Dataset as VDataset
 from valcore.models import (
@@ -91,18 +92,16 @@ def full_package() -> EvalPackage:
     )
 
 
-class StubJudge(Evaluator):
+# pydantic-evals resolves an evaluator by its class name and requires custom evaluators to be
+# decorated with ``@dataclass``; this stand-in carries the name valcore emits into the registry.
+@dataclass
+class ValcoreJudge(Evaluator):
     """A minimal stand-in registered under the name pydantic-evals looks up."""
 
     package: str = ""
 
     def evaluate(self, ctx: EvaluatorContext) -> bool:
         return True
-
-
-# pydantic-evals resolves an evaluator by its class name; alias so the registry sees the name
-# valcore emits without giving the class that name in valcore's own namespace.
-ValcoreJudge = type("ValcoreJudge", (StubJudge,), {})
 
 
 # --- constructors -------------------------------------------------------------
@@ -415,6 +414,49 @@ def test_from_text_rejects_foreign_evaluator_name() -> None:
 def test_merge_rejects_two_agents() -> None:
     with pytest.raises(ContractError):
         EvalPackage.from_version(make_version()).merge(EvalPackage.from_version(make_version()))
+
+
+def test_merge_rejects_two_datasets() -> None:
+    left = EvalPackage.from_dataset(make_dataset(), make_rows())
+    right = EvalPackage.from_dataset(make_dataset(), make_rows())
+    with pytest.raises(ContractError) as exc:
+        left.merge(right)
+    assert "dataset" in str(exc.value)
+
+
+def test_merge_rejects_two_valcore_blocks() -> None:
+    # Two agent halves also each carry a valcore block; the merge must name a conflicting half.
+    with pytest.raises(ContractError) as exc:
+        EvalPackage.from_version(make_version()).merge(EvalPackage.from_version(make_version()))
+    assert "agent" in str(exc.value) or "valcore" in str(exc.value)
+
+
+def test_from_text_rejects_foreign_evaluator_given_as_bare_string() -> None:
+    # An evaluators entry may be a bare string name rather than a single-key object; the guard
+    # must reject a non-ValcoreJudge string just as it rejects the object form.
+    doc = {
+        "kind": "valcore/eval-package",
+        "version": 1,
+        "dataset": {"name": "d", "cases": [], "evaluators": ["SomeOtherJudge"]},
+    }
+    with pytest.raises(ContractError) as exc:
+        EvalPackage.from_text(json.dumps(doc))
+    assert "SomeOtherJudge" in str(exc.value)
+
+
+# --- missing-section guards ---------------------------------------------------
+
+
+def test_to_version_fields_without_agent_raises() -> None:
+    pkg = EvalPackage.from_dataset(make_dataset(), make_rows())
+    with pytest.raises(ContractError):
+        pkg.to_version_fields()
+
+
+def test_to_dataset_fields_without_dataset_raises() -> None:
+    pkg = EvalPackage.from_version(make_version())
+    with pytest.raises(ContractError):
+        pkg.to_dataset_fields()
 
 
 # --- ExceptionGroup unwrapping ------------------------------------------------
