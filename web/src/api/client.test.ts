@@ -163,6 +163,21 @@ describe("export files client helpers", () => {
     expect(String(url)).not.toContain("split");
   });
 
+  it("evaluators.exportFiles code ignores a split layout and sends no query param", async () => {
+    // Even when the caller asks for "split", the code form is a single Python
+    // script; layout must not leak into the URL for the "code" branch.
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ files: { "refusal.py": "def evaluate(): ..." } }));
+
+    await evaluators.exportFiles("v1", "code", "split");
+
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/evaluators/versions/v1/export.py");
+    expect(String(url)).not.toContain("split");
+    expect(String(url)).not.toContain("?");
+  });
+
   it("evaluators.exportFiles json bundled GETs export.json with split=false", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
@@ -220,6 +235,22 @@ describe("export files client helpers", () => {
     expect(init?.method ?? "GET").toBe("GET");
     expect(String(url)).not.toContain("split");
     expect(String(url)).not.toContain("version_id");
+  });
+
+  it("datasets.exportFiles code drops version_id and layout even when supplied", async () => {
+    // The code form is a bare .py module: neither a provided versionId nor a
+    // "split" layout may surface as a query param on the "code" branch.
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ files: { "refusal_dataset.py": "# ..." } }));
+
+    await datasets.exportFiles("d1", "code", { versionId: "v1", layout: "split" });
+
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/datasets/d1/export.py");
+    expect(String(url)).not.toContain("version_id");
+    expect(String(url)).not.toContain("split");
+    expect(String(url)).not.toContain("?");
   });
 
   it("datasets.exportFiles json includes version_id when given", async () => {
