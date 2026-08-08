@@ -27,6 +27,8 @@ export default function DatasetUpload({ onCreated }: Props) {
   const [error, setError] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  const isPackage = parsed?.kind === "package";
+
   const dataColumns = useMemo(
     () => (parsed ? parsed.columns.filter((column) => column !== labelColumn) : []),
     [parsed, labelColumn],
@@ -55,7 +57,8 @@ export default function DatasetUpload({ onCreated }: Props) {
       const form = new FormData();
       form.append("file", file);
       form.append("name", name.trim() || file.name);
-      if (labelColumn !== NONE) form.append("label_column", labelColumn);
+      // A package carries its own label mapping, so a chosen label column is meaningless.
+      if (!isPackage && labelColumn !== NONE) form.append("label_column", labelColumn);
       form.append("label_schema", JSON.stringify(schema));
       const created = await datasets.upload(form);
       onCreated(created);
@@ -102,18 +105,25 @@ export default function DatasetUpload({ onCreated }: Props) {
 
       {parsed && (
         <>
-          <label className="field">
-            <span className="field-label">
-              Label column (optional)
-              <Tooltip text="The column holding each row's ground-truth label. Naming it here stores those values as labels rather than as ordinary data columns." />
-            </span>
-            <Select
-              options={labelOptions}
-              value={labelColumn}
-              aria-label="Label column"
-              onChange={(e) => setLabelColumn(e.target.value)}
-            />
-          </label>
+          {isPackage ? (
+            <p className="field-hint">
+              A valcore package was detected. Its own label schema will be used, so no label
+              column is needed.
+            </p>
+          ) : (
+            <label className="field">
+              <span className="field-label">
+                Label column (optional)
+                <Tooltip text="The column holding each row's ground-truth label. Naming it here stores those values as labels rather than as ordinary data columns." />
+              </span>
+              <Select
+                options={labelOptions}
+                value={labelColumn}
+                aria-label="Label column"
+                onChange={(e) => setLabelColumn(e.target.value)}
+              />
+            </label>
+          )}
 
           <div className="upload-preview">
             <div className="field-label">
