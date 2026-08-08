@@ -26,6 +26,7 @@ from valcore.models import (
     DatasetRow,
     Evaluator,
     EvaluatorVersion,
+    ExperimentRun,
     LabelSchema,
     LabelSource,
     Run,
@@ -605,12 +606,45 @@ class Store:
             return run
 
     def request_cancel(self, id: str) -> Run:
-        """Flag a run for cancellation."""
+        """Flag a run for cancellation.
+
+        Raises ContractError for an experiment-engine run: ``Dataset.evaluate`` has no
+        cancellation hook, so silently setting the flag would look like it worked while
+        doing nothing.
+        """
         with session_scope(self.engine) as session:
             run = _require(session, Run, id)
+            experiment = session.exec(
+                select(ExperimentRun).where(ExperimentRun.run_id == id)
+            ).first()
+            if experiment is not None:
+                raise ContractError(
+                    f"Run {id!r} was produced by the experiment engine; experiment runs "
+                    "cannot be cancelled."
+                )
             run.cancel_requested = True
             session.add(run)
             return run
+
+    def set_experiment(self, run_id: str, **fields: object) -> ExperimentRun:
+        """Mark ``run_id`` as produced by the experiment engine, replacing any existing row."""
+        with session_scope(self.engine) as session:
+            _require(session, Run, run_id)
+            existing = session.exec(
+                select(ExperimentRun).where(ExperimentRun.run_id == run_id)
+            ).first()
+            if existing is not None:
+                session.delete(existing)
+                session.flush()
+            experiment = ExperimentRun(run_id=run_id, **fields)
+            session.add(experiment)
+            return experiment
+
+    def get_experiment(self, run_id: str) -> ExperimentRun | None:
+        """Return the experiment-engine marker for ``run_id``, or None for a runner run."""
+        with session_scope(self.engine) as session:
+            _require(session, Run, run_id)
+            return session.exec(select(ExperimentRun).where(ExperimentRun.run_id == run_id)).first()
 
     def add_result(self, run_id: str, **fields: object) -> RunResult:
         """Record the outcome of scoring one row within a run."""

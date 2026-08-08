@@ -252,6 +252,22 @@ class Run(SQLModel, table=True):
     cancel_requested: bool = False
 
 
+class ExperimentRun(SQLModel, table=True):
+    """Marks a Run as produced by the pydantic-evals experiment engine rather than the runner.
+
+    A separate table rather than a Run column: ``init_db`` is a bare ``create_all``, which adds
+    missing tables but never missing columns, so a new field here reaches an existing database
+    while a new ``Run`` field would not. A run with no row is a runner run, which is correct for
+    every run that already exists.
+    """
+
+    id: str = Field(default_factory=lambda: uuid4().hex, primary_key=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    run_id: str = Field(index=True)
+    experiment_name: str
+    case_count: int = 0
+
+
 class RunResult(SQLModel, table=True):
     """The outcome of scoring one dataset row within a run."""
 

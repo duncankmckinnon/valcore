@@ -4,6 +4,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from sqlmodel import select
 
 from valcore.errors import (
     ContractError,
@@ -16,6 +17,7 @@ from valcore.models import (
     DatasetGeneration,
     DatasetRow,
     EvaluatorVersion,
+    ExperimentRun,
     LabelSource,
     Run,
     RunKind,
@@ -889,3 +891,103 @@ def test_init_db_adds_the_generation_table_to_an_existing_database(tmp_path) -> 
     assert store.get_generation(dataset.id) is None
     store.set_generation(dataset.id, count=4, instructions="works")
     assert store.get_generation(dataset.id).count == 4
+
+
+# -- Experiment runs -----------------------------------------------------------
+
+
+def test_init_db_adds_the_experiment_run_table_to_an_existing_database(tmp_path) -> None:
+    """A database written before ``ExperimentRun`` existed gains it on the next start.
+
+    ``ExperimentRun`` is a separate table rather than a ``Run`` column precisely because
+    ``init_db`` is a bare ``create_all``: it adds missing tables but never missing columns,
+    so a new table reaches an existing database while a new ``Run`` field would not.
+    """
+    engine = create_engine(tmp_path / "existing.db")
+    init_db(engine)
+    store = Store(engine)
+    version_id, dataset_id = _make_run_prereqs(store)
+    run = store.create_run(RunKind.EVAL, version_id, dataset_id, concurrency=1)
+
+    # Simulate the older schema: the table simply is not there.
+    ExperimentRun.__table__.drop(engine)
+
+    init_db(engine)
+
+    # Existing data is untouched, and the new table is usable.
+    assert store.get_run(run.id).id == run.id
+    assert store.get_experiment(run.id) is None
+    store.set_experiment(run.id, experiment_name="exp1", case_count=2)
+    assert store.get_experiment(run.id).experiment_name == "exp1"
+
+
+def test_experiment_absent_for_a_run_with_no_row(store: Store) -> None:
+    version_id, dataset_id = _make_run_prereqs(store)
+    run = store.create_run(RunKind.EVAL, version_id, dataset_id, concurrency=1)
+
+    assert store.get_experiment(run.id) is None
+
+
+def test_set_experiment_then_get_experiment_round_trips(store: Store) -> None:
+    version_id, dataset_id = _make_run_prereqs(store)
+    run = store.create_run(RunKind.EVAL, version_id, dataset_id, concurrency=1)
+
+    store.set_experiment(run.id, experiment_name="nightly-eval", case_count=42)
+
+    stored = store.get_experiment(run.id)
+    assert stored is not None
+    assert stored.run_id == run.id
+    assert stored.experiment_name == "nightly-eval"
+    assert stored.case_count == 42
+
+
+def test_set_experiment_replaces_rather_than_accumulates(store: Store) -> None:
+    """A second ``set_experiment`` call replaces the row rather than adding a second one."""
+    version_id, dataset_id = _make_run_prereqs(store)
+    run = store.create_run(RunKind.EVAL, version_id, dataset_id, concurrency=1)
+
+    store.set_experiment(run.id, experiment_name="exp1", case_count=1)
+    store.set_experiment(run.id, experiment_name="exp2", case_count=2)
+
+    stored = store.get_experiment(run.id)
+    assert stored.experiment_name == "exp2"
+    assert stored.case_count == 2
+
+    with session_scope(store.engine) as session:
+        rows = session.exec(select(ExperimentRun).where(ExperimentRun.run_id == run.id)).all()
+        assert len(rows) == 1
+
+
+def test_get_experiment_missing_run_raises(store: Store) -> None:
+    with pytest.raises(NotFoundError):
+        store.get_experiment("nope")
+
+
+def test_set_experiment_missing_run_raises(store: Store) -> None:
+    with pytest.raises(NotFoundError):
+        store.set_experiment("nope", experiment_name="exp1", case_count=1)
+
+
+def test_request_cancel_works_for_a_run_with_no_experiment_row(store: Store) -> None:
+    version_id, dataset_id = _make_run_prereqs(store)
+    run = store.create_run(RunKind.EVAL, version_id, dataset_id, concurrency=1)
+
+    cancelled = store.request_cancel(run.id)
+
+    assert cancelled.cancel_requested is True
+    assert store.get_run(run.id).cancel_requested is True
+
+
+def test_request_cancel_raises_for_an_experiment_run(store: Store) -> None:
+    version_id, dataset_id = _make_run_prereqs(store)
+    run = store.create_run(RunKind.EVAL, version_id, dataset_id, concurrency=1)
+    store.set_experiment(run.id, experiment_name="exp1", case_count=5)
+
+    with pytest.raises(ContractError) as excinfo:
+        store.request_cancel(run.id)
+
+    message = str(excinfo.value).lower()
+    assert "experiment" in message
+    assert "cannot be cancelled" in message
+    # Cancellation must not have been flagged despite the raised error.
+    assert store.get_run(run.id).cancel_requested is False
