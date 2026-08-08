@@ -1791,3 +1791,64 @@ async def test_upload_malformed_json_is_client_error_not_500(
     )
     assert resp.status_code == 422, resp.text
     assert resp.json()["error"]["type"] == "ContractError"
+
+
+# -- Export: not-found behavior and full-package upload contract --------------
+
+
+@pytest.mark.anyio
+async def test_dataset_export_json_unknown_version_is_404(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    # An unknown version_id must surface the store's not-found behavior, not a 500.
+    ds_id = _seed_labeled_dataset(store)
+    resp = await client.get(f"/api/datasets/{ds_id}/export.json", params={"version_id": "nope"})
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.anyio
+async def test_dataset_export_json_unknown_dataset_is_404(client: httpx.AsyncClient) -> None:
+    resp = await client.get("/api/datasets/missing/export.json")
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.anyio
+async def test_dataset_export_py_unknown_dataset_is_404(client: httpx.AsyncClient) -> None:
+    resp = await client.get("/api/datasets/missing/export.py")
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.anyio
+async def test_upload_full_package_imports_dataset_only_no_evaluator(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    # A bundled package carrying an agent section is the CLI's full-package territory; the upload
+    # endpoint's contract is dataset creation only, so it must import the dataset half and leave
+    # the evaluator registry untouched.
+    ds_id = _seed_labeled_dataset(store)
+    version = _make_version(store)
+    export = await client.get(
+        f"/api/datasets/{ds_id}/export.json", params={"version_id": version.id}
+    )
+    files = export.json()["files"]
+    content = files[_json_files(files)[0]].encode("utf-8")
+
+    # Sanity: the exported package really does carry an agent section.
+    assert EvalPackage.from_text(content.decode("utf-8")).spec is not None
+
+    evaluators_before = len(store.list_evaluators())
+    resp = await client.post(
+        "/api/datasets/upload",
+        files={"file": ("full.json", content, "application/json")},
+        data={"name": "from-full-package"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    # The dataset half imported with its rows, but no new evaluator was created.
+    assert len(store.list_evaluators()) == evaluators_before
+    new_id = resp.json()["dataset"]["id"]
+    rows = (await client.get(f"/api/datasets/{new_id}/rows")).json()["rows"]
+    assert [r["data"] for r in rows] == [
+        {"question": "q1", "answer": "a1"},
+        {"question": "q2", "answer": "a2"},
+    ]

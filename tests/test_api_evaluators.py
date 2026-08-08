@@ -596,6 +596,20 @@ async def test_export_endpoint_shape_is_unchanged(app) -> None:
     compile(body["source"], "<export>", "exec")
 
 
+@pytest.mark.anyio
+async def test_export_py_source_matches_legacy_endpoint(app) -> None:
+    # The code form and the legacy endpoint both render the same standalone script; the only
+    # difference is the envelope. Guard that the script itself stays byte-identical.
+    async with _client(app) as client:
+        version = await _make_version(client)
+        legacy = await client.get(f"/api/evaluators/versions/{version['id']}/export")
+        code_form = await client.get(f"/api/evaluators/versions/{version['id']}/export.py")
+    assert legacy.status_code == 200 and code_form.status_code == 200
+    files = code_form.json()["files"]
+    py_source = files[next(name for name in files if name.endswith(".py"))]
+    assert py_source == legacy.json()["source"]
+
+
 # -- Generate seeded from a dataset (monkeypatched, no network) ----------------
 
 
