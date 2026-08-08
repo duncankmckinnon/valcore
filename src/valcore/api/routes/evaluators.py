@@ -1,5 +1,6 @@
 """Evaluator CRUD, version management, generation, refinement, and export routes."""
 
+import re
 from datetime import datetime
 from typing import Annotated
 
@@ -8,8 +9,9 @@ from pydantic import BaseModel, ConfigDict
 
 from valcore import generator
 from valcore.api.deps import get_store
+from valcore.config_io import EvalPackage
 from valcore.errors import ContractError, FrozenVersionError
-from valcore.export import render_script
+from valcore.export import render_judge_module, render_script
 from valcore.generator import GeneratedConfig, RefinedConfig
 from valcore.models import CapabilitySpec, Evaluator, LabelSchema, OutputField, ScoreKind
 from valcore.seeding import evaluator_seed_from_dataset
@@ -165,6 +167,18 @@ class ExportResponse(BaseModel):
     source: str
 
 
+class ExportFilesResponse(BaseModel):
+    """A portable export as a mapping of emitted filename to its text content."""
+
+    files: dict[str, str]
+
+
+def _stem(name: str) -> str:
+    """Derive a filesystem- and import-safe file stem from a display name."""
+    cleaned = re.sub(r"[^0-9a-zA-Z]+", "_", name).strip("_").lower()
+    return cleaned or "eval_package"
+
+
 # -- Evaluators ---------------------------------------------------------------
 
 
@@ -308,9 +322,38 @@ async def delete_version(vid: str, store: StoreDep) -> None:
 
 @router.get("/versions/{vid}/export", response_model=ExportResponse)
 async def export_version(vid: str, store: StoreDep) -> ExportResponse:
-    """Return the standalone Python script source for a version as JSON."""
+    """Return the standalone Python script source for a version as JSON.
+
+    The web UI consumes this ``{"source": ...}`` shape; the code and config forms live on the
+    ``export.py`` and ``export.json`` siblings, which return a ``files`` map instead.
+    """
     version = store.get_version(vid)
     return ExportResponse(source=render_script(version))
+
+
+@router.get("/versions/{vid}/export.py", response_model=ExportFilesResponse)
+async def export_version_py(vid: str, store: StoreDep) -> ExportFilesResponse:
+    """Return the standalone Python script as a ``files`` map, matching the config forms' shape."""
+    version = store.get_version(vid)
+    return ExportFilesResponse(files={f"{_stem(version.version_name)}.py": render_script(version)})
+
+
+@router.get("/versions/{vid}/export.json", response_model=ExportFilesResponse)
+async def export_version_json(
+    vid: str, store: StoreDep, split: bool = False
+) -> ExportFilesResponse:
+    """Return the agent config JSON plus its ``valcore_judge.py`` companion module.
+
+    Bundled (the default) emits one JSON file; ``split`` hoists the agent into its own
+    ``<stem>.agent.json``. The judge points at whichever file carries the agent, so it reads the
+    same document the bundle or split-agent file holds.
+    """
+    version = store.get_version(vid)
+    stem = _stem(version.version_name)
+    files = EvalPackage.from_version(version).to_text(stem, "split" if split else "bundled")
+    agent_filename = f"{stem}.agent.json" if split else f"{stem}.json"
+    files["valcore_judge.py"] = render_judge_module(version, agent_filename)
+    return ExportFilesResponse(files=files)
 
 
 # -- Generation & refinement --------------------------------------------------

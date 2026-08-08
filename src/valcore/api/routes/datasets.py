@@ -3,6 +3,7 @@
 import csv
 import io
 import json
+import re
 from datetime import datetime
 from typing import Annotated
 
@@ -10,8 +11,10 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile
 from pydantic import BaseModel, ConfigDict
 
 from valcore.api.deps import get_store
+from valcore.config_io import EvalPackage
 from valcore.datagen import generate_rows
 from valcore.errors import ContractError
+from valcore.export import render_dataset_module, render_judge_module
 from valcore.models import LabelSchema, LabelSource
 from valcore.schema_migration import label_matches_schema
 from valcore.seeding import dataset_shape_from_version
@@ -149,6 +152,12 @@ class DatasetCreatedOut(BaseModel):
 
     dataset: DatasetOut
     row_count: int
+
+
+class ExportFilesResponse(BaseModel):
+    """A portable export as a mapping of emitted filename to its text content."""
+
+    files: dict[str, str]
 
 
 class DatasetGenerationOut(BaseModel):
@@ -298,7 +307,13 @@ async def upload_dataset(
     label_column: Annotated[str | None, Form()] = None,
     label_schema: Annotated[str | None, Form()] = None,
 ) -> DatasetCreatedOut:
-    """Create a dataset from an uploaded CSV or JSONL file."""
+    """Create a dataset from an uploaded CSV, JSONL, or eval-package JSON file.
+
+    A ``.json`` body is ambiguous: it may be a whole eval package or a stream of JSONL objects.
+    A package is recognized only when the entire body parses as one JSON object that
+    ``EvalPackage.from_text`` accepts; anything else (including JSONL, which is not one JSON
+    value) falls through to the JSONL parser unchanged.
+    """
     contents = await file.read()
     if len(contents) > _MAX_UPLOAD_BYTES:
         raise ContractError(
@@ -309,20 +324,59 @@ async def upload_dataset(
     filename = (file.filename or "").lower()
     if filename.endswith(".csv"):
         columns, prepared = _parse_csv(text, label_column)
+        schema_dict = _parse_label_schema(label_schema)
+    elif filename.endswith(".json") and (package := _load_package(text)) is not None:
+        columns, prepared, schema_dict = _import_package(package, label_column, label_schema)
     elif filename.endswith((".jsonl", ".json")):
         columns, prepared = _parse_jsonl(text, label_column)
+        schema_dict = _parse_label_schema(label_schema)
     else:
         raise ContractError("Unsupported file type; upload a .csv or .jsonl file.")
 
     if not prepared:
         raise ContractError("File contains no data rows.")
 
-    schema_dict = _parse_label_schema(label_schema)
     dataset = store.create_dataset(
         name=name, description="", columns=columns, label_schema=schema_dict
     )
     rows = store.add_prepared_rows(dataset.id, prepared)
     return DatasetCreatedOut(dataset=DatasetOut.model_validate(dataset), row_count=len(rows))
+
+
+def _load_package(text: str) -> EvalPackage | None:
+    """Return the eval package a whole-JSON body describes, or None to fall through to JSONL.
+
+    JSONL is a sequence of objects, not one JSON value, so ``json.loads`` on the whole body
+    fails and the caller drops through unchanged. An otherwise-valid JSON dict that is not a
+    recognizable package likewise returns None rather than erroring here.
+    """
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    try:
+        return EvalPackage.from_text(text)
+    except ContractError:
+        return None
+
+
+def _import_package(
+    package: EvalPackage, label_column: str | None, label_schema: str | None
+) -> tuple[list[str], list[dict], dict]:
+    """Decode a package's dataset half into ``(columns, prepared_rows, label_schema)``.
+
+    ``label_column`` splits a labeled column out of tabular data, a notion a package has no use
+    for, so its presence is a caller mistake rather than a silent no-op. An explicitly posted
+    ``label_schema`` still wins over the one the package resolved.
+    """
+    if label_column is not None:
+        raise ContractError("label_column does not apply to an eval-package upload.")
+    _name, columns, package_schema, prepared = package.to_dataset_fields()
+    explicit = label_schema is not None and label_schema.strip()
+    schema_dict = _parse_label_schema(label_schema) if explicit else package_schema
+    return columns, prepared, schema_dict
 
 
 def _parse_label_schema(raw: str | None) -> dict:
@@ -633,3 +687,47 @@ async def dataset_stats(id: str, store: StoreDep) -> StatsOut:
         unlabeled=total - labeled,
         label_distribution=store.label_distribution(id),
     )
+
+
+def _stem(name: str) -> str:
+    """Derive a filesystem- and import-safe file stem from a display name."""
+    cleaned = re.sub(r"[^0-9a-zA-Z]+", "_", name).strip("_").lower()
+    return cleaned or "eval_package"
+
+
+@router.get("/{id}/export.py", response_model=ExportFilesResponse)
+async def export_dataset_py(id: str, store: StoreDep) -> ExportFilesResponse:
+    """Return a module that rebuilds this dataset as a ``pydantic_evals.Dataset``."""
+    dataset = store.get_dataset(id)
+    rows = store.list_rows(id)
+    return ExportFilesResponse(
+        files={f"{_stem(dataset.name)}.py": render_dataset_module(dataset, rows)}
+    )
+
+
+@router.get("/{id}/export.json", response_model=ExportFilesResponse)
+async def export_dataset_json(
+    id: str, store: StoreDep, version_id: str | None = None, split: bool = False
+) -> ExportFilesResponse:
+    """Return an eval package built from this dataset, optionally merged with a version.
+
+    With no ``version_id`` the package is dataset-only, so it carries no agent and no companion
+    module. Supplying one merges in that version's agent section and rides a ``valcore_judge.py``
+    alongside, pointing at whichever file carries the agent. An unknown ``version_id`` or dataset
+    id surfaces the store's not-found behavior.
+    """
+    dataset = store.get_dataset(id)
+    rows = store.list_rows(id)
+    package = EvalPackage.from_dataset(dataset, rows)
+
+    version = None
+    if version_id is not None:
+        version = store.get_version(version_id)
+        package = package.merge(EvalPackage.from_version(version))
+
+    stem = _stem(dataset.name)
+    files = package.to_text(stem, "split" if split else "bundled")
+    if version is not None:
+        agent_filename = f"{stem}.agent.json" if split else f"{stem}.json"
+        files["valcore_judge.py"] = render_judge_module(version, agent_filename)
+    return ExportFilesResponse(files=files)
