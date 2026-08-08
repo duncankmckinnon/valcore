@@ -146,7 +146,8 @@ Override the default model, highest precedence first: an explicit argument,
 | `valcore serve` | Serve the web UI and API (`--port`, `--host`, `--no-browser`). |
 | `valcore list <evaluators\|datasets\|runs>` | List resources as a table or, with `--json`, as JSON. |
 | `valcore run <evaluator> <dataset>` | Run an evaluator version over a dataset. |
-| `valcore export <evaluator>` | Export an evaluator version as a standalone Python script. |
+| `valcore export <evaluator>` | Export an evaluator (and, with `--dataset`, a dataset) as a Python script or, with `--format json`, a portable eval package. |
+| `valcore import <file>` | Import a JSON eval package back into the local database. |
 | `valcore config set-key [KEY]` | Store the gateway API key in the config file. |
 | `valcore config get` | Show the current config (the key is masked unless `--show-key`). |
 | `valcore config path` | Print the path to the config file. |
@@ -164,6 +165,68 @@ to point at a SQLite database other than the default under `~/.valcore`.
 `--watch` (one line per completed row), `--json`, and `--min-accuracy`. Progress goes to
 stderr and results go to stdout, so redirecting stdout yields clean JSON. The CLI talks
 to SQLite directly, so `run` works whether or not `serve` is up.
+
+## Portable eval packages
+
+Both an evaluator and a dataset export two ways, as **code** or as **JSON**:
+
+| | Code | JSON |
+| --- | --- | --- |
+| Evaluator | standalone Python script | `pydantic_ai` `AgentSpec` |
+| Dataset | module that builds a `pydantic_evals.Dataset` | `pydantic_evals` `Dataset` |
+
+The JSON forms combine into an **eval package**: a `pydantic_evals` dataset plus a
+`pydantic_ai` `AgentSpec`, in one file by default or two with `--split`. Neither half is
+invented here — each is the serialization its own framework already defines — and a small
+`valcore` block beside them carries the prompt template, required columns, score field, and
+tool names that neither foreign format has a place for.
+
+```bash
+valcore export my-judge                                  # standalone Python script
+valcore export my-judge --format json -o my-judge.json
+valcore export --dataset my-data --format json -o my-data.json
+valcore export my-judge --dataset my-data --format json --split -o pkg.json
+valcore import my-judge.json
+```
+
+`valcore export my-judge` with no new flags still emits exactly the Python script it always
+has. `--format json` emits the package instead, `--dataset` folds a dataset into either form,
+and `--split` writes `pkg.agent.json` and `pkg.dataset.json` side by side rather than one
+bundle. `import` reads the JSON form back into your local database; a `.py` export is not
+importable.
+
+### Running a package
+
+A `valcore_judge.py` companion module ships beside the JSON and needs no valcore install — it
+imports only stdlib `json` and pydantic, rebuilding the agent with `Agent.from_spec`. Register
+it as a custom evaluator type and the dataset runs under `pydantic_evals`:
+
+```python
+from pydantic_evals import Dataset
+
+from valcore_judge import ValcoreJudge
+
+dataset = Dataset.from_file("my-data.json", custom_evaluator_types=[ValcoreJudge])
+report = dataset.evaluate_sync(task)
+```
+
+### What the formats can and cannot do
+
+Three limitations are worth stating plainly:
+
+1. Reading a **bundled** package needs `valcore_judge.py`, because `pydantic_evals.Dataset`
+   forbids unknown top-level keys and so refuses the bundle's `agent` and `valcore` blocks on
+   its own.
+2. A dataset exported with an evaluator names `ValcoreJudge` in its `evaluators`, so a bare
+   `Dataset.from_file()` — with no `custom_evaluator_types` — cannot read it either.
+3. `AgentSpec` has no `tools` field and silently ignores unknown keys, so
+   `Agent.from_spec(AgentSpec.from_file("pkg.agent.json"))` builds a **working agent with zero
+   tools** without complaint — the tool names live in the `valcore` block, which `AgentSpec`
+   drops on load. Use `valcore_judge.py`, which restores them from source inlined into the
+   module. If you load the bare spec and wonder why the judge behaves differently, this is why.
+
+JSON is the only config format: the web UI validates and previews a package client-side with
+its built-in `JSON.parse`, adding no dependency to do it.
 
 ## Agent skills
 
