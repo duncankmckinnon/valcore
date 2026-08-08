@@ -310,8 +310,7 @@ export default function EvaluatorDetail({ id }: EvaluatorDetailProps) {
       {!showDraft && selected && exporting && (
         <ExportModal
           open={exporting}
-          evaluatorId={detail.id}
-          versionId={selected.id}
+          subject={{ kind: "evaluator", evaluatorId: detail.id, versionId: selected.id }}
           onClose={() => setExporting(false)}
         />
       )}
