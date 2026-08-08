@@ -251,6 +251,14 @@ export interface ExportResponse {
   source: string;
 }
 
+// The new export endpoints return every emitted file keyed by filename, so a
+// bundled export is a one-entry map and a split export carries both files.
+export type ExportFilesResponse = { files: Record<string, string> };
+// "code" emits the standalone Python module(s); "json" emits the config package.
+export type ExportFormat = "code" | "json";
+// "bundled" is one file; "split" hoists agent and dataset into separate files.
+export type ExportLayout = "bundled" | "split";
+
 export interface ErrorBody {
   type: string;
   message: string;

@@ -12,6 +12,9 @@ import type {
   Evaluator,
   EvaluatorUpdate,
   EvaluatorVersion,
+  ExportFilesResponse,
+  ExportFormat,
+  ExportLayout,
   ExportResponse,
   GeneratedConfig,
   LabelMix,
@@ -122,6 +125,17 @@ export const evaluators = {
     );
     return response.source;
   },
+  // "code" is the single-file Python script and carries no layout param; only the
+  // JSON package distinguishes bundled from split via `split`.
+  exportFiles: async (versionId: string, format: ExportFormat, layout: ExportLayout) => {
+    const base = `/api/evaluators/versions/${versionId}`;
+    const path =
+      format === "code"
+        ? `${base}/export.py`
+        : `${base}/export.json?split=${layout === "split" ? "true" : "false"}`;
+    const response = await api<ExportFilesResponse>(path);
+    return response.files;
+  },
 };
 
 export const datasets = {
@@ -172,6 +186,23 @@ export const datasets = {
   patchRow: (rowId: string, data: RowPatch) =>
     api<DatasetRow>(`/api/datasets/rows/${rowId}`, { method: "PATCH", ...jsonBody(data) }),
   stats: (id: string) => api<DatasetStats>(`/api/datasets/${id}/stats`),
+  // "code" emits the Python module with no query params; "json" threads an optional
+  // `version_id` (omitted entirely when absent) and the `split` layout flag.
+  exportFiles: async (
+    id: string,
+    format: ExportFormat,
+    opts: { versionId?: string; layout: ExportLayout },
+  ) => {
+    let path = `/api/datasets/${id}/export.py`;
+    if (format === "json") {
+      const query = new URLSearchParams();
+      if (opts.versionId !== undefined) query.set("version_id", opts.versionId);
+      query.set("split", opts.layout === "split" ? "true" : "false");
+      path = `/api/datasets/${id}/export.json?${query.toString()}`;
+    }
+    const response = await api<ExportFilesResponse>(path);
+    return response.files;
+  },
 };
 
 export const overview = {
