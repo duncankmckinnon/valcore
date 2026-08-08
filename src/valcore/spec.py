@@ -84,9 +84,7 @@ def _resolve_scalar(field_name: str, prop: dict) -> dict:
         raise ContractError(
             f"Output field {field_name!r} uses unsupported schema construct 'array'."
         )
-    raise ContractError(
-        f"Output field {field_name!r} has unsupported schema type {jtype!r}."
-    )
+    raise ContractError(f"Output field {field_name!r} has unsupported schema type {jtype!r}.")
 
 
 def schema_to_output_fields(schema: dict) -> list[dict]:
@@ -233,9 +231,7 @@ def dataset_to_evals(
     generics emits a ``UserWarning``.
     """
     cases = [_row_to_case(row) for row in rows]
-    return EvalsDataset[dict, object, dict](
-        name=dataset.name, cases=cases, evaluators=evaluators
-    )
+    return EvalsDataset[dict, object, dict](name=dataset.name, cases=cases, evaluators=evaluators)
 
 
 def _infer_columns(cases: list[Case]) -> list[str]:
