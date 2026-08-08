@@ -14,6 +14,8 @@ import ``yaml``, touch the store, read the environment, or use ``Dataset.to_file
 ``from_file``.
 """
 
+from typing import Any, Literal
+
 from pydantic_ai.agent.spec import AgentSpec
 from pydantic_evals import Dataset as EvalsDataset
 from pydantic_evals.dataset import Case
@@ -222,16 +224,38 @@ def _row_to_case(row: DatasetRow) -> Case:
     )
 
 
+def _output_type(dataset: VDataset) -> Any:
+    """Derive ``OutputT`` from the dataset's label schema so a hosted push carries a real schema.
+
+    A bare ``object`` infers to ``{}`` in ``TypeAdapter(...).json_schema()``, which is what
+    ``LogfireAPIClient.push_dataset`` reads to build the hosted expected-output schema. valcore
+    knows the label space exactly, so it is encoded here rather than left to infer to nothing.
+    """
+    kind = dataset.label_schema.get("kind")
+    if kind == "categorical":
+        labels = dataset.label_schema.get("labels") or []
+        if labels:
+            return Literal[tuple(labels)]  # type: ignore[valid-type]
+        return str
+    if kind == "numeric":
+        return float
+    return str
+
+
 def dataset_to_evals(
     dataset: VDataset, rows: list[DatasetRow], evaluators: list[dict]
 ) -> EvalsDataset:
     """Map a valcore dataset and its rows onto a ``pydantic_evals.Dataset``.
 
     Concrete generics are used deliberately: constructing ``EvalsDataset`` with unparameterized
-    generics emits a ``UserWarning``.
+    generics emits a ``UserWarning``. ``OutputT`` is derived from the dataset's label schema
+    rather than left as ``object`` so a hosted push infers a real expected-output schema.
     """
     cases = [_row_to_case(row) for row in rows]
-    return EvalsDataset[dict, object, dict](name=dataset.name, cases=cases, evaluators=evaluators)
+    output_type = _output_type(dataset)
+    return EvalsDataset[dict[str, Any], output_type, dict[str, Any]](  # type: ignore[valid-type]
+        name=dataset.name, cases=cases, evaluators=evaluators
+    )
 
 
 def _infer_columns(cases: list[Case]) -> list[str]:
