@@ -27,6 +27,19 @@ from valcore.models import Dataset, DatasetRow, EvaluatorVersion, Run
 _configured = False
 
 
+class _NoOpSpan:
+    """Stand-in yielded by ``run_span``/``row_span`` when tracing is unconfigured.
+
+    Calling ``logfire.span`` before ``logfire.configure`` runs -- e.g. when the
+    real ``logfire`` package is installed but a caller never opted in -- emits
+    ``LogfireNotConfiguredWarning``. Yielding this instead keeps the context
+    managers genuinely silent no-ops, matching what unconfigured callers expect.
+    """
+
+    def set_attribute(self, *args: Any, **kwargs: Any) -> None:
+        """Discard the attribute; there is no span to attach it to."""
+
+
 def configure_tracing(cfg: FileConfig) -> None:
     """Apply the configured Logfire token to the environment and configure Logfire.
 
@@ -40,11 +53,15 @@ def configure_tracing(cfg: FileConfig) -> None:
     and a user who configured one expects traces. Attribute checks cannot tell
     the shim apart from the real module -- it masquerades as it -- so presence
     is detected with ``importlib.util.find_spec``.
+
+    The idempotency flag is set only after every step below succeeds. If
+    ``logfire.configure`` (or an earlier step) raises, the module must not be
+    left permanently marked configured -- that would strand it in a state
+    where spans quietly stay unconfigured forever with no way to retry.
     """
     global _configured
     if _configured:
         return
-    _configured = True
 
     apply_logfire_token(cfg)
 
@@ -62,6 +79,8 @@ def configure_tracing(cfg: FileConfig) -> None:
         console=False,
     )
 
+    _configured = True
+
 
 @contextmanager
 def run_span(
@@ -72,7 +91,13 @@ def run_span(
     Yields the span so the caller can set ``status`` and each metrics key as
     attributes before it closes -- metrics as attributes rather than a log line
     so a Logfire query can filter runs by accuracy without a join.
+
+    A no-op when ``configure_tracing`` has never successfully run, so callers
+    need no conditionals and unconfigured processes never touch ``logfire.span``.
     """
+    if not _configured:
+        yield _NoOpSpan()
+        return
     with logfire.span(
         "valcore.run",
         run_id=run.id,
@@ -93,6 +118,12 @@ def row_span(row: DatasetRow) -> Iterator[Any]:
 
     The Gateway's own LLM span attaches beneath this automatically via the
     injected ``traceparent``; this module emits nothing for the LLM call itself.
+
+    A no-op when ``configure_tracing`` has never successfully run, so callers
+    need no conditionals and unconfigured processes never touch ``logfire.span``.
     """
+    if not _configured:
+        yield _NoOpSpan()
+        return
     with logfire.span("valcore.score_row", row_id=row.id, idx=row.idx) as span:
         yield span

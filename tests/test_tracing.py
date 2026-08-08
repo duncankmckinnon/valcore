@@ -117,6 +117,41 @@ class TestConfigureTracingSilentWithoutToken:
         with tracing.row_span(row):
             pass
 
+    def test_run_span_does_not_call_logfire_span_when_unconfigured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Calling logfire.span before configure() emits LogfireNotConfiguredWarning.
+
+        Unconfigured spans must never reach logfire.span at all, not merely avoid
+        raising -- otherwise a process with the real package installed but no
+        configured token would print that warning on every run.
+        """
+        calls: list[object] = []
+        monkeypatch.setattr(tracing.logfire, "span", lambda *a, **k: calls.append((a, k)))
+        version = make_version()
+        dataset = make_dataset()
+        run = make_run(version.id, dataset.id)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with tracing.run_span(run, version, dataset, row_count=1):
+                pass
+        assert calls == []
+        assert len(caught) == 0
+
+    def test_row_span_does_not_call_logfire_span_when_unconfigured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[object] = []
+        monkeypatch.setattr(tracing.logfire, "span", lambda *a, **k: calls.append((a, k)))
+        dataset = make_dataset()
+        row = make_row(dataset.id)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with tracing.row_span(row):
+                pass
+        assert calls == []
+        assert len(caught) == 0
+
 
 class TestConfigureTracingTokenWithoutLogfire:
     """A configured token with the ``logfire`` extra absent must warn exactly once."""
@@ -133,6 +168,7 @@ class TestConfigureTracingTokenWithoutLogfire:
 
     def test_warns_once_naming_the_extra(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._simulate_logfire_absent(monkeypatch)
+        monkeypatch.setattr(tracing.logfire, "configure", lambda **kwargs: None)
         cfg = FileConfig(logfire_token="lf-write-token")
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -143,6 +179,7 @@ class TestConfigureTracingTokenWithoutLogfire:
 
     def test_does_not_warn_again_on_second_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._simulate_logfire_absent(monkeypatch)
+        monkeypatch.setattr(tracing.logfire, "configure", lambda **kwargs: None)
         cfg = FileConfig(logfire_token="lf-write-token")
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -156,7 +193,8 @@ class TestConfigureTracingTokenWithoutLogfire:
 class TestConfigureTracingTokenWithLogfirePresent:
     """With the real extra installed, a configured token must never warn."""
 
-    def test_no_warning_when_logfire_present(self) -> None:
+    def test_no_warning_when_logfire_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(tracing.logfire, "configure", lambda **kwargs: None)
         cfg = FileConfig(logfire_token="lf-write-token")
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -197,10 +235,40 @@ class TestConfigureTracingIdempotent:
 
         assert os.environ["LOGFIRE_TOKEN"] == "lf-from-config"
 
+    def test_retries_after_a_failed_configure_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A raising logfire.configure must not strand the module as permanently configured."""
+        calls: list[dict[str, object]] = []
+
+        def failing_configure(**kwargs: object) -> None:
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(tracing.logfire, "configure", failing_configure)
+        cfg = FileConfig()
+        with pytest.raises(RuntimeError):
+            tracing.configure_tracing(cfg)
+        assert tracing._configured is False
+
+        def succeeding_configure(**kwargs: object) -> None:
+            calls.append(kwargs)
+
+        monkeypatch.setattr(tracing.logfire, "configure", succeeding_configure)
+        tracing.configure_tracing(cfg)
+        assert tracing._configured is True
+        assert len(calls) == 1
+
 
 @pytest.mark.skipif(not _LOGFIRE_PRESENT, reason="logfire extra not installed")
 class TestSpanTreeShape:
     """The run span must be the parent of each row span, carrying the documented attributes."""
+
+    @pytest.fixture(autouse=True)
+    def _mark_configured(self, capfire, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The capfire fixture configures logfire's test exporter directly, bypassing
+        configure_tracing -- so this module's own _configured guard must be set to
+        match, or run_span/row_span would (correctly) treat the process as unconfigured
+        and yield no-op spans instead of exercising the real span tree.
+        """
+        monkeypatch.setattr(tracing, "_configured", True)
 
     def test_run_span_is_parent_of_row_span(self, capfire) -> None:
         version = make_version()
