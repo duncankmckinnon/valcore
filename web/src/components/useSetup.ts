@@ -62,8 +62,10 @@ export function useSetup(): UseSetupResult {
     setVersion((current) => current + 1);
   }, []);
 
+  // Only a loaded, successful response reporting the key unset may disable gated actions —
+  // loading, an error, or a not-yet-loaded status must all resolve to true.
   const gatewayKey = status?.keys.find((key) => key.name === "gateway_api_key");
-  const gatewayReady = gatewayKey === undefined ? true : gatewayKey.set;
+  const gatewayReady = loading || error !== null || gatewayKey?.set !== false;
 
   return { status, gatewayReady, loading, error, refetch };
 }

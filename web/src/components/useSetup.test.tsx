@@ -8,7 +8,7 @@
 // equivalent case in ExportModal.test.tsx, which exercises the same cancelled-flag pattern.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { GATEWAY_BLOCKER, useSetup } from "./useSetup";
 import { setup } from "../api/client";
@@ -124,6 +124,45 @@ describe("useSetup", () => {
     expect(screen.queryByText("gateway blocked")).toBeNull();
   });
 
+  it("keeps gatewayReady true while a refetch is in flight, even after a loaded unset key", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<SetupStatus>();
+    setupGet.mockResolvedValueOnce(makeStatus({ gateway_api_key: false })).mockReturnValueOnce(pending.promise);
+    render(<Probe />);
+
+    // The initial load establishes a real (false) status — this is what exposed the bug: a
+    // naive `gatewayKey?.set !== false` read of stale status ignores the in-flight refetch.
+    await screen.findByText("gateway blocked");
+
+    await user.click(screen.getByRole("button", { name: "Refetch" }));
+    expect(screen.getByRole("status")).toHaveTextContent("loading");
+    expect(screen.getByText("gateway ready")).toBeInTheDocument();
+    expect(screen.queryByText("gateway blocked")).toBeNull();
+
+    await act(async () => {
+      pending.resolve(makeStatus({ gateway_api_key: false }));
+      await Promise.resolve();
+    });
+    expect(await screen.findByText("gateway blocked")).toBeInTheDocument();
+  });
+
+  it("keeps gatewayReady true after a refetch rejects, even after a loaded unset key", async () => {
+    const user = userEvent.setup();
+    setupGet
+      .mockResolvedValueOnce(makeStatus({ gateway_api_key: false }))
+      .mockRejectedValueOnce(new Error("network down"));
+    render(<Probe />);
+
+    await screen.findByText("gateway blocked");
+
+    await user.click(screen.getByRole("button", { name: "Refetch" }));
+
+    await screen.findByText(/error:/);
+    expect(screen.getByRole("status")).toHaveTextContent("idle");
+    expect(screen.getByText("gateway ready")).toBeInTheDocument();
+    expect(screen.queryByText("gateway blocked")).toBeNull();
+  });
+
   it("refetch issues a second request and reflects the new value", async () => {
     const user = userEvent.setup();
     setupGet
@@ -171,10 +210,14 @@ describe("useSetup", () => {
     second.resolve(makeStatus({ gateway_api_key: false }));
     expect(await screen.findByText("gateway blocked")).toBeInTheDocument();
 
-    first.resolve(makeStatus({ gateway_api_key: true }));
-    // Give the stale resolution a chance to (wrongly) win before asserting it did not.
-    await Promise.resolve();
-    await Promise.resolve();
+    // Resolve and flush the stale promise inside act() so its (wrongly) resulting render, if
+    // any, commits before the assertion below runs — awaiting bare microtasks outside act()
+    // lets React defer that commit past the assertion and hide the bug.
+    await act(async () => {
+      first.resolve(makeStatus({ gateway_api_key: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
 
     expect(screen.getByText("gateway blocked")).toBeInTheDocument();
     expect(screen.queryByText("gateway ready")).toBeNull();
