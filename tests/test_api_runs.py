@@ -61,6 +61,19 @@ def store(tmp_path) -> Store:
     return Store(engine)
 
 
+@pytest.fixture(autouse=True)
+def _gateway_key_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Present a gateway key by default.
+
+    Launching a run now guards on ``config.require_gateway_key()`` before ever reaching
+    ``execute_run``, regardless of whether a test injects its own agent via the
+    ``get_agent_factory`` override. Without this, every pre-existing run test below would fail
+    on the guard before its injected agent ever ran. The test that targets the guard itself
+    clears the key explicitly.
+    """
+    monkeypatch.setenv("PYDANTIC_AI_GATEWAY_API_KEY", "sk-test-gateway-key")
+
+
 def _client(store: Store, agent_factory) -> httpx.AsyncClient:
     """Build an ASGI client with the store and agent-factory dependencies overridden."""
     app = create_app()
@@ -432,3 +445,30 @@ async def test_background_task_failure_marks_run_failed(store: Store) -> None:
 
     assert final["status"] == RunStatus.FAILED.value
     assert final["error"]
+
+
+# -- Gateway guard --------------------------------------------------------------
+#
+# defer_model_check=True lets build_agent succeed with no gateway key, so today's failure
+# lands deep inside runner._score_row and is recorded as one error per row (20 rows -> 20
+# failed results, COMPLETED_WITH_ERRORS). The guard must instead sit before execute_run so a
+# keyless run fails cleanly at setup: one error, zero RunResult rows.
+
+
+@pytest.mark.anyio
+async def test_run_without_gateway_key_fails_cleanly_with_no_results(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    version = make_version(store)
+    dataset, _ = make_dataset(store, ["pass", "fail", "pass"])
+
+    async with _client(store, constant_factory()) as client:
+        body = await _start_run(client, version.id, dataset.id)
+        final = await _poll_until_terminal(client, body["id"])
+
+    assert final["status"] == RunStatus.FAILED.value
+    assert final["error"]
+    assert "valcore config set-key" in final["error"]
+    # Exactly one clear setup failure, not one failed result per row.
+    assert store.list_results(final["id"]) == []

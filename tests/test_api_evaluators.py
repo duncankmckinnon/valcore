@@ -34,6 +34,18 @@ def _client(app) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=transport, base_url="http://test")
 
 
+@pytest.fixture(autouse=True)
+def _gateway_key_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Present a gateway key by default.
+
+    generate/refine now guard on ``config.require_gateway_key()`` before doing any work;
+    without this, every pre-existing generate/refine test below (which monkeypatches the
+    generator itself) would fail on the guard before its stub ever ran. Tests that target the
+    guard clear the key explicitly.
+    """
+    monkeypatch.setenv("PYDANTIC_AI_GATEWAY_API_KEY", "sk-test-gateway-key")
+
+
 def _valid_version_body() -> dict:
     """Return a config body that passes both Pydantic parsing and store validation."""
     return {
@@ -983,4 +995,82 @@ async def test_generate_version_column_notes_without_columns_rejected(app, monke
 
     assert response.status_code == 422
     assert response.json()["error"]["type"] == "ContractError"
+    assert calls == []
+
+
+# -- Gateway guard: a missing key must be a client error, never a 500 ----------
+#
+# Today the gateway provider raises a bare UserError deep inside model plumbing, which
+# _register_exception_handlers cannot map, so it becomes a 500. Each generative handler
+# must instead call config.require_gateway_key() before doing any other work, so a missing
+# key surfaces as the documented ConfigError (422) and the generator is never even invoked.
+
+
+@pytest.mark.anyio
+async def test_generate_without_gateway_key_is_client_error_not_500(
+    app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    async with _client(app) as client:
+        response = await client.post("/api/evaluators/generate", json={"criteria": "x"})
+
+    assert response.status_code < 500
+    assert response.status_code == 422, response.text
+    error = response.json()["error"]
+    assert error["type"] == "ConfigError"
+    assert "valcore config set-key" in error["message"]
+    # The guard fires before generate_config is ever reached.
+    assert calls == []
+
+
+@pytest.mark.anyio
+async def test_generate_version_without_gateway_key_is_client_error_not_500(
+    app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    async with _client(app) as client:
+        eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]
+        response = await client.post(f"/api/evaluators/{eval_id}/generate", json={"criteria": "x"})
+
+    assert response.status_code < 500
+    assert response.status_code == 422, response.text
+    error = response.json()["error"]
+    assert error["type"] == "ConfigError"
+    assert "valcore config set-key" in error["message"]
+    assert calls == []
+
+
+@pytest.mark.anyio
+async def test_refine_without_gateway_key_is_client_error_not_500(
+    app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    calls: list[dict] = []
+
+    async def fake_refine(config: GeneratedConfig, instruction: str) -> RefinedConfig:
+        calls.append({"config": config, "instruction": instruction})
+        return RefinedConfig(config=config, changed_fields=[], summary="unused")
+
+    monkeypatch.setattr(generator, "refine_config", fake_refine)
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/refine",
+            json={
+                "config": _canned_generated().model_dump(mode="json"),
+                "instruction": "be stricter",
+            },
+        )
+
+    assert response.status_code < 500
+    assert response.status_code == 422, response.text
+    error = response.json()["error"]
+    assert error["type"] == "ConfigError"
+    assert "valcore config set-key" in error["message"]
     assert calls == []
