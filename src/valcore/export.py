@@ -3,23 +3,15 @@
 import inspect
 import sys
 
-from valcore.models import EvaluatorVersion, FieldType, OutputField, parse_output_fields
+from valcore.capabilities import CAPABILITY_REGISTRY
+from valcore.models import (
+    SCALAR_TYPES,
+    EvaluatorVersion,
+    FieldType,
+    OutputField,
+    parse_output_fields,
+)
 from valcore.tools import TOOL_REGISTRY
-
-_BASE_TYPES: dict[FieldType, str] = {
-    FieldType.STR: "str",
-    FieldType.INT: "int",
-    FieldType.FLOAT: "float",
-    FieldType.BOOL: "bool",
-}
-
-_CAPABILITY_IMPORTS: dict[str, tuple[str, str]] = {
-    "CodeMode": ("pydantic_ai_harness", "CodeMode"),
-    "FileSystem": ("pydantic_ai_harness", "FileSystem"),
-    "Shell": ("pydantic_ai_harness", "Shell"),
-    "SubAgents": ("pydantic_ai_harness.subagents", "SubAgents"),
-    "Planning": ("pydantic_ai_harness.planning", "Planning"),
-}
 
 _INLINE_CONST_TYPES = (int, float, complex, bool, str, bytes, tuple, frozenset, type(None))
 
@@ -70,7 +62,7 @@ def _annotation(field: OutputField) -> str:
     if field.type is FieldType.ENUM:
         base = "Literal[" + ", ".join(repr(v) for v in field.enum_values or []) + "]"
     else:
-        base = _BASE_TYPES[field.type]
+        base = SCALAR_TYPES[field.type].__name__
     return f"{base} | None" if not field.required else base
 
 
@@ -178,9 +170,9 @@ def render_script(version: EvaluatorVersion) -> str:
     if any(f.type is FieldType.ENUM for f in fields):
         imports.add_from("typing", "Literal")
     for cap in version.capabilities:
-        entry = _CAPABILITY_IMPORTS.get(cap["name"])
+        entry = CAPABILITY_REGISTRY.get(cap["name"])
         if entry is not None:
-            imports.add_from(*entry)
+            imports.add_from(entry.script_module, entry.class_name)
 
     tools_block = _render_tools(version.tools, imports)
     output_model = _render_output_model(fields)

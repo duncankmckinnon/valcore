@@ -11,6 +11,7 @@ from sqlalchemy import Column
 from sqlmodel import JSON, Field, SQLModel
 
 from valcore import settings
+from valcore.capabilities import VALID_CAPABILITIES
 from valcore.errors import ConfigError, ContractError
 
 
@@ -57,9 +58,16 @@ class FieldType(str, Enum):
     ENUM = "enum"
 
 
-VALID_CAPABILITIES: frozenset[str] = frozenset(
-    {"CodeMode", "SubAgents", "Planning", "FileSystem", "Shell"}
-)
+# The canonical FieldType -> Python type map lives beside FieldType itself. ``factory`` uses
+# it to build runtime annotations and ``export`` derives its source type names from
+# ``SCALAR_TYPES[ft].__name__``, so the two never keep separate literal copies. The enum type
+# is deliberately absent: an enum renders as a ``Literal`` of its values, not a scalar type.
+SCALAR_TYPES: dict[FieldType, type] = {
+    FieldType.STR: str,
+    FieldType.INT: int,
+    FieldType.FLOAT: float,
+    FieldType.BOOL: bool,
+}
 
 _NUMERIC_FIELD_TYPES: frozenset[FieldType] = frozenset({FieldType.INT, FieldType.FLOAT})
 

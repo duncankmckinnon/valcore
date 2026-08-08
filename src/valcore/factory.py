@@ -7,8 +7,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, create_model
 from pydantic_ai import Agent
 
+from valcore.capabilities import CAPABILITY_REGISTRY
 from valcore.errors import ConfigError, ContractError
 from valcore.models import (
+    SCALAR_TYPES,
     CapabilitySpec,
     EvaluatorVersion,
     FieldType,
@@ -18,22 +20,7 @@ from valcore.models import (
 )
 from valcore.tools import get_tools
 
-_SCALAR_TYPES: dict[FieldType, type] = {
-    FieldType.STR: str,
-    FieldType.INT: int,
-    FieldType.FLOAT: float,
-    FieldType.BOOL: bool,
-}
-
 _NUMERIC_FIELD_TYPES: frozenset[FieldType] = frozenset({FieldType.INT, FieldType.FLOAT})
-
-_CAPABILITY_MODULES: dict[str, str] = {
-    "CodeMode": "pydantic_ai_harness.code_mode",
-    "SubAgents": "pydantic_ai_harness.subagents",
-    "Planning": "pydantic_ai_harness.planning",
-    "FileSystem": "pydantic_ai_harness.filesystem",
-    "Shell": "pydantic_ai_harness.shell",
-}
 
 
 def _model_name(version: EvaluatorVersion) -> str:
@@ -46,7 +33,7 @@ def _field_annotation(field: OutputField) -> Any:
     """Return the Python type annotation for an output field."""
     if field.type is FieldType.ENUM:
         return Literal[tuple(field.enum_values or ())]  # type: ignore[valid-type]
-    return _SCALAR_TYPES[field.type]
+    return SCALAR_TYPES[field.type]
 
 
 def build_output_model(version: EvaluatorVersion) -> type[BaseModel]:
@@ -75,14 +62,14 @@ def build_capabilities(specs: Sequence[CapabilitySpec]) -> list[Any]:
     """
     capabilities: list[Any] = []
     for spec in specs:
-        module_path = _CAPABILITY_MODULES.get(spec.name)
-        if module_path is None:
+        entry = CAPABILITY_REGISTRY.get(spec.name)
+        if entry is None:
             raise ConfigError(
-                f"Unknown capability {spec.name!r}; valid names are {sorted(_CAPABILITY_MODULES)}."
+                f"Unknown capability {spec.name!r}; valid names are {sorted(CAPABILITY_REGISTRY)}."
             )
         try:
-            module = __import__(module_path, fromlist=[spec.name])
-            cls = getattr(module, spec.name)
+            module = __import__(entry.module, fromlist=[entry.class_name])
+            cls = getattr(module, entry.class_name)
             capabilities.append(cls(**spec.config))
         except (ImportError, TypeError) as exc:
             raise ConfigError(
