@@ -301,3 +301,72 @@ class TestNoLocalAgentInstrumentation:
             if "instrument_pydantic_ai" in text or "instrument_all" in text:
                 offenders.append(str(path))
         assert offenders == [], f"Found forbidden client-side instrumentation in: {offenders}"
+
+
+class TestNoTokenStaysSilentRegardlessOfLogfirePresence:
+    """The opted-out path (no token) must never warn, even if logfire looks absent."""
+
+    def test_no_token_no_warning_when_logfire_simulated_absent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        original_find_spec = importlib.util.find_spec
+
+        def fake_find_spec(name: str, *args: object, **kwargs: object) -> object:
+            if name == "logfire":
+                return None
+            return original_find_spec(name, *args, **kwargs)
+
+        monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+        cfg = FileConfig()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            tracing.configure_tracing(cfg)
+        user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
+        assert len(user_warnings) == 0
+
+
+class TestSourceDoesNotImportLogfireDirectlyOrSwallowImportError:
+    """tracing.py must import the shim only, and never guard it with try/except ImportError."""
+
+    def _source_text(self) -> str:
+        module_path = Path(__file__).resolve().parent.parent / "src" / "valcore" / "tracing.py"
+        return module_path.read_text()
+
+    def test_does_not_import_real_logfire_directly(self) -> None:
+        text = self._source_text()
+        for line in text.splitlines():
+            stripped = line.strip()
+            assert not stripped.startswith("import logfire\n"), (
+                "tracing.py must not import the real 'logfire' package directly"
+            )
+            assert stripped != "import logfire", (
+                "tracing.py must not import the real 'logfire' package directly"
+            )
+            assert not stripped.startswith("from logfire "), (
+                "tracing.py must not import from the real 'logfire' package directly"
+            )
+        assert "import logfire_api as logfire" in text
+
+    def test_does_not_use_try_except_import_error(self) -> None:
+        """Docstring prose may mention ImportError; only actual try/except blocks are forbidden."""
+        import ast
+
+        tree = ast.parse(self._source_text())
+        offenders = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Try)
+            for handler in node.handlers
+            if handler.type is not None
+            and (
+                (isinstance(handler.type, ast.Name) and handler.type.id == "ImportError")
+                or (
+                    isinstance(handler.type, ast.Tuple)
+                    and any(
+                        isinstance(elt, ast.Name) and elt.id == "ImportError"
+                        for elt in handler.type.elts
+                    )
+                )
+            )
+        ]
+        assert offenders == []
