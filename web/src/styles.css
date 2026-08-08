@@ -1584,3 +1584,56 @@ kbd {
 .tick-ok {
   color: var(--success);
 }
+
+/* -- Setup card --------------------------------------------------------------- */
+
+.setup-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+/* Label and status share a row; the command wraps to its own line beneath via the
+   100% flex-basis on `.setup-command`. */
+.setup-key {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.setup-key:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.setup-key-required {
+  color: var(--accent);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.setup-key-optional {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.setup-command {
+  flex: 1 0 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--text-sm);
+  background: var(--panel-sunk);
+  border-radius: var(--radius);
+  padding: var(--space-1) var(--space-2);
+}
+
+.setup-summary {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
