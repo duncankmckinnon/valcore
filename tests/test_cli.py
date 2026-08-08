@@ -17,9 +17,11 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from valcore.cli.main import cli
 from valcore.cli.resolve import resolve_dataset, resolve_evaluator, resolve_version
+from valcore.config_io import EvalPackage
 from valcore.errors import ContractError, NotFoundError
+from valcore.export import render_script
 from valcore.factory import build_output_model
-from valcore.models import LabelSource, ScoreKind
+from valcore.models import LabelSource, OutputField, ScoreKind, parse_output_fields
 from valcore.store import Store, create_engine, init_db
 
 CATEGORICAL_SCHEMA = {"kind": "categorical", "labels": ["pass", "fail"]}
@@ -255,6 +257,199 @@ def test_export_to_stdout(runner, store, db_path):
     assert result.exit_code == 0
     assert "class" in result.output
     compile(result.output, "<stdout>", "exec")
+
+
+def test_export_code_default_is_byte_identical_to_render_script(runner, store, db_path):
+    # Locked decision 6: `export <evaluator>` with no new flags must keep emitting exactly the
+    # Python script it emits today, byte-for-byte. render_script is the source of truth.
+    ev = resolve_evaluator(store, "judge")
+    ver = resolve_version(store, ev, None)
+    expected = render_script(ver)
+
+    result = _invoke(runner, db_path, "export", "judge")
+    assert result.exit_code == 0
+    assert result.stdout == expected
+
+
+def test_export_evaluator_json_bundled_is_parseable(runner, store, db_path, tmp_path):
+    out = tmp_path / "pkg.json"
+    result = _invoke(runner, db_path, "export", "judge", "--format", "json", "-o", str(out))
+    assert result.exit_code == 0
+    assert out.exists()
+
+    pkg = EvalPackage.from_text(out.read_text())
+    assert pkg.spec is not None
+    assert pkg.valcore is not None
+    # A JSON export that includes an evaluator writes the companion module beside the config.
+    assert (tmp_path / "valcore_judge.py").exists()
+
+
+def test_export_dataset_only_json_has_no_agent(runner, store, db_path, tmp_path):
+    out = tmp_path / "ds.json"
+    result = _invoke(
+        runner, db_path, "export", "--dataset", "cases", "--format", "json", "-o", str(out)
+    )
+    assert result.exit_code == 0
+
+    pkg = EvalPackage.from_text(out.read_text())
+    assert pkg.spec is None
+    assert pkg.dataset is not None
+    # No evaluator means no companion module.
+    assert not (tmp_path / "valcore_judge.py").exists()
+
+
+def test_export_dataset_code_emits_dataset_module(runner, store, db_path, tmp_path):
+    out = tmp_path / "ds_module.py"
+    result = _invoke(
+        runner, db_path, "export", "--dataset", "cases", "--format", "code", "-o", str(out)
+    )
+    assert result.exit_code == 0
+    source = out.read_text()
+    assert "pydantic_evals" in source
+    compile(source, str(out), "exec")
+
+
+def test_export_neither_evaluator_nor_dataset_exits_nonzero(runner, store, db_path):
+    result = _invoke(runner, db_path, "export")
+    assert result.exit_code != 0
+
+
+def test_export_split_writes_two_json_files_plus_judge(runner, store, db_path, tmp_path):
+    out = tmp_path / "pkg.json"
+    result = _invoke(
+        runner,
+        db_path,
+        "export",
+        "judge",
+        "--dataset",
+        "cases",
+        "--format",
+        "json",
+        "--split",
+        "-o",
+        str(out),
+    )
+    assert result.exit_code == 0
+    assert (tmp_path / "pkg.agent.json").exists()
+    assert (tmp_path / "pkg.dataset.json").exists()
+    assert (tmp_path / "valcore_judge.py").exists()
+    # Split emits exactly the two hoisted halves; the bundled name is never written.
+    assert sorted(p.name for p in tmp_path.glob("*.json")) == ["pkg.agent.json", "pkg.dataset.json"]
+
+
+def test_export_split_without_output_exits_nonzero(runner, store, db_path):
+    result = _invoke(runner, db_path, "export", "judge", "--format", "json", "--split")
+    assert result.exit_code != 0
+
+
+def test_export_split_with_code_format_exits_nonzero(runner, store, db_path, tmp_path):
+    out = tmp_path / "x.py"
+    result = _invoke(
+        runner, db_path, "export", "judge", "--format", "code", "--split", "-o", str(out)
+    )
+    assert result.exit_code != 0
+
+
+def test_export_code_both_entities_without_output_exits_nonzero(runner, store, db_path):
+    # Two files cannot share stdout.
+    result = _invoke(runner, db_path, "export", "judge", "--dataset", "cases", "--format", "code")
+    assert result.exit_code != 0
+
+
+def test_export_json_evaluator_stdout_notes_omitted_companion(runner, store, db_path):
+    result = _invoke(runner, db_path, "export", "judge", "--format", "json")
+    assert result.exit_code == 0
+    # stdout is the JSON package alone.
+    pkg = EvalPackage.from_text(result.stdout)
+    assert pkg.spec is not None
+    # The companion module has nowhere to go without -o; its omission is noted on stderr.
+    assert "valcore_judge.py" in result.stderr
+
+
+# -- import -------------------------------------------------------------------
+
+
+def _fresh_store(db_path) -> Store:
+    """Open a Store on a (possibly import-created) db for post-import inspection."""
+    engine = create_engine(db_path)
+    init_db(engine)
+    return Store(engine)
+
+
+def test_import_bundled_round_trips(runner, store, db_path, tmp_path):
+    out = tmp_path / "pkg.json"
+    exported = _invoke(
+        runner, db_path, "export", "judge", "--dataset", "cases", "--format", "json", "-o", str(out)
+    )
+    assert exported.exit_code == 0
+
+    dest = tmp_path / "imported.db"
+    imported = _invoke(runner, dest, "import", str(out))
+    assert imported.exit_code == 0
+
+    s = _fresh_store(dest)
+
+    datasets = s.list_datasets()
+    assert len(datasets) == 1
+    ds = datasets[0]
+    assert ds.name == "cases"
+    rows = s.list_rows(ds.id)
+    assert [r.data for r in rows] == [{"input": f"in{i}", "output": f"out{i}"} for i in range(4)]
+    assert [r.label["value"] for r in rows] == ["pass", "fail", "pass", "fail"]
+
+    evaluators = s.list_evaluators()
+    assert len(evaluators) == 1
+    ev = evaluators[0]
+    assert ev.active_version_id is not None
+    version = s.get_version(ev.active_version_id)
+    assert version.score_field == "verdict"
+    assert version.score_kind is ScoreKind.CATEGORICAL
+    assert version.score_labels == ["pass", "fail"]
+    # output_fields round-trips through the JSON Schema encoding losslessly.
+    expected_fields = [OutputField.model_validate(f) for f in VERSION_FIELDS["output_fields"]]
+    assert parse_output_fields(version) == expected_fields
+
+
+def test_import_name_override(runner, store, db_path, tmp_path):
+    out = tmp_path / "pkg.json"
+    _invoke(runner, db_path, "export", "--dataset", "cases", "--format", "json", "-o", str(out))
+
+    dest = tmp_path / "imported.db"
+    result = _invoke(runner, dest, "import", str(out), "--name", "renamed-cases")
+    assert result.exit_code == 0
+
+    s = _fresh_store(dest)
+    assert [d.name for d in s.list_datasets()] == ["renamed-cases"]
+
+
+def test_import_invalid_agent_persists_nothing(runner, store, db_path, tmp_path):
+    out = tmp_path / "pkg.json"
+    _invoke(
+        runner, db_path, "export", "judge", "--dataset", "cases", "--format", "json", "-o", str(out)
+    )
+
+    # Break the agent so validate_version rejects it: a model string with no gateway route.
+    doc = json.loads(out.read_text())
+    doc["agent"]["model"] = "bogus-no-gateway-prefix"
+    broken = tmp_path / "broken.json"
+    broken.write_text(json.dumps(doc))
+
+    dest = tmp_path / "dest.db"
+    result = _invoke(runner, dest, "import", str(broken))
+    assert result.exit_code != 0
+
+    # Validation happens before any persistence, so nothing is created.
+    s = _fresh_store(dest)
+    assert s.list_evaluators() == []
+    assert s.list_datasets() == []
+
+
+def test_import_py_path_exits_nonzero(runner, db_path, tmp_path):
+    script = tmp_path / "thing.py"
+    script.write_text("print('hi')\n")
+    result = _invoke(runner, db_path, "import", str(script))
+    assert result.exit_code != 0
+    assert "json" in result.stderr.lower()
 
 
 # -- config -------------------------------------------------------------------
