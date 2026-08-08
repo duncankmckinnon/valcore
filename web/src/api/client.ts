@@ -28,6 +28,7 @@ import type {
   ResultsPage,
   Run,
   RunStreamEvent,
+  SetupStatus,
 } from "./types";
 
 export class ApiError extends Error {
@@ -207,6 +208,11 @@ export const datasets = {
 
 export const overview = {
   get: () => api<Overview>("/api/overview"),
+};
+
+// Read-only: keys are set only via the CLI, so there is no write method here.
+export const setup = {
+  get: () => api<SetupStatus>("/api/setup"),
 };
 
 export const runs = {
