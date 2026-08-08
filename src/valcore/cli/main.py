@@ -8,6 +8,7 @@ unexpected exceptions traceback normally so bugs stay reportable.
 """
 
 import asyncio
+import re
 import sys
 import threading
 import webbrowser
@@ -21,9 +22,10 @@ from valcore.cli.output import emit
 from valcore.cli.resolve import resolve_dataset, resolve_evaluator, resolve_version
 from valcore.cli.skills import skills
 from valcore.config import apply_gateway_key, load_config, save_config, set_key
+from valcore.config_io import EvalPackage
 from valcore.errors import ContractError, ValcoreError
-from valcore.export import render_script
-from valcore.models import Run, RunKind, RunStatus
+from valcore.export import render_dataset_module, render_judge_module, render_script
+from valcore.models import EvaluatorVersion, Run, RunKind, RunStatus, ScoreKind, validate_version
 from valcore.paths import config_path
 from valcore.runner import RunEvent, execute_run
 from valcore.settings import get_settings
@@ -156,8 +158,29 @@ def list_(ctx: click.Context, kind: str, as_json: bool) -> None:
 # -- export -------------------------------------------------------------------
 
 
+def _slug(name: str) -> str:
+    """Turn an entity name into a filesystem-friendly stem for stdout exports."""
+    cleaned = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+    return cleaned or "package"
+
+
+def _write_artifact(path: Path, content: str, named: Path | None) -> None:
+    """Write one export artifact, refusing to clobber a file the user did not name via ``-o``.
+
+    The ``-o`` path itself may be overwritten — the user chose it — but sibling files a
+    multi-file export derives (the split halves, the companion module) must never silently
+    replace something already there.
+    """
+    if path != named and path.exists():
+        raise ContractError(
+            f"Refusing to overwrite existing file {path}, which was not named via -o."
+        )
+    path.write_text(content)
+    click.echo(f"Wrote {path}", err=True)
+
+
 @cli.command()
-@click.argument("evaluator")
+@click.argument("evaluator", required=False)
 @click.option("--version", "version_name", default=None, help="Version name (default: active).")
 @click.option(
     "-o",
@@ -165,22 +188,145 @@ def list_(ctx: click.Context, kind: str, as_json: bool) -> None:
     "output",
     type=click.Path(dir_okay=False, path_type=Path),
     default=None,
-    help="Write the script to this file instead of stdout.",
+    help="Write output to this file (or its stem's siblings) instead of stdout.",
 )
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["code", "json"]),
+    default="code",
+    help="Emit runnable Python (default) or an eval-package JSON document.",
+)
+@click.option("--dataset", "dataset", default=None, help="Include this dataset in the export.")
+@click.option("--split", is_flag=True, help="Write two JSON config files instead of one bundle.")
 @click.pass_context
 def export(
-    ctx: click.Context, evaluator: str, version_name: str | None, output: Path | None
+    ctx: click.Context,
+    evaluator: str | None,
+    version_name: str | None,
+    output: Path | None,
+    fmt: str,
+    dataset: str | None,
+    split: bool,
 ) -> None:
-    """Export an evaluator version as a standalone Python script."""
+    """Export an evaluator and/or dataset as Python code or an eval-package JSON document.
+
+    With no new flags this is unchanged: ``export <evaluator>`` renders exactly the standalone
+    Python script it always has. ``--format json`` emits the portable eval-package instead, and
+    ``--dataset`` folds a dataset into either form.
+    """
+    if evaluator is None and dataset is None:
+        raise ContractError("Nothing to export: name an evaluator or pass --dataset.")
+    if split and fmt == "code":
+        raise click.UsageError("--split has no meaning for --format code; code has no bundle.")
+    if split and output is None:
+        raise click.UsageError("--split needs -o to name the two files it writes.")
+
     store = _store(ctx)
-    ev = resolve_evaluator(store, evaluator)
-    ver = resolve_version(store, ev, version_name)
-    script = render_script(ver)
-    if output is not None:
-        output.write_text(script)
-        click.echo(f"Wrote {output}", err=True)
+    ver = None
+    if evaluator is not None:
+        ev = resolve_evaluator(store, evaluator)
+        ver = resolve_version(store, ev, version_name)
+    ds = rows = None
+    if dataset is not None:
+        ds = resolve_dataset(store, dataset)
+        rows = store.list_rows(ds.id)
+
+    if fmt == "code":
+        _export_code(ver, ds, rows, output)
     else:
-        click.echo(script, nl=False)
+        _export_json(ver, ds, rows, output, split)
+
+
+def _export_code(ver, ds, rows, output: Path | None) -> None:
+    """Emit the Python-code form: a standalone script and/or a dataset module."""
+    if ver is not None and ds is not None:
+        if output is None:
+            raise click.UsageError("A script and a dataset module cannot share stdout; pass -o.")
+        _write_artifact(output, render_script(ver), output)
+        _write_artifact(
+            output.parent / f"{output.stem}.dataset.py", render_dataset_module(ds, rows), output
+        )
+        return
+
+    content = render_script(ver) if ver is not None else render_dataset_module(ds, rows)
+    if output is None:
+        click.echo(content, nl=False)
+    else:
+        _write_artifact(output, content, output)
+
+
+def _export_json(ver, ds, rows, output: Path | None, split: bool) -> None:
+    """Emit the JSON eval-package form, writing the companion judge module beside a config file."""
+    pkg = None
+    if ver is not None:
+        pkg = EvalPackage.from_version(ver)
+    if ds is not None:
+        ds_pkg = EvalPackage.from_dataset(ds, rows)
+        pkg = ds_pkg if pkg is None else pkg.merge(ds_pkg)
+
+    mode = "split" if split else "bundled"
+    stem = (
+        output.stem
+        if output is not None
+        else _slug(ver.version_name if ver is not None else ds.name)
+    )
+    files = pkg.to_text(stem, mode)
+
+    if output is None:
+        # Bundled JSON is a single document, so stdout can hold it. The companion judge module
+        # has nowhere to go without -o; note its omission on stderr and keep stdout pure JSON.
+        click.echo(next(iter(files.values())), nl=False)
+        if ver is not None:
+            click.echo("note: companion module valcore_judge.py omitted (no -o).", err=True)
+        return
+
+    for filename, content in files.items():
+        _write_artifact(output.parent / filename, content, output)
+    if ver is not None:
+        package_filename = f"{stem}.agent.json" if split else f"{stem}.json"
+        _write_artifact(
+            output.parent / "valcore_judge.py", render_judge_module(ver, package_filename), output
+        )
+
+
+@cli.command(name="import")
+@click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--name", "name", default=None, help="Override the imported dataset's name.")
+@click.pass_context
+def import_(ctx: click.Context, path: Path, name: str | None) -> None:
+    """Import an eval-package JSON document, creating its dataset and/or evaluator."""
+    if path.suffix == ".py":
+        raise ContractError("Cannot import a Python script; the importable package format is JSON.")
+
+    store = _store(ctx)
+    pkg = EvalPackage.from_text(path.read_text())
+
+    # Validate the reconstructed version up front, before any store write, so a package whose
+    # agent fails validation persists nothing at all — not even its dataset half.
+    version_fields = None
+    if pkg.spec is not None:
+        version_fields = pkg.to_version_fields()
+        # ``to_version_fields`` carries ``score_kind`` as its raw string; a table-backed
+        # ``EvaluatorVersion`` does not coerce it on construction, so validation's enum identity
+        # check would misread a categorical field as numeric. Coerce once, for validate and store.
+        version_fields["score_kind"] = ScoreKind(version_fields["score_kind"])
+        validate_version(EvaluatorVersion(evaluator_id="", **version_fields))
+
+    if pkg.dataset is not None:
+        ds_name, columns, label_schema, prepared_rows = pkg.to_dataset_fields()
+        if name is not None:
+            ds_name = name
+        created = store.create_dataset(ds_name, "", columns, label_schema)
+        store.add_prepared_rows(created.id, prepared_rows)
+        click.echo(f"dataset {created.id} {created.name}")
+
+    if version_fields is not None:
+        ev_name = pkg.spec.name or path.stem
+        evaluator = store.create_evaluator(ev_name)
+        version = store.create_version(evaluator.id, **version_fields)
+        store.update_evaluator(evaluator.id, active_version_id=version.id)
+        click.echo(f"evaluator {evaluator.id} {evaluator.name} (version {version.id})")
 
 
 # -- run ----------------------------------------------------------------------
