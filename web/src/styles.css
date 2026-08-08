@@ -872,6 +872,41 @@ kbd {
   white-space: normal;
 }
 
+/* The format radio row (Code vs JSON), laid out horizontally. */
+.export-format {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-4);
+}
+
+/* The layout Select, shown only in JSON mode. Indented under the format row so it reads
+   as a refinement of the choice above it. */
+.export-layout {
+  margin-top: var(--space-2);
+  margin-left: var(--space-4);
+}
+
+/* One exported file: its name label, preview, and actions stacked as a unit. */
+.export-file {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* The filename above each block, quieter and smaller than body text. */
+.export-file-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+/* Per-file Copy/Download buttons, pushed to the right edge of the block. */
+.export-file-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
 /* -- Instructions / tools --------------------------------------------------- */
 
 .instructions {
