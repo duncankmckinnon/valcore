@@ -329,4 +329,29 @@ describe("ExportModal", () => {
 
     expect(props.onClose).toHaveBeenCalled();
   });
+
+  it("toggling JSON then back to Code restores the script block and hides the layout Select", async () => {
+    const user = userEvent.setup();
+    exportScript.mockResolvedValue(SCRIPT);
+    evalExportFiles.mockResolvedValue({ "refusal_quality.json": "{}" });
+    renderModal();
+
+    await screen.findByText(/generated-export-marker/);
+    // The layout Select is absent while Code is active.
+    expect(screen.queryByRole("combobox")).toBeNull();
+
+    await user.click(screen.getByRole("radio", { name: "JSON" }));
+    await screen.findByText("refusal_quality.json");
+    // The layout Select appears only once JSON is active.
+    expect(screen.getByRole("combobox")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: "Code" }));
+
+    // Returning to Code refires the standalone-script fetch and drops the file-package chrome.
+    expect(await screen.findByText(/generated-export-marker/)).toBeInTheDocument();
+    expect(exportScript).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("refusal_quality.json")).toBeNull();
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Download" })).toBeNull();
+  });
 });
