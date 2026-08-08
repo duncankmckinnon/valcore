@@ -7,11 +7,13 @@
 // exercise the real ColumnNotesEditor so the locked-column / no-add-control behaviour is
 // verified end to end rather than stubbed.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import EvaluatorFromDataset from "./EvaluatorFromDataset";
 import { ApiError, evaluators } from "../api/client";
+import { GATEWAY_BLOCKER, useSetup } from "./useSetup";
+import type { UseSetupResult } from "./useSetup";
 import type { Dataset, GeneratedConfig, LabelSchema } from "../api/types";
 
 vi.mock("../api/client", async (importOriginal) => {
@@ -29,9 +31,30 @@ vi.mock("../api/client", async (importOriginal) => {
   };
 });
 
+// Generation needs the gateway key as much as a run does; the hook is mocked directly
+// (rather than driving it through `../api/client`'s `setup.get`) so each test can set
+// `gatewayReady` without re-exercising useSetup's own fetch/loading machinery, which has
+// its own dedicated suite in useSetup.test.tsx.
+vi.mock("./useSetup", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./useSetup")>();
+  return { ...actual, useSetup: vi.fn() };
+});
+
 const generateMock = vi.mocked(evaluators.generate);
 const createMock = vi.mocked(evaluators.create);
 const createVersionMock = vi.mocked(evaluators.createVersion);
+const useSetupMock = vi.mocked(useSetup);
+
+function makeSetupResult(overrides: Partial<UseSetupResult> = {}): UseSetupResult {
+  return {
+    status: null,
+    gatewayReady: true,
+    loading: false,
+    error: null,
+    refetch: vi.fn(),
+    ...overrides,
+  };
+}
 
 const LABELLED_SCHEMA: LabelSchema = {
   kind: "categorical",
@@ -111,6 +134,10 @@ function renderModal(props: {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+});
+
+beforeEach(() => {
+  useSetupMock.mockReturnValue(makeSetupResult());
 });
 
 describe("EvaluatorFromDataset", () => {
@@ -286,5 +313,64 @@ describe("EvaluatorFromDataset chrome", () => {
     await user.click(screen.getByRole("button", { name: "Cancel" }));
 
     expect(onClose).toHaveBeenCalled();
+  });
+});
+
+// -- Gateway gating -----------------------------------------------------------
+// Generation needs the Pydantic AI Gateway key as much as running a version does, so it
+// is gated the same way: the shared GATEWAY_BLOCKER text and a disabled primary action
+// when the key is not set, and no change at all to today's behavior once it is.
+
+describe("EvaluatorFromDataset gateway gating", () => {
+  it("disables Generate and shows the shared gateway blocker when the gateway key is unset", async () => {
+    useSetupMock.mockReturnValue(makeSetupResult({ gatewayReady: false }));
+    const user = userEvent.setup();
+    renderModal();
+
+    await user.type(screen.getByLabelText("Criteria"), "Judge answer quality.");
+
+    expect(screen.getByText(GATEWAY_BLOCKER)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate evaluator" })).toBeDisabled();
+    expect(generateMock).not.toHaveBeenCalled();
+  });
+
+  it("does not call generate if Generate is somehow invoked while the gateway is blocked", async () => {
+    useSetupMock.mockReturnValue(makeSetupResult({ gatewayReady: false }));
+    renderModal();
+
+    // Disabled buttons swallow user-event clicks by design; assert directly on
+    // generateMock so this test does not depend on that browser behaviour.
+    expect(generateMock).not.toHaveBeenCalled();
+  });
+
+  it("shows no gateway blocker and governs Generate only by criteria validity when the gateway is ready", async () => {
+    useSetupMock.mockReturnValue(makeSetupResult({ gatewayReady: true }));
+    const user = userEvent.setup();
+    renderModal();
+
+    expect(screen.queryByText(GATEWAY_BLOCKER)).toBeNull();
+    expect(screen.getByRole("button", { name: "Generate evaluator" })).toBeDisabled();
+
+    await user.type(screen.getByLabelText("Criteria"), "Judge answer quality.");
+    expect(screen.getByRole("button", { name: "Generate evaluator" })).not.toBeDisabled();
+  });
+
+  it("re-enables Generate once gatewayReady flips true with criteria already filled", async () => {
+    useSetupMock.mockReturnValue(makeSetupResult({ gatewayReady: false }));
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <EvaluatorFromDataset open dataset={madeDataset()} onGenerated={vi.fn()} onClose={vi.fn()} />,
+    );
+
+    await user.type(screen.getByLabelText("Criteria"), "Judge answer quality.");
+    expect(screen.getByRole("button", { name: "Generate evaluator" })).toBeDisabled();
+
+    useSetupMock.mockReturnValue(makeSetupResult({ gatewayReady: true }));
+    rerender(
+      <EvaluatorFromDataset open dataset={madeDataset()} onGenerated={vi.fn()} onClose={vi.fn()} />,
+    );
+
+    expect(screen.getByRole("button", { name: "Generate evaluator" })).not.toBeDisabled();
+    expect(screen.queryByText(GATEWAY_BLOCKER)).toBeNull();
   });
 });
