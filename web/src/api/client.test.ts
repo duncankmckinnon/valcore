@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, api, datasets, evaluators, overview } from "./client";
-import type { Dataset, Overview } from "./types";
+import { ApiError, api, datasets, evaluators, overview, setup } from "./client";
+import type { Dataset, Overview, SetupStatus } from "./types";
 
 function jsonResponse(body: unknown, init: { status?: number } = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -561,6 +561,74 @@ describe("overview client helper", () => {
     if (!(error instanceof ApiError)) throw error;
     expect(error.status).toBe(500);
     expect(error.message).toBe("overview unavailable");
+  });
+});
+
+// The setup endpoint is read-only: it reports which keys are configured (env or CLI)
+// so the UI can gate actions that need the gateway key. There is no POST — keys are
+// set only via the CLI — so this also guards against a write method sneaking in.
+describe("setup client helper", () => {
+  it("setup.get GETs /api/setup and returns the parsed SetupStatus with all three keys", async () => {
+    const body: SetupStatus = {
+      keys: [
+        {
+          name: "gateway_api_key",
+          set: true,
+          required: true,
+          label: "Pydantic AI Gateway API key",
+          command: "valcore setup gateway-key <key>",
+          purpose: "Required to run evaluators and generate datasets.",
+        },
+        {
+          name: "logfire_token",
+          set: false,
+          required: false,
+          label: "Logfire write token",
+          command: "valcore setup logfire-token <token>",
+          purpose: "Sends run and row spans to your Logfire project.",
+        },
+        {
+          name: "logfire_api_key",
+          set: false,
+          required: false,
+          label: "Logfire API key",
+          command: "valcore setup logfire-api-key <key>",
+          purpose: "Pushes datasets to Logfire's hosted store.",
+        },
+      ],
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(body));
+
+    const result = await setup.get();
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/setup");
+    // No method means the default GET; setup is strictly read-only.
+    expect(init?.method ?? "GET").toBe("GET");
+    expect(result).toEqual(body);
+    expect(result.keys).toHaveLength(3);
+    expect(result.keys.map((k) => k.name)).toEqual([
+      "gateway_api_key",
+      "logfire_token",
+      "logfire_api_key",
+    ]);
+  });
+
+  it("setup.get surfaces a non-OK response as a rejection", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ error: { type: "Error", message: "setup unavailable" } }, { status: 500 }),
+    );
+
+    const error = await setup.get().catch((e) => e);
+
+    expect(error).toBeInstanceOf(ApiError);
+    if (!(error instanceof ApiError)) throw error;
+    expect(error.status).toBe(500);
+    expect(error.message).toBe("setup unavailable");
+  });
+
+  it("exposes no method that issues a POST — keys are set only via the CLI", () => {
+    expect(Object.keys(setup).sort()).toEqual(["get"]);
   });
 });
 

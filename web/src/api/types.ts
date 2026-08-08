@@ -324,3 +324,19 @@ export interface RowsGenerate {
   label_mix?: LabelMix;
   label_guidance?: string;
 }
+
+// One credential the setup walkthrough checks for. `set` reflects effective
+// presence (env or CLI-written config); `command` is the CLI invocation shown
+// to the user when it is missing.
+export interface SetupKey {
+  name: "gateway_api_key" | "logfire_token" | "logfire_api_key";
+  set: boolean;
+  required: boolean;
+  label: string;
+  command: string;
+  purpose: string;
+}
+
+export interface SetupStatus {
+  keys: SetupKey[];
+}
