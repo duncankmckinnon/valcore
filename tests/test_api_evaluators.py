@@ -6,6 +6,7 @@ import pytest
 from valcore import generator
 from valcore.api.deps import get_store
 from valcore.api.main import create_app
+from valcore.config_io import EvalPackage
 from valcore.generator import GeneratedConfig, RefinedConfig
 from valcore.models import LabelSchema, RunKind, ScoreKind
 from valcore.store import Store, create_engine, init_db
@@ -511,6 +512,102 @@ async def test_export_returns_compilable_source(app) -> None:
     assert isinstance(source, str) and source.strip()
     # The exported script must be valid, compilable Python.
     compile(source, "<export>", "exec")
+
+
+# -- Export: code and config forms --------------------------------------------
+
+
+async def _make_version(client: httpx.AsyncClient) -> dict:
+    """Create an evaluator with one version via the API and return the version body."""
+    evaluator = (await client.post("/api/evaluators", json={"name": "E"})).json()
+    return (
+        await client.post(f"/api/evaluators/{evaluator['id']}/versions", json=_valid_version_body())
+    ).json()
+
+
+@pytest.mark.anyio
+async def test_export_json_returns_agent_and_judge(app) -> None:
+    async with _client(app) as client:
+        version = await _make_version(client)
+        response = await client.get(f"/api/evaluators/versions/{version['id']}/export.json")
+    assert response.status_code == 200, response.text
+    files = response.json()["files"]
+
+    # The companion module rides along under its fixed name.
+    assert "valcore_judge.py" in files
+    compile(files["valcore_judge.py"], "<judge>", "exec")
+
+    # Bundled is the default: a single JSON document that round-trips through the reader.
+    json_files = [name for name in files if name.endswith(".json")]
+    assert len(json_files) == 1
+    package = EvalPackage.from_text(files[json_files[0]])
+    assert package.spec is not None
+    assert package.valcore is not None
+    assert package.dataset is None
+
+
+@pytest.mark.anyio
+async def test_export_json_split_returns_agent_file(app) -> None:
+    async with _client(app) as client:
+        version = await _make_version(client)
+        response = await client.get(
+            f"/api/evaluators/versions/{version['id']}/export.json",
+            params={"split": True},
+        )
+    assert response.status_code == 200, response.text
+    files = response.json()["files"]
+
+    assert "valcore_judge.py" in files
+    # Split hoists the agent to the top level of its own <stem>.agent.json file.
+    agent_files = [name for name in files if name.endswith(".agent.json")]
+    assert len(agent_files) == 1
+    package = EvalPackage.from_text(files[agent_files[0]])
+    assert package.spec is not None
+    assert package.valcore is not None
+    assert package.dataset is None
+
+
+@pytest.mark.anyio
+async def test_export_py_returns_standalone_script(app) -> None:
+    async with _client(app) as client:
+        version = await _make_version(client)
+        response = await client.get(f"/api/evaluators/versions/{version['id']}/export.py")
+    assert response.status_code == 200, response.text
+    files = response.json()["files"]
+
+    py_files = [name for name in files if name.endswith(".py")]
+    assert len(py_files) == 1
+    source = files[py_files[0]]
+    compile(source, "<export>", "exec")
+    # The standalone script carries no valcore dependency.
+    assert "import valcore" not in source
+
+
+@pytest.mark.anyio
+async def test_export_endpoint_shape_is_unchanged(app) -> None:
+    # Regression guard: the legacy endpoint the web UI consumes keeps its {"source": ...} shape.
+    async with _client(app) as client:
+        version = await _make_version(client)
+        response = await client.get(f"/api/evaluators/versions/{version['id']}/export")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body) == {"source"}
+    assert isinstance(body["source"], str) and body["source"].strip()
+    compile(body["source"], "<export>", "exec")
+
+
+@pytest.mark.anyio
+async def test_export_py_source_matches_legacy_endpoint(app) -> None:
+    # The code form and the legacy endpoint both render the same standalone script; the only
+    # difference is the envelope. Guard that the script itself stays byte-identical.
+    async with _client(app) as client:
+        version = await _make_version(client)
+        legacy = await client.get(f"/api/evaluators/versions/{version['id']}/export")
+        code_form = await client.get(f"/api/evaluators/versions/{version['id']}/export.py")
+    assert legacy.status_code == 200 and code_form.status_code == 200
+    files = code_form.json()["files"]
+    py_source = files[next(name for name in files if name.endswith(".py"))]
+    assert py_source == legacy.json()["source"]
 
 
 # -- Generate seeded from a dataset (monkeypatched, no network) ----------------

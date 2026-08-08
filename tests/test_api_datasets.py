@@ -1,5 +1,6 @@
 """Tests for the datasets API router: upload, generate, labeling, pagination, stats."""
 
+import json
 from collections.abc import AsyncIterator
 
 import httpx
@@ -7,6 +8,7 @@ import pytest
 
 from valcore.api.deps import get_store
 from valcore.api.main import create_app
+from valcore.config_io import EvalPackage
 from valcore.datagen import GeneratedRow
 from valcore.models import LabelSource, RunKind, ScoreKind, check_dataset_compatibility
 from valcore.store import EvaluatorVersion, Store, create_engine, init_db
@@ -1567,3 +1569,286 @@ async def test_generate_rows_count_over_cap_is_422(client: httpx.AsyncClient, mo
 async def test_generate_rows_for_missing_dataset_is_404(client: httpx.AsyncClient) -> None:
     resp = await client.post("/api/datasets/nope/generate-rows", json={"count": 1})
     assert resp.status_code == 404, resp.text
+
+
+# -- Export: code and config forms -------------------------------------------
+
+
+def _seed_labeled_dataset(store: Store) -> str:
+    """Create a categorical dataset with two fully labeled rows; return its id."""
+    ds = store.create_dataset(
+        name="refusal",
+        description="",
+        columns=["question", "answer"],
+        label_schema=CATEGORICAL_SCHEMA,
+    )
+    store.add_prepared_rows(
+        ds.id,
+        [
+            {
+                "data": {"question": "q1", "answer": "a1"},
+                "label": {"value": "good"},
+                "label_source": LabelSource.MANUAL,
+            },
+            {
+                "data": {"question": "q2", "answer": "a2"},
+                "label": {"value": "bad"},
+                "label_source": LabelSource.MANUAL,
+            },
+        ],
+    )
+    return ds.id
+
+
+def _json_files(files: dict) -> list[str]:
+    """Return the JSON member names of a ``files`` map, in sorted order."""
+    return sorted(name for name in files if name.endswith(".json"))
+
+
+@pytest.mark.anyio
+async def test_dataset_export_json_without_version_is_dataset_only(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    ds_id = _seed_labeled_dataset(store)
+    resp = await client.get(f"/api/datasets/{ds_id}/export.json")
+    assert resp.status_code == 200, resp.text
+    files = resp.json()["files"]
+
+    # With no version there is no agent, so no companion module and no Python at all.
+    assert "valcore_judge.py" not in files
+    assert not any(name.endswith(".py") for name in files)
+
+    json_files = _json_files(files)
+    assert len(json_files) == 1
+    package = EvalPackage.from_text(files[json_files[0]])
+    assert package.dataset is not None
+    assert package.spec is None
+
+
+@pytest.mark.anyio
+async def test_dataset_export_json_with_version_includes_agent_and_judge(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    ds_id = _seed_labeled_dataset(store)
+    version = _make_version(store)
+    resp = await client.get(f"/api/datasets/{ds_id}/export.json", params={"version_id": version.id})
+    assert resp.status_code == 200, resp.text
+    files = resp.json()["files"]
+
+    # Merging in a version adds the agent section and its companion module.
+    assert "valcore_judge.py" in files
+    compile(files["valcore_judge.py"], "<judge>", "exec")
+
+    json_files = _json_files(files)
+    assert len(json_files) == 1
+    package = EvalPackage.from_text(files[json_files[0]])
+    assert package.spec is not None
+    assert package.dataset is not None
+
+
+@pytest.mark.anyio
+async def test_dataset_export_json_split_returns_two_json_files(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    ds_id = _seed_labeled_dataset(store)
+    version = _make_version(store)
+    resp = await client.get(
+        f"/api/datasets/{ds_id}/export.json",
+        params={"version_id": version.id, "split": True},
+    )
+    assert resp.status_code == 200, resp.text
+    files = resp.json()["files"]
+
+    json_files = _json_files(files)
+    assert len(json_files) == 2
+    assert "valcore_judge.py" in files
+    # One JSON file carries the agent half, the other the dataset half.
+    parsed = [EvalPackage.from_text(files[name]) for name in json_files]
+    assert any(p.spec is not None for p in parsed)
+    assert any(p.dataset is not None for p in parsed)
+
+
+@pytest.mark.anyio
+async def test_dataset_export_py_returns_dataset_module(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    ds_id = _seed_labeled_dataset(store)
+    resp = await client.get(f"/api/datasets/{ds_id}/export.py")
+    assert resp.status_code == 200, resp.text
+    files = resp.json()["files"]
+
+    py_files = [name for name in files if name.endswith(".py")]
+    assert len(py_files) == 1
+    source = files[py_files[0]]
+    compile(source, "<dataset>", "exec")
+    # The module builds a pydantic_evals.Dataset directly and has no valcore dependency.
+    assert "pydantic_evals" in source
+    assert "import valcore" not in source
+
+
+# -- Upload: eval packages and JSON disambiguation ---------------------------
+
+
+@pytest.mark.anyio
+async def test_dataset_export_json_round_trips_through_upload(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    ds_id = _seed_labeled_dataset(store)
+    export = await client.get(f"/api/datasets/{ds_id}/export.json")
+    files = export.json()["files"]
+    content = files[_json_files(files)[0]].encode("utf-8")
+
+    resp = await client.post(
+        "/api/datasets/upload",
+        files={"file": ("roundtrip.json", content, "application/json")},
+        data={"name": "reimported"},
+    )
+    assert resp.status_code == 200, resp.text
+    new_id = resp.json()["dataset"]["id"]
+
+    reimported = (await client.get(f"/api/datasets/{new_id}")).json()
+    assert reimported["columns"] == ["question", "answer"]
+    assert reimported["label_schema"]["kind"] == "categorical"
+    assert set(reimported["label_schema"]["labels"]) == {"good", "bad"}
+
+    rows = (await client.get(f"/api/datasets/{new_id}/rows")).json()["rows"]
+    assert [r["data"] for r in rows] == [
+        {"question": "q1", "answer": "a1"},
+        {"question": "q2", "answer": "a2"},
+    ]
+    assert [r["label"] for r in rows] == [{"value": "good"}, {"value": "bad"}]
+
+
+@pytest.mark.anyio
+async def test_upload_json_extension_with_jsonl_body_parses_as_jsonl(
+    client: httpx.AsyncClient,
+) -> None:
+    # Several objects, one per line, is not valid JSON as a whole, so the package importer
+    # cannot swallow it: it must fall through to the JSONL parser unchanged.
+    body = b'{"a": 1, "b": 2}\n{"a": 3, "b": 4}\n'
+    resp = await client.post(
+        "/api/datasets/upload",
+        files={"file": ("data.json", body, "application/json")},
+        data={"name": "jsonl-in-json"},
+    )
+    assert resp.status_code == 200, resp.text
+    result = resp.json()
+    assert result["row_count"] == 2
+    assert result["dataset"]["columns"] == ["a", "b"]
+
+
+@pytest.mark.anyio
+async def test_upload_package_with_label_column_is_422(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    # ``label_column`` is meaningless for a package; rejecting it beats silently ignoring it.
+    ds_id = _seed_labeled_dataset(store)
+    export = await client.get(f"/api/datasets/{ds_id}/export.json")
+    files = export.json()["files"]
+    content = files[_json_files(files)[0]].encode("utf-8")
+
+    resp = await client.post(
+        "/api/datasets/upload",
+        files={"file": ("pkg.json", content, "application/json")},
+        data={"name": "with-label-column", "label_column": "answer"},
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["type"] == "ContractError"
+
+
+@pytest.mark.anyio
+async def test_upload_package_explicit_label_schema_wins(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    ds_id = _seed_labeled_dataset(store)
+    export = await client.get(f"/api/datasets/{ds_id}/export.json")
+    files = export.json()["files"]
+    content = files[_json_files(files)[0]].encode("utf-8")
+
+    # A superset schema the package would never have inferred, proving the form field won.
+    forced = json.dumps({"kind": "categorical", "labels": ["good", "bad", "maybe"]})
+    resp = await client.post(
+        "/api/datasets/upload",
+        files={"file": ("pkg.json", content, "application/json")},
+        data={"name": "forced-schema", "label_schema": forced},
+    )
+    assert resp.status_code == 200, resp.text
+    new_id = resp.json()["dataset"]["id"]
+
+    schema = (await client.get(f"/api/datasets/{new_id}")).json()["label_schema"]
+    assert schema["labels"] == ["good", "bad", "maybe"]
+
+
+@pytest.mark.anyio
+async def test_upload_malformed_json_is_client_error_not_500(
+    client: httpx.AsyncClient,
+) -> None:
+    # A truncated body is neither whole JSON nor valid JSONL; the caller gets a 4xx, never a 500.
+    resp = await client.post(
+        "/api/datasets/upload",
+        files={"file": ("broken.json", b'{"oops": ', "application/json")},
+        data={"name": "broken"},
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["type"] == "ContractError"
+
+
+# -- Export: not-found behavior and full-package upload contract --------------
+
+
+@pytest.mark.anyio
+async def test_dataset_export_json_unknown_version_is_404(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    # An unknown version_id must surface the store's not-found behavior, not a 500.
+    ds_id = _seed_labeled_dataset(store)
+    resp = await client.get(f"/api/datasets/{ds_id}/export.json", params={"version_id": "nope"})
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.anyio
+async def test_dataset_export_json_unknown_dataset_is_404(client: httpx.AsyncClient) -> None:
+    resp = await client.get("/api/datasets/missing/export.json")
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.anyio
+async def test_dataset_export_py_unknown_dataset_is_404(client: httpx.AsyncClient) -> None:
+    resp = await client.get("/api/datasets/missing/export.py")
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.anyio
+async def test_upload_full_package_imports_dataset_only_no_evaluator(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    # A bundled package carrying an agent section is the CLI's full-package territory; the upload
+    # endpoint's contract is dataset creation only, so it must import the dataset half and leave
+    # the evaluator registry untouched.
+    ds_id = _seed_labeled_dataset(store)
+    version = _make_version(store)
+    export = await client.get(
+        f"/api/datasets/{ds_id}/export.json", params={"version_id": version.id}
+    )
+    files = export.json()["files"]
+    content = files[_json_files(files)[0]].encode("utf-8")
+
+    # Sanity: the exported package really does carry an agent section.
+    assert EvalPackage.from_text(content.decode("utf-8")).spec is not None
+
+    evaluators_before = len(store.list_evaluators())
+    resp = await client.post(
+        "/api/datasets/upload",
+        files={"file": ("full.json", content, "application/json")},
+        data={"name": "from-full-package"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    # The dataset half imported with its rows, but no new evaluator was created.
+    assert len(store.list_evaluators()) == evaluators_before
+    new_id = resp.json()["dataset"]["id"]
+    rows = (await client.get(f"/api/datasets/{new_id}/rows")).json()["rows"]
+    assert [r["data"] for r in rows] == [
+        {"question": "q1", "answer": "a1"},
+        {"question": "q2", "answer": "a2"},
+    ]
