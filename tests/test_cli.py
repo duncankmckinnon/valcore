@@ -2,9 +2,10 @@
 
 No network and no real home directory: ``VALCORE_HOME`` is pointed at ``tmp_path``
 by the autouse fixture in ``conftest.py``, the store is a fresh ``tmp_path`` SQLite
-DB, and agent behavior is driven by a ``FunctionModel`` injected via a monkeypatch
-of ``valcore.runner.build_agent`` (and, for the ``experiment`` command, of
-``valcore.experiment.build_agent``). ``logfire push`` is exercised by monkeypatching
+DB, and agent behavior for ``run`` is driven by a ``FunctionModel`` injected via a
+monkeypatch of ``valcore.runner.build_agent``; ``experiment`` tests use ``TestModel``
+against ``valcore.experiment.build_agent`` instead, per the test plan. ``logfire push``
+is exercised by monkeypatching
 ``valcore.logfire_io.push_dataset`` with an async stub, following the module-qualified
 call convention the task interfaces describe (``config.require_gateway_key()``,
 ``experiment.execute_experiment(...)``, ``logfire_io.push_dataset(...)``,
@@ -21,6 +22,7 @@ from click.testing import CliRunner
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.test import TestModel
 
 from valcore.cli.main import cli
 from valcore.cli.resolve import resolve_dataset, resolve_evaluator, resolve_version
@@ -92,6 +94,22 @@ def _constant_agent_builder(verdict: str = "pass"):
             return ModelResponse(parts=[ToolCallPart(tool_name=name, args={"verdict": verdict})])
 
         return Agent(FunctionModel(respond), output_type=build_output_model(version))
+
+    return build
+
+
+def _constant_test_model_agent_builder(verdict: str = "pass"):
+    """Return a ``build_agent`` replacement using ``TestModel`` that always emits ``verdict``.
+
+    Used for the ``experiment`` tests per the test plan's ``TestModel`` requirement;
+    ``TestModel(custom_output_args=...)`` pins the structured output without a network call.
+    """
+
+    def build(version) -> Agent:
+        return Agent(
+            TestModel(custom_output_args={"verdict": verdict}),
+            output_type=build_output_model(version),
+        )
 
     return build
 
@@ -342,7 +360,9 @@ def test_import_succeeds_without_gateway_key(runner, store, db_path, tmp_path, m
 
 
 def test_experiment_happy_path_writes_results(runner, store, db_path, monkeypatch):
-    monkeypatch.setattr("valcore.experiment.build_agent", _constant_agent_builder("pass"))
+    monkeypatch.setattr(
+        "valcore.experiment.build_agent", _constant_test_model_agent_builder("pass")
+    )
     result = _invoke(runner, db_path, "experiment", "judge", "cases")
     assert result.exit_code == 0
     runs = store.list_runs()
@@ -351,7 +371,9 @@ def test_experiment_happy_path_writes_results(runner, store, db_path, monkeypatc
 
 
 def test_experiment_json_stdout_is_pure_json(runner, store, db_path, monkeypatch):
-    monkeypatch.setattr("valcore.experiment.build_agent", _constant_agent_builder("pass"))
+    monkeypatch.setattr(
+        "valcore.experiment.build_agent", _constant_test_model_agent_builder("pass")
+    )
     result = _invoke(runner, db_path, "experiment", "judge", "cases", "--json")
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
@@ -360,7 +382,9 @@ def test_experiment_json_stdout_is_pure_json(runner, store, db_path, monkeypatch
 
 
 def test_experiment_concurrency_option_sets_run_concurrency(runner, store, db_path, monkeypatch):
-    monkeypatch.setattr("valcore.experiment.build_agent", _constant_agent_builder("pass"))
+    monkeypatch.setattr(
+        "valcore.experiment.build_agent", _constant_test_model_agent_builder("pass")
+    )
     result = _invoke(runner, db_path, "experiment", "judge", "cases", "--concurrency", "7")
     assert result.exit_code == 0
     assert store.list_runs()[0].concurrency == 7
@@ -374,15 +398,19 @@ def test_experiment_unresolvable_evaluator_exits_1(runner, store, db_path):
 
 def test_experiment_has_no_watch_option(runner, store, db_path, monkeypatch):
     """``Dataset.evaluate`` cannot be cancelled, so ``experiment`` must not gain ``--watch``."""
-    monkeypatch.setattr("valcore.experiment.build_agent", _constant_agent_builder("pass"))
+    monkeypatch.setattr(
+        "valcore.experiment.build_agent", _constant_test_model_agent_builder("pass")
+    )
     result = _invoke(runner, db_path, "experiment", "judge", "cases", "--watch")
     assert result.exit_code != 0
 
 
 def test_experiment_and_run_agree(runner, store, db_path, monkeypatch):
     """The CLI-level version of the two-engines-agree guarantee: identical metrics."""
-    monkeypatch.setattr("valcore.runner.build_agent", _constant_agent_builder("pass"))
-    monkeypatch.setattr("valcore.experiment.build_agent", _constant_agent_builder("pass"))
+    monkeypatch.setattr("valcore.runner.build_agent", _constant_test_model_agent_builder("pass"))
+    monkeypatch.setattr(
+        "valcore.experiment.build_agent", _constant_test_model_agent_builder("pass")
+    )
 
     run_result = _invoke(runner, db_path, "run", "judge", "cases", "--json")
     assert run_result.exit_code == 0
@@ -397,8 +425,10 @@ def test_experiment_and_run_agree(runner, store, db_path, monkeypatch):
 
 
 def test_experiment_json_payload_shape_matches_run(runner, store, db_path, monkeypatch):
-    monkeypatch.setattr("valcore.runner.build_agent", _constant_agent_builder("pass"))
-    monkeypatch.setattr("valcore.experiment.build_agent", _constant_agent_builder("pass"))
+    monkeypatch.setattr("valcore.runner.build_agent", _constant_test_model_agent_builder("pass"))
+    monkeypatch.setattr(
+        "valcore.experiment.build_agent", _constant_test_model_agent_builder("pass")
+    )
 
     run_payload = json.loads(_invoke(runner, db_path, "run", "judge", "cases", "--json").stdout)
     experiment_payload = json.loads(
@@ -717,6 +747,29 @@ def test_config_get_logfire_presence_changes_when_set_and_never_leaks_values(run
     assert after["logfire_api_key"] != "lf-secret-apikey"
     assert "lf-secret-token" not in after_result.output
     assert "lf-secret-apikey" not in after_result.output
+
+
+def test_config_get_reports_effective_presence_from_env_only(runner, db_path, monkeypatch):
+    """An env-only key or token, never written to the config file, must report as present.
+
+    ``gateway_key_present``/``logfire_token_present`` treat an exported env var as
+    effectively set, matching ``apply_gateway_key``'s env-wins precedence -- ``config get``
+    must agree rather than fall back to the raw (``None``) file value and report a false
+    absence.
+    """
+    monkeypatch.setenv("PYDANTIC_AI_GATEWAY_API_KEY", "sk-env-only-1234")
+    monkeypatch.setenv("LOGFIRE_TOKEN", "lf-env-only-token")
+
+    result = _invoke(runner, db_path, "config", "get", "--json")
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+
+    assert payload["gateway_api_key"] not in (None, False)
+    assert payload["logfire_token"] is True
+    assert load_config().gateway_api_key is None
+    assert load_config().logfire_token is None
+    assert "sk-env-only-1234" not in result.output
+    assert "lf-env-only-token" not in result.output
 
 
 def test_config_get_show_key_does_not_reveal_logfire_secrets(runner, db_path):

@@ -546,10 +546,10 @@ def config_get(show_key: bool, as_json: bool) -> None:
     """
     cfg = load_config()
     data = cfg.model_dump(mode="json")
-    if cfg.gateway_api_key and not show_key:
-        data["gateway_api_key"] = f"sk-…{cfg.gateway_api_key[-4:]}"
-    data["logfire_token"] = cfg.logfire_token is not None
-    data["logfire_api_key"] = cfg.logfire_api_key is not None
+    if config_module.gateway_key_present(cfg) and not show_key:
+        data["gateway_api_key"] = f"sk-…{cfg.gateway_api_key[-4:]}" if cfg.gateway_api_key else True
+    data["logfire_token"] = config_module.logfire_token_present(cfg)
+    data["logfire_api_key"] = config_module.logfire_api_key_present(cfg)
     emit(data, as_json, columns=list(data.keys()))
 
 
