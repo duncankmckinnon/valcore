@@ -106,6 +106,18 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _gateway_key_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Present a gateway key by default.
+
+    ``run`` and ``experiment`` now guard on ``config.require_gateway_key()`` before doing any
+    work. Without this, every pre-existing happy-path test below would fail on the guard before
+    its injected agent ever ran -- mirroring the identical fixture in ``test_api_runs.py`` for the
+    same guard on the API surface. Tests that target the guard itself clear the key explicitly.
+    """
+    monkeypatch.setenv("PYDANTIC_AI_GATEWAY_API_KEY", "sk-test-gateway-key")
+
+
 # -- version ------------------------------------------------------------------
 
 
