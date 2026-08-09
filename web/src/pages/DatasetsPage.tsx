@@ -176,7 +176,10 @@ function DatasetsList() {
         </>
       )}
 
-      <Modal open={creating} title="New dataset" onClose={() => setCreating(false)}>
+      {/* size="lg" because the Generate mode renders a `modal-two-pane` grid: at the default
+          `md` (560px) the 1.4fr form column is ~326px, which truncates the column-note inputs.
+          Matches the evaluator creation modal, which is lg for the same two-pane reason. */}
+      <Modal open={creating} title="New dataset" size="lg" onClose={() => setCreating(false)}>
         <div className="mode-tabs" role="tablist" aria-label="Creation mode">
           {MODES.map((entry) => (
             <button
