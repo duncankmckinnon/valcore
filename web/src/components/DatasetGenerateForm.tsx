@@ -8,6 +8,7 @@ import type { LabelSchema } from "../api/types";
 import { Button, ErrorBanner, Spinner } from "./ui";
 import { Tooltip } from "./Tooltip";
 import { FormFooter } from "./FormFooter";
+import { GATEWAY_BLOCKER, useSetup } from "./useSetup";
 import LabelSchemaEditor from "./LabelSchemaEditor";
 import ColumnNotesEditor from "./ColumnNotesEditor";
 import LabelMixEditor from "./LabelMixEditor";
@@ -44,6 +45,7 @@ const INSTRUCTIONS_HINT =
   "from the description alone.";
 
 export default function DatasetGenerateForm({ onCreated, initial }: DatasetGenerateFormProps) {
+  const { gatewayReady } = useSetup();
   const [name, setName] = useState(initial?.name ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [instructions, setInstructions] = useState(initial?.instructions ?? "");
@@ -72,6 +74,7 @@ export default function DatasetGenerateForm({ onCreated, initial }: DatasetGener
   // through FormFooter one instruction at a time. The gating is unchanged: the button stays
   // disabled while any blocker remains, i.e. exactly when the old `canSubmit` was false.
   const blockers: string[] = [];
+  if (!gatewayReady) blockers.push(GATEWAY_BLOCKER);
   if (name.trim() === "") blockers.push("Add a name");
   if (description.trim() === "") blockers.push("Add a description");
   if (columns.length === 0) blockers.push("Add at least one column");
@@ -259,7 +262,7 @@ export default function DatasetGenerateForm({ onCreated, initial }: DatasetGener
           </>
         }
       >
-        <Button onClick={submit} disabled={blockers.length > 0 || submitting}>
+        <Button onClick={submit} disabled={blockers.length > 0 || submitting || !gatewayReady}>
           {submitting ? <Spinner /> : "Generate"}
         </Button>
       </FormFooter>
