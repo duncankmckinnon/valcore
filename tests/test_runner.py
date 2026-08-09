@@ -535,3 +535,50 @@ class TestRunnerSpanTree:
         assert len(run_spans) == 1
         assert len(row_spans) == 2
         assert {s["attributes"]["row_id"] for s in row_spans} == set(retry_ids)
+
+    @pytest.mark.anyio
+    async def test_row_span_closes_and_carries_idx_on_the_exception_path(
+        self, store: Store, traced
+    ) -> None:
+        """A row that raises must still close its span with the right ``idx`` --
+        the ``except Exception`` branch in ``_score_row`` runs inside the
+        ``with tracing.row_span(row):`` block, so an unclosed or attribute-less
+        span here would mean the span wraps only the try body, not the whole
+        function."""
+        version = make_version(store)
+        dataset = make_dataset(store, ["pass", "pass", "pass"])
+        run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=1)
+
+        def always_fail(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            raise RuntimeError("always fails")
+
+        agent = Agent(FunctionModel(always_fail), output_type=build_output_model(version))
+        await execute_run(store, run.id, agent=agent)
+
+        spans = traced.exporter.exported_spans_as_dict()
+        row_spans = [s for s in spans if s["name"] == "valcore.score_row"]
+        assert len(row_spans) == 3
+        for row_data in row_spans:
+            assert row_data["end_time"] is not None
+        assert {s["attributes"]["idx"] for s in row_spans} == {0, 1, 2}
+
+    @pytest.mark.anyio
+    async def test_eval_kind_run_span_closes_with_no_agreement_evaluator(
+        self, store: Store, traced
+    ) -> None:
+        """An EVAL-kind run has no labels to compare against, so no metrics are
+        computed -- the run span must still open, close, and report a clean
+        ``status`` attribute rather than skipping tracing for this run kind."""
+        version = make_version(store)
+        dataset = make_dataset(store, [None, None, None])
+        run = store.create_run(RunKind.EVAL, version.id, dataset.id, concurrency=2)
+        result = await execute_run(store, run.id, agent=constant_agent(version))
+
+        assert result.status is RunStatus.COMPLETED
+        assert result.metrics is None
+        spans = traced.exporter.exported_spans_as_dict()
+        run_spans = [s for s in spans if s["name"] == "valcore.run"]
+        assert len(run_spans) == 1
+        assert run_spans[0]["end_time"] is not None
+        assert run_spans[0]["attributes"]["kind"] == RunKind.EVAL.value
+        assert run_spans[0]["attributes"]["status"] == RunStatus.COMPLETED.value
