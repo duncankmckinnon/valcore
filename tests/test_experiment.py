@@ -1,9 +1,12 @@
 """Tests for the experiment engine: execution over ``pydantic_evals.Dataset.evaluate``.
 
-No network: agent behavior is driven by ``FunctionModel`` agents. ``execute_experiment``
-exposes no ``agent=`` override (unlike ``runner.execute_run``), so tests monkeypatch
-``valcore.experiment.build_agent`` to hand back a network-free test agent instead of one
-built from the version's live model string.
+No network: agent behavior is driven by ``TestModel`` agents throughout. A single
+``_FlakyTestModel`` subclass (still ``TestModel``-based -- it delegates to
+``TestModel.request`` for every call except the one under test) supplies the minimum
+custom behavior needed to make one specific call fail, for the tests that exercise a
+row/case failure. ``execute_experiment`` exposes no ``agent=`` override (unlike
+``runner.execute_run``), so tests monkeypatch ``valcore.experiment.build_agent`` to hand
+back a network-free test agent instead of one built from the version's live model string.
 
 The most important test here is ``test_experiment_and_run_agree``: both engines must
 report identical metrics and per-row agreement over the same version and dataset, since
@@ -12,8 +15,7 @@ that is the whole point of routing both through ``metrics.compute_metrics``.
 
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
-from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.test import TestModel
 
 from valcore.errors import ContractError
 from valcore.factory import build_output_model
@@ -102,24 +104,48 @@ def make_dataset(
     return dataset
 
 
+class _FlakyTestModel(TestModel):
+    """A ``TestModel`` that raises on one specific call, to exercise a case failure.
+
+    Every call except ``fail_on_call`` behaves exactly like plain ``TestModel`` (delegating
+    to ``custom_output_args``); this is the minimum custom behavior needed to inject a
+    single failing row without reaching for a fully custom model.
+    """
+
+    def __init__(self, *, fail_on_call: int, error_message: str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._fail_on_call = fail_on_call
+        self._error_message = error_message
+        self._calls = 0
+
+    async def request(self, messages, model_settings, model_request_parameters):
+        """Raise on the ``fail_on_call``-th invocation; otherwise defer to ``TestModel``."""
+        self._calls += 1
+        if self._calls == self._fail_on_call:
+            raise RuntimeError(self._error_message)
+        return await super().request(messages, model_settings, model_request_parameters)
+
+
 def constant_agent(version, verdict: str = "pass") -> Agent:
     """An agent whose model always emits the given categorical verdict."""
-
-    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        name = info.output_tools[0].name
-        return ModelResponse(parts=[ToolCallPart(tool_name=name, args={"verdict": verdict})])
-
-    return Agent(FunctionModel(respond), output_type=build_output_model(version))
+    model = TestModel(custom_output_args={"verdict": verdict})
+    return Agent(model, output_type=build_output_model(version))
 
 
 def constant_numeric_agent(version, score: float) -> Agent:
     """An agent whose model always emits the given numeric score."""
+    model = TestModel(custom_output_args={"score": score})
+    return Agent(model, output_type=build_output_model(version))
 
-    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        name = info.output_tools[0].name
-        return ModelResponse(parts=[ToolCallPart(tool_name=name, args={"score": score})])
 
-    return Agent(FunctionModel(respond), output_type=build_output_model(version))
+def flaky_agent(version, *, fail_on_call: int, verdict: str = "pass", error_message: str) -> Agent:
+    """An agent whose ``fail_on_call``-th row raises; every other row emits ``verdict``."""
+    model = _FlakyTestModel(
+        fail_on_call=fail_on_call,
+        error_message=error_message,
+        custom_output_args={"verdict": verdict},
+    )
+    return Agent(model, output_type=build_output_model(version))
 
 
 def patch_build_agent(monkeypatch: pytest.MonkeyPatch, agent: Agent) -> None:
@@ -130,6 +156,27 @@ def patch_build_agent(monkeypatch: pytest.MonkeyPatch, agent: Agent) -> None:
     it makes internally.
     """
     monkeypatch.setattr("valcore.experiment.build_agent", lambda version: agent)
+
+
+def capture_evaluators(monkeypatch: pytest.MonkeyPatch) -> list:
+    """Patch ``dataset_to_evals`` to record the evaluators list it is actually called with.
+
+    Agreement and metrics are recomputed independently from persisted ``RunResult`` rows,
+    so a test that only inspects the final results would still pass if the wrong evaluator
+    (or none at all) were attached to the constructed dataset. Capturing the real call is
+    the only way to verify the task/evaluator mapping itself.
+    """
+    import valcore.experiment as experiment_module
+
+    captured: list = []
+    original = experiment_module.dataset_to_evals
+
+    def spy(dataset, rows, evaluators):
+        captured.append(evaluators)
+        return original(dataset, rows, evaluators)
+
+    monkeypatch.setattr(experiment_module, "dataset_to_evals", spy)
+    return captured
 
 
 # -- Experiment and run agree ---------------------------------------------------
@@ -237,14 +284,24 @@ def test_numeric_delta_matches_agreement(predicted: float, label: float) -> None
 async def test_categorical_agreement_is_exact_match(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from pydantic_evals.evaluators.common import EqualsExpected
+
     from valcore.experiment import execute_experiment
 
     version = make_version(store)
     dataset = make_dataset(store, ["pass", "fail", "pass", "fail", "pass"])
     run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=2)
 
+    evaluator_calls = capture_evaluators(monkeypatch)
     patch_build_agent(monkeypatch, constant_agent(version, verdict="pass"))
     result = await execute_experiment(store, run.id)
+
+    # The construction itself carries EqualsExpected, not just the agreement values that
+    # get recomputed independently during persistence.
+    assert len(evaluator_calls) == 1
+    (evaluators,) = evaluator_calls
+    assert len(evaluators) == 1
+    assert isinstance(evaluators[0], EqualsExpected)
 
     assert result.status is RunStatus.COMPLETED
     rows = store.list_rows(dataset.id)
@@ -259,6 +316,31 @@ async def test_categorical_agreement_is_exact_match(
     assert result.metrics["accuracy"] == pytest.approx(3 / 5)
 
 
+@pytest.mark.anyio
+async def test_numeric_run_attaches_numeric_delta(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A numeric VALIDATION run's constructed dataset carries ``NumericDelta``, not ``EqualsExpected``.
+
+    The two evaluators produce identical agreement only by coincidence on exact matches,
+    so this must be checked at construction time, not inferred from persisted results.
+    """
+    from valcore.experiment import NumericDelta, execute_experiment
+
+    version = make_numeric_version(store)
+    dataset = make_dataset(store, [1.0, 2.0], columns=["input", "output"], schema=NUMERIC_SCHEMA)
+    run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=2)
+
+    evaluator_calls = capture_evaluators(monkeypatch)
+    patch_build_agent(monkeypatch, constant_numeric_agent(version, 1.0))
+    await execute_experiment(store, run.id)
+
+    assert len(evaluator_calls) == 1
+    (evaluators,) = evaluator_calls
+    assert len(evaluators) == 1
+    assert isinstance(evaluators[0], NumericDelta)
+
+
 # -- EVAL runs attach no agreement evaluator -------------------------------------
 
 
@@ -271,8 +353,12 @@ async def test_eval_run_has_no_agreement(store: Store, monkeypatch: pytest.Monke
     dataset = make_dataset(store, ["pass", "fail", "pass"])
     run = store.create_run(RunKind.EVAL, version.id, dataset.id, concurrency=2)
 
+    evaluator_calls = capture_evaluators(monkeypatch)
     patch_build_agent(monkeypatch, constant_agent(version))
     result = await execute_experiment(store, run.id)
+
+    # No agreement evaluator is attached at all -- not just "attached but ignored".
+    assert evaluator_calls == [[]]
 
     assert result.status is RunStatus.COMPLETED
     assert result.metrics is None
@@ -321,16 +407,7 @@ async def test_case_failure_is_recorded_not_raised(
     dataset = make_dataset(store, ["pass", "pass", "pass", "pass", "pass"])
     run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=1)
 
-    calls = [0]
-
-    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        calls[0] += 1
-        if calls[0] == 3:
-            raise RuntimeError("boom on third row")
-        name = info.output_tools[0].name
-        return ModelResponse(parts=[ToolCallPart(tool_name=name, args={"verdict": "pass"})])
-
-    agent = Agent(FunctionModel(respond), output_type=build_output_model(version))
+    agent = flaky_agent(version, fail_on_call=3, error_message="boom on third row")
 
     events: list[RunEvent] = []
 
@@ -437,16 +514,7 @@ async def test_experiment_run_case_count_excludes_failed_cases(
     dataset = make_dataset(store, ["pass", "pass", "pass", "pass", "pass"])
     run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=1)
 
-    calls = [0]
-
-    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        calls[0] += 1
-        if calls[0] == 2:
-            raise RuntimeError("boom")
-        name = info.output_tools[0].name
-        return ModelResponse(parts=[ToolCallPart(tool_name=name, args={"verdict": "pass"})])
-
-    agent = Agent(FunctionModel(respond), output_type=build_output_model(version))
+    agent = flaky_agent(version, fail_on_call=2, error_message="boom")
 
     patch_build_agent(monkeypatch, agent)
     result = await execute_experiment(store, run.id)
@@ -477,3 +545,131 @@ async def test_incompatible_dataset_fails(store: Store, monkeypatch: pytest.Monk
     assert "output" in result.error
     assert store.list_results(run.id) == []
     assert store.get_experiment(run.id) is None
+
+
+# -- Missing labels -----------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_partially_unlabeled_validation_dataset_raises(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A VALIDATION run must reject a dataset with even one unlabeled row.
+
+    ``runner.execute_run`` raises ``ContractError`` before entering ``RUNNING`` for this
+    exact case; without the matching check here, this engine would silently evaluate the
+    unlabeled row, persist ``agreement=None`` for it, and quietly compute metrics over
+    only the labeled subset instead of refusing to run at all.
+    """
+    from valcore.experiment import execute_experiment
+
+    version = make_version(store)
+    dataset = make_dataset(store, ["pass", None, "fail"])
+    run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=2)
+
+    patch_build_agent(monkeypatch, constant_agent(version))
+    with pytest.raises(ContractError):
+        await execute_experiment(store, run.id)
+
+    assert store.list_results(run.id) == []
+    assert store.get_run(run.id).status is RunStatus.PENDING
+    assert store.get_experiment(run.id) is None
+
+
+@pytest.mark.anyio
+async def test_wholly_unlabeled_validation_dataset_raises(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same rejection holds when no row at all carries a label."""
+    from valcore.experiment import execute_experiment
+
+    version = make_version(store)
+    dataset = make_dataset(store, [None, None, None])
+    run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=2)
+
+    patch_build_agent(monkeypatch, constant_agent(version))
+    with pytest.raises(ContractError):
+        await execute_experiment(store, run.id)
+
+    assert store.list_results(run.id) == []
+    assert store.get_run(run.id).status is RunStatus.PENDING
+
+
+@pytest.mark.anyio
+async def test_eval_run_tolerates_unlabeled_rows(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The missing-label check is VALIDATION-only -- an EVAL run has no labels by design."""
+    from valcore.experiment import execute_experiment
+
+    version = make_version(store)
+    dataset = make_dataset(store, [None, None, None])
+    run = store.create_run(RunKind.EVAL, version.id, dataset.id, concurrency=2)
+
+    patch_build_agent(monkeypatch, constant_agent(version))
+    result = await execute_experiment(store, run.id)
+
+    assert result.status is RunStatus.COMPLETED
+
+
+# -- Unexpected lifecycle failures leave the run FAILED, not stuck RUNNING ---------
+
+
+@pytest.mark.anyio
+async def test_malformed_numeric_label_fails_run_not_stuck_running(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A label that can't be coerced to a float breaks ``_agreement`` inside ``teardown``.
+
+    ``pydantic_evals`` explicitly propagates a lifecycle's exceptions to ``evaluate()``'s
+    caller, so this must resolve to a terminal ``FAILED`` status with ``finished_at`` set
+    and an ``error`` event -- not leave the run permanently ``RUNNING``.
+    """
+    from valcore.experiment import execute_experiment
+
+    version = make_numeric_version(store)
+    dataset = store.create_dataset("ds", "", ["input", "output"], NUMERIC_SCHEMA)
+    rows = store.add_rows(dataset.id, [{"input": "in0", "output": "out0"}])
+    store.set_label(rows[0].id, {"value": "not-a-number"}, LabelSource.MANUAL)
+    run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=1)
+
+    events: list[RunEvent] = []
+
+    async def on_event(event: RunEvent) -> None:
+        events.append(event)
+
+    patch_build_agent(monkeypatch, constant_numeric_agent(version, 1.0))
+    result = await execute_experiment(store, run.id, on_event=on_event)
+
+    assert result.status is RunStatus.FAILED
+    assert result.finished_at is not None
+    assert result.error is not None
+    assert [e.type for e in events].count("error") == 1
+
+
+@pytest.mark.anyio
+async def test_event_callback_failure_fails_run_not_stuck_running(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ``on_event`` callback that raises during a ``row`` event must not hang the run.
+
+    ``teardown`` awaits the event callback directly, and the same "lifecycle exceptions
+    propagate" rule applies here -- the run must resolve to FAILED with ``finished_at``
+    set rather than being abandoned mid-``RUNNING``.
+    """
+    from valcore.experiment import execute_experiment
+
+    version = make_version(store)
+    dataset = make_dataset(store, ["pass", "fail"])
+    run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=1)
+
+    async def on_event(event: RunEvent) -> None:
+        if event.type == "row":
+            raise RuntimeError("callback exploded")
+
+    patch_build_agent(monkeypatch, constant_agent(version))
+    result = await execute_experiment(store, run.id, on_event=on_event)
+
+    assert result.status is RunStatus.FAILED
+    assert result.finished_at is not None
+    assert result.error is not None

@@ -25,6 +25,7 @@ from pydantic_evals.evaluators import Evaluator, EvaluatorContext
 from pydantic_evals.evaluators.common import EqualsExpected
 from pydantic_evals.reporting import ReportCase, ReportCaseFailure
 
+from valcore.errors import ContractError
 from valcore.factory import build_agent, extract_score, render_prompt
 from valcore.metrics import compute_metrics
 from valcore.models import (
@@ -211,6 +212,16 @@ async def execute_experiment(
         await emit("error", {"error": str(exc)})
         return failed
 
+    # The missing-label contract is a caller error, not a FAILED run: it must
+    # propagate rather than be recorded on the run, matching ``runner.execute_run``.
+    if run.kind is RunKind.VALIDATION:
+        unlabeled = sum(1 for row in rows if row.label is None)
+        if unlabeled:
+            raise ContractError(
+                f"Validation run requires every row to carry a label; "
+                f"{unlabeled} row(s) are unlabeled."
+            )
+
     await asyncio.to_thread(
         store.update_run_status, run_id, RunStatus.RUNNING, started_at=datetime.now(UTC)
     )
@@ -239,55 +250,72 @@ async def execute_experiment(
             emit_row=emit_row,
         )
 
-    with run_span(run, version, dataset, len(rows)) as span:
-        report = await evals_dataset.evaluate(
-            task,
-            name=version.version_name,
-            max_concurrency=run.concurrency,
-            progress=False,
-            lifecycle=lifecycle_factory,
-        )
+    try:
+        with run_span(run, version, dataset, len(rows)) as span:
+            report = await evals_dataset.evaluate(
+                task,
+                name=version.version_name,
+                max_concurrency=run.concurrency,
+                progress=False,
+                lifecycle=lifecycle_factory,
+            )
 
-        # Derived from every persisted result, exactly as ``runner.execute_run`` does, so
-        # the two engines can never disagree about the run's terminal status or metrics.
-        persisted = await asyncio.to_thread(store.list_results, run_id)
-        any_error = any(result.error is not None for result in persisted)
-        status = RunStatus.COMPLETED_WITH_ERRORS if any_error else RunStatus.COMPLETED
+            # Derived from every persisted result, exactly as ``runner.execute_run`` does,
+            # so the two engines can never disagree about the run's terminal status or
+            # metrics.
+            persisted = await asyncio.to_thread(store.list_results, run_id)
+            any_error = any(result.error is not None for result in persisted)
+            status = RunStatus.COMPLETED_WITH_ERRORS if any_error else RunStatus.COMPLETED
 
-        metrics: dict | None = None
-        if want_agreement:
-            label_by_row = {row.id: _label_value(row) for row in rows}
-            pairs = [
-                (result.score_value, label_by_row.get(result.row_id))
-                for result in persisted
-                if result.error is None and label_by_row.get(result.row_id) is not None
-            ]
-            if pairs:
-                labels = (
-                    version.score_labels if version.score_kind is ScoreKind.CATEGORICAL else None
-                )
-                metrics = compute_metrics(pairs, version.score_kind, labels)
+            metrics: dict | None = None
+            if want_agreement:
+                label_by_row = {row.id: _label_value(row) for row in rows}
+                pairs = [
+                    (result.score_value, label_by_row.get(result.row_id))
+                    for result in persisted
+                    if result.error is None and label_by_row.get(result.row_id) is not None
+                ]
+                if pairs:
+                    labels = (
+                        version.score_labels
+                        if version.score_kind is ScoreKind.CATEGORICAL
+                        else None
+                    )
+                    metrics = compute_metrics(pairs, version.score_kind, labels)
 
-        finished = await asyncio.to_thread(
+            finished = await asyncio.to_thread(
+                store.update_run_status,
+                run_id,
+                status,
+                finished_at=datetime.now(UTC),
+                metrics=metrics,
+            )
+            # Marks this run as experiment-produced, which is what makes ``request_cancel``
+            # fail honestly for it -- ``evaluate()`` has no cancellation hook to honor.
+            await asyncio.to_thread(
+                store.set_experiment,
+                run_id,
+                experiment_name=version.version_name,
+                case_count=len(report.cases),
+            )
+
+            span.set_attribute("status", status.value)
+            if metrics is not None:
+                for key, value in metrics.items():
+                    span.set_attribute(key, value)
+    except Exception as exc:  # noqa: BLE001 — an unexpected lifecycle/evaluate failure,
+        # as opposed to an ordinary per-case failure (which ``PersistResults.teardown``
+        # already records without raising), must still leave the run terminal rather
+        # than stuck ``RUNNING`` forever.
+        failed = await asyncio.to_thread(
             store.update_run_status,
             run_id,
-            status,
+            RunStatus.FAILED,
+            error=str(exc),
             finished_at=datetime.now(UTC),
-            metrics=metrics,
         )
-        # Marks this run as experiment-produced, which is what makes ``request_cancel``
-        # fail honestly for it -- ``evaluate()`` has no cancellation hook to honor.
-        await asyncio.to_thread(
-            store.set_experiment,
-            run_id,
-            experiment_name=version.version_name,
-            case_count=len(report.cases),
-        )
-
-        span.set_attribute("status", status.value)
-        if metrics is not None:
-            for key, value in metrics.items():
-                span.set_attribute(key, value)
+        await emit("error", {"error": str(exc)})
+        return failed
 
     await emit("finished", {"status": status.value, "metrics": metrics})
     return finished
