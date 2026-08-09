@@ -358,17 +358,38 @@ class TestSpanTreeShape:
             assert row_data["parent"] == run_data["context"]
 
 
-class TestNoLocalAgentInstrumentation:
-    """valcore must never instrument an agent locally -- the Gateway already reports."""
+class TestAgentInstrumentation:
+    """Pydantic AI is instrumented, and only ever after ``logfire.configure``.
 
-    def test_no_source_file_references_instrument_pydantic_ai_or_instrument_all(self) -> None:
-        src_root = Path(__file__).resolve().parent.parent / "src" / "valcore"
-        offenders = []
-        for path in src_root.rglob("*.py"):
-            text = path.read_text()
-            if "instrument_pydantic_ai" in text or "instrument_all" in text:
-                offenders.append(str(path))
-        assert offenders == [], f"Found forbidden client-side instrumentation in: {offenders}"
+    The Gateway reports the model request server-side, so this adds the parts it cannot see
+    -- the agent run, tool calls, and harness-capability activity, none of which leave the
+    process. The model request is consequently reported twice, which is the accepted trade.
+    """
+
+    def test_configure_tracing_instruments_pydantic_ai_after_configuring(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[str] = []
+        monkeypatch.setattr(
+            tracing.logfire, "configure", lambda **_kwargs: calls.append("configure")
+        )
+        monkeypatch.setattr(
+            tracing.logfire,
+            "instrument_pydantic_ai",
+            lambda *_args, **_kwargs: calls.append("instrument"),
+        )
+        tracing.configure_tracing(FileConfig())
+        # Order is the point: instrumenting an unconfigured instance makes logfire warn.
+        assert calls == ["configure", "instrument"]
+
+    def test_instrumentation_needs_no_logfire_extra(self) -> None:
+        """Unlike ``instrument_fastapi``, this integration imports only ``pydantic_ai``.
+
+        ``instrument_fastapi`` raises when ``opentelemetry-instrumentation-fastapi`` is
+        absent, which crashed ``valcore serve``. This asserts the same class of failure is
+        impossible here, so the call needs no guard.
+        """
+        importlib.import_module("logfire._internal.integrations.pydantic_ai")
 
 
 class TestNoTokenStaysSilentRegardlessOfLogfirePresence:

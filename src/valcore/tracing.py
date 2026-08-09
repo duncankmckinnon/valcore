@@ -2,10 +2,13 @@
 
 The Pydantic AI Gateway already reports every LLM call server-side and injects a
 W3C ``traceparent`` header into each request, so its spans nest under whatever
-local span is active. valcore's job is not to re-report LLM calls -- it is to
-supply the parent context (``valcore.run`` / ``valcore.score_row``) that gives the
-Gateway's spans structure. See ``docs/superpowers/specs/2026-08-08-logfire-
-integration-design.md`` for the full design.
+local span is active. valcore supplies the parent context (``valcore.run`` /
+``valcore.score_row``) that gives the Gateway's spans structure, and additionally
+instruments Pydantic AI so the agent run, its tool calls, and harness-capability
+activity appear too -- none of which the Gateway can see, since they never leave
+the process. The trade is that the model request itself is reported twice, once by
+each side; if that duplication is unwanted, drop the ``instrument_pydantic_ai``
+call in :func:`configure_tracing` and only the local detail is lost.
 
 ``logfire_api`` is a hard dependency via ``pydantic-evals``/``pydantic-graph``
 (reached through ``pydantic-ai``), and it forwards to real ``logfire`` when the
@@ -78,6 +81,14 @@ def configure_tracing(cfg: FileConfig) -> None:
         service_name="valcore",
         console=False,
     )
+
+    # After configure, never before: instrumenting an uninitialized instance emits
+    # logfire's own "not initialized for instrumentation" warning. No argument means
+    # every agent -- the evaluator, the generator, the refiner, and datagen -- rather
+    # than only the ones a call site remembers to pass. Needs no logfire extra: the
+    # integration imports from ``pydantic_ai``, already a hard dependency, so unlike
+    # ``instrument_fastapi`` this cannot fail on a missing package.
+    logfire.instrument_pydantic_ai()
 
     _configured = True
 

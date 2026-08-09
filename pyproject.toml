@@ -33,7 +33,7 @@ dependencies = [
     # opentelemetry-instrumentation-asgi, and -fastapi -- and in exchange
     # `logfire.instrument_fastapi` in create_app cannot fail at startup. Behaves as a
     # no-op with no token configured, so this costs nothing for users who never opt in.
-    "logfire[fastapi]>=4.39,<5",
+    "logfire[fastapi,system-metrics]>=4.39,<5",
 ]
 
 [project.scripts]

@@ -18,6 +18,7 @@ import type {
   ExportResponse,
   GeneratedConfig,
   LabelMix,
+  LogfirePushResult,
   LabelSchema,
   Overview,
   RefinedConfig,
@@ -204,6 +205,11 @@ export const datasets = {
     const response = await api<ExportFilesResponse>(path);
     return response.files;
   },
+  logfirePush: (id: string, body: { name?: string; description?: string } = {}) =>
+    api<LogfirePushResult>(`/api/datasets/${id}/logfire/push`, {
+      method: "POST",
+      ...jsonBody(body),
+    }),
 };
 
 export const overview = {

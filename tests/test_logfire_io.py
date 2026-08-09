@@ -166,10 +166,16 @@ async def test_api_key_falls_back_to_config_when_argument_is_none(recorder: _Rec
 
 
 @pytest.mark.anyio
-async def test_pushed_dataset_output_schema_is_the_label_enum_not_empty(
+async def test_pushed_dataset_output_schema_is_an_object_carrying_the_label_enum(
     recorder: _Recorder,
 ) -> None:
-    """Pins the point of the spec-generics fix: a bare ``object`` OutputT infers to ``{}``."""
+    """Pins two things at once about the hosted expected-output schema.
+
+    A bare ``object`` OutputT would infer to ``{}`` -- the point of the generics fix -- and the
+    hosted API additionally requires an *object*, rejecting a scalar with
+    ``dict_type: Input should be a valid dictionary``. So the schema must be an object whose
+    ``value`` property carries the label enum, not the bare enum.
+    """
     from valcore.logfire_io import push_dataset
 
     save_config(FileConfig(logfire_api_key="lf-key"))
@@ -178,9 +184,26 @@ async def test_pushed_dataset_output_schema_is_the_label_enum_not_empty(
     pushed = recorder.calls[0]["dataset"]
     output_type = pushed.__class__.__pydantic_generic_metadata__["args"][1]
     schema = TypeAdapter(output_type).json_schema()
-    assert schema == {"enum": ["a", "b"], "type": "string"}
     assert schema != {}
+    assert schema["type"] == "object"
+    # pydantic adds a derived ``title``; assert on the parts that carry meaning.
+    value_schema = schema["properties"]["value"]
+    assert value_schema["type"] == "string"
+    assert value_schema["enum"] == ["a", "b"]
     assert pushed.evaluators == []
+
+
+@pytest.mark.anyio
+async def test_pushed_cases_wrap_expected_output_in_a_dict(recorder: _Recorder) -> None:
+    """The hosted API types ``expected_output`` as a dictionary; a scalar is a 422."""
+    from valcore.logfire_io import push_dataset
+
+    save_config(FileConfig(logfire_api_key="lf-key"))
+    await push_dataset(make_dataset(), make_rows())
+
+    for case in recorder.calls[0]["dataset"].cases:
+        assert isinstance(case.expected_output, dict), case.expected_output
+        assert set(case.expected_output) == {"value"}
 
 
 # --- on_conflict -> on_case_conflict rename ------------------------------------

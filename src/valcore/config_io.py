@@ -18,6 +18,7 @@ import json
 from dataclasses import dataclass
 from typing import Literal
 
+from pydantic import ValidationError
 from pydantic_ai.agent.spec import AgentSpec
 from pydantic_evals import Dataset as EvalsDataset
 
@@ -131,19 +132,34 @@ class EvalPackage:
     def from_text(cls, text: str) -> EvalPackage:
         """Parse an eval-package document, resolving its format from its shape.
 
-        Resolution order: a ``valcore/eval-package`` envelope wins first, then a top-level
-        ``cases`` marks a bare pydantic-evals dataset, then a top-level ``model``/``instructions``
-        marks a bare ``AgentSpec`` (optionally beside a ``valcore`` block). Anything else, an
-        unknown ``kind``, an unsupported ``version``, a non-object root, or unparseable text is a
-        ``ContractError`` naming what was expected.
+        Resolution order: a JSON *array* root is a bare list of cases, then a
+        ``valcore/eval-package`` envelope, then a top-level ``cases`` marks a bare pydantic-evals
+        dataset, then a top-level ``model``/``instructions`` marks a bare ``AgentSpec``
+        (optionally beside a ``valcore`` block). Anything else, an unknown ``kind``, an
+        unsupported ``version``, a root that is neither array nor object, or unparseable text is
+        a ``ContractError`` naming what was expected.
+
+        The array form is what Logfire's hosted store exports: a case list with no enclosing
+        document, which neither valcore nor ``pydantic_evals.Dataset`` accepts as-is. Reading it
+        keeps a dataset pushed to Logfire importable again. It carries no dataset name, so the
+        result is named ``""`` and the caller supplies one -- ``--name`` for the CLI, the ``name``
+        form field for an upload.
         """
         try:
             data = json.loads(text)
         except ValueError as exc:  # JSONDecodeError is a ValueError subclass
             raise ContractError(f"Package text is not valid JSON: {exc}") from exc
 
+        if isinstance(data, list):
+            return cls(
+                spec=None, dataset=cls._load_dataset({"name": "", "cases": data}), valcore=None
+            )
+
         if not isinstance(data, dict):
-            raise ContractError(f"Package root must be a JSON object, got {type(data).__name__}.")
+            raise ContractError(
+                "Package root must be a JSON object or an array of cases, got "
+                f"{type(data).__name__}."
+            )
 
         kind = data.get("kind")
         if kind is not None:
@@ -210,6 +226,11 @@ class EvalPackage:
         except BaseExceptionGroup as group:
             messages = "; ".join(str(sub) for sub in group.exceptions)
             raise ContractError(f"Failed to load dataset section: {messages}") from group
+        except ValidationError as exc:
+            # A malformed case list — the likeliest bad input now that a bare array is accepted —
+            # otherwise escapes as a raw pydantic error, which the API maps to a 500 rather than
+            # the client error a bad upload deserves.
+            raise ContractError(f"Failed to load dataset section: {exc}") from exc
 
     # --- combination ----------------------------------------------------------
 
