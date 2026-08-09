@@ -12,6 +12,7 @@ import { TOTAL_PERCENT, fromProportions, toProportions, totalPercent } from "./l
 import type { LabelMixPercents } from "./labelMix";
 import { Button, ErrorBanner, Modal, Spinner } from "./ui";
 import { FormFooter } from "./FormFooter";
+import { GATEWAY_BLOCKER, useSetup } from "./useSetup";
 
 type GenerateMoreRowsProps = {
   open: boolean;
@@ -32,6 +33,7 @@ export default function GenerateMoreRows({
   onGenerated,
   onClose,
 }: GenerateMoreRowsProps) {
+  const { gatewayReady } = useSetup();
   const [count, setCount] = useState(DEFAULT_COUNT);
   const [instructions, setInstructions] = useState("");
   const [notes, setNotes] = useState<Record<string, string>>({});
@@ -67,6 +69,7 @@ export default function GenerateMoreRows({
   // One reason at a time, so a blocked Generate says why instead of sitting silently
   // disabled. Order mirrors the fields top to bottom.
   const blockers: string[] = [];
+  if (!gatewayReady) blockers.push(GATEWAY_BLOCKER);
   if (count < 1) blockers.push("Add at least one row.");
   if (countExceeds) blockers.push(`Rows to add must be ${maxCount} or fewer.`);
   if (mixIncomplete) blockers.push("The label mix must total 100%.");
@@ -109,7 +112,7 @@ export default function GenerateMoreRows({
           <Button variant="secondary" onClick={onClose} disabled={submitting}>
             Cancel
           </Button>
-          <Button onClick={submit} disabled={submitting || !canSubmit}>
+          <Button onClick={submit} disabled={submitting || !canSubmit || !gatewayReady}>
             {submitting ? <Spinner /> : "Generate"}
           </Button>
         </FormFooter>
