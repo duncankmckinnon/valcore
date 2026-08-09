@@ -218,7 +218,6 @@ def test_numeric_delta_matches_agreement(predicted: float, label: float) -> None
     from types import SimpleNamespace
 
     from valcore.experiment import NumericDelta
-
     from valcore.runner import _agreement
 
     ctx = SimpleNamespace(output=predicted, expected_output=label)
@@ -352,6 +351,51 @@ async def test_case_failure_is_recorded_not_raised(
     # Metrics computed over the 4 successes only, matching the runner.
     assert result.metrics is not None
     assert result.metrics["n"] == 4
+
+
+@pytest.mark.anyio
+async def test_teardown_none_records_error(store: Store) -> None:
+    """``teardown(None)`` -- the interrupted-case path -- records an error, not a raise.
+
+    ``Dataset.evaluate`` calls ``teardown(None)`` only when the run is interrupted before a
+    report object exists for the case; there is no public way to trigger that through
+    ``execute_experiment`` (this engine has no cancellation), so ``PersistResults`` is driven
+    directly to exercise the branch the task/test plan calls out explicitly.
+    """
+    from pydantic_evals import Case
+
+    from valcore.experiment import PersistResults
+
+    version = make_version(store)
+    dataset = make_dataset(store, ["pass"])
+    run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=1)
+    row = store.list_rows(dataset.id)[0]
+
+    events: list[tuple[str, bool, str | float | None]] = []
+
+    async def emit_row(row_id: str, success: bool, score_value: str | float | None) -> None:
+        events.append((row_id, success, score_value))
+
+    case = Case(name=row.id, inputs=row.data, expected_output="pass")
+    lifecycle = PersistResults(
+        case,
+        store=store,
+        run_id=run.id,
+        version=version,
+        want_agreement=True,
+        rows_by_id={row.id: row},
+        emit_row=emit_row,
+    )
+
+    await lifecycle.setup()
+    await lifecycle.teardown(None)
+
+    results = store.list_results(run.id)
+    assert len(results) == 1
+    assert results[0].error is not None
+    assert results[0].output is None
+    assert results[0].score_value is None
+    assert events == [(row.id, False, None)]
 
 
 # -- ExperimentRun marker and cancellation ---------------------------------------
