@@ -32,6 +32,11 @@ dependencies = [
 [project.scripts]
 valcore = "valcore.cli:main"
 
+[project.optional-dependencies]
+# The `fastapi` sub-extra brings in opentelemetry-instrumentation-fastapi, required by
+# `logfire.instrument_fastapi` in valcore.api.main.create_app.
+logfire = ["logfire[fastapi]>=4.39,<5"]
+
 [dependency-groups]
 dev = [
     "pytest",
@@ -43,6 +48,10 @@ dev = [
     # unpinned bump would change lint results in CI and locally at once.
     "ruff>=0.16,<0.17",
     "pre-commit>=4,<5",
+    # Not a runtime dependency — the `logfire` extra. Declared here so the span tests in
+    # tests/test_tracing.py and tests/test_runner.py run rather than skipping themselves, and
+    # so create_app's logfire.instrument_fastapi call has opentelemetry-instrumentation-fastapi.
+    "logfire[fastapi]>=4.39,<5",
 ]
 
 [build-system]

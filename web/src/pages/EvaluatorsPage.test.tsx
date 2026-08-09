@@ -1,9 +1,11 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import EvaluatorsPage from "./EvaluatorsPage";
 import { api, evaluators } from "../api/client";
+import { GATEWAY_BLOCKER, useSetup } from "../components/useSetup";
+import type { UseSetupResult } from "../components/useSetup";
 import type { Evaluator, GeneratedConfig } from "../api/types";
 
 const navigate = vi.fn();
@@ -26,6 +28,27 @@ vi.mock("../api/client", async () => {
     },
   };
 });
+
+// Only Generate (criteria mode) calls the model through the gateway; scratch-mode
+// Create must stay usable regardless. The hook is mocked directly so each test can set
+// gatewayReady without re-exercising useSetup's own fetch machinery.
+vi.mock("../components/useSetup", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../components/useSetup")>();
+  return { ...actual, useSetup: vi.fn() };
+});
+
+const useSetupMock = vi.mocked(useSetup);
+
+function makeSetupResult(overrides: Partial<UseSetupResult> = {}): UseSetupResult {
+  return {
+    status: null,
+    gatewayReady: true,
+    loading: false,
+    error: null,
+    refetch: vi.fn(),
+    ...overrides,
+  };
+}
 
 const config = { models: ["model-a", "model-b"], tools: [], capabilities: [] };
 
@@ -70,6 +93,10 @@ function renderPage() {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+});
+
+beforeEach(() => {
+  useSetupMock.mockReturnValue(makeSetupResult());
 });
 
 describe("EvaluatorsPage: new-evaluator modal", () => {
@@ -283,5 +310,97 @@ describe("EvaluatorsPage: create modal guidance", () => {
 
     expect(screen.getByRole("button", { name: "Generate" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Create" })).toBeNull();
+  });
+});
+
+// -- Gateway gating -----------------------------------------------------------
+// Only the criteria-mode Generate action calls a model through the gateway; scratch-mode
+// authoring (Create) must stay fully usable even when the gateway key is unset.
+
+describe("EvaluatorsPage: gateway gating", () => {
+  async function openModal() {
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "New evaluator" }));
+    return user;
+  }
+
+  it("still allows creating an evaluator in scratch mode when the gateway is not ready", async () => {
+    useSetupMock.mockReturnValue(makeSetupResult({ gatewayReady: false }));
+    vi.mocked(evaluators.list).mockResolvedValue([]);
+    vi.mocked(api).mockResolvedValue(config);
+    vi.mocked(evaluators.create).mockResolvedValue(makeEvaluator({ id: "e-scratch" }));
+    const user = await openModal();
+
+    // Scratch mode (the default) is untouched by the gateway gate.
+    expect(screen.queryByText(GATEWAY_BLOCKER)).toBeNull();
+
+    await user.type(screen.getByLabelText("Evaluator name"), "My evaluator");
+    const create = screen.getByRole("button", { name: "Create" });
+    expect(create).not.toBeDisabled();
+
+    await user.click(create);
+
+    await waitFor(() =>
+      expect(evaluators.create).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "My evaluator" }),
+      ),
+    );
+    expect(navigate).toHaveBeenCalledWith("/evaluators/e-scratch");
+  });
+
+  it("disables Generate and shows the shared gateway blocker in criteria mode when not ready", async () => {
+    useSetupMock.mockReturnValue(makeSetupResult({ gatewayReady: false }));
+    vi.mocked(evaluators.list).mockResolvedValue([]);
+    vi.mocked(api).mockResolvedValue(config);
+    const user = await openModal();
+
+    await user.click(screen.getByRole("tab", { name: "From criteria" }));
+    await user.type(screen.getByLabelText("Evaluator name"), "Criteria eval");
+    await user.type(screen.getByLabelText("Criteria"), "A good answer is concise.");
+
+    expect(screen.getByText(GATEWAY_BLOCKER)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
+    expect(evaluators.generate).not.toHaveBeenCalled();
+  });
+
+  it("shows no gateway blocker in scratch mode even when the gateway is not ready", async () => {
+    useSetupMock.mockReturnValue(makeSetupResult({ gatewayReady: false }));
+    vi.mocked(evaluators.list).mockResolvedValue([]);
+    vi.mocked(api).mockResolvedValue(config);
+    await openModal();
+
+    // Scratch mode is the default tab; no gateway blocker should leak in from criteria mode.
+    expect(screen.queryByText(GATEWAY_BLOCKER)).toBeNull();
+  });
+
+  it("switching from a blocked criteria mode back to scratch clears the gateway blocker", async () => {
+    useSetupMock.mockReturnValue(makeSetupResult({ gatewayReady: false }));
+    vi.mocked(evaluators.list).mockResolvedValue([]);
+    vi.mocked(api).mockResolvedValue(config);
+    const user = await openModal();
+
+    await user.click(screen.getByRole("tab", { name: "From criteria" }));
+    expect(screen.getByText(GATEWAY_BLOCKER)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "From scratch" }));
+    expect(screen.queryByText(GATEWAY_BLOCKER)).toBeNull();
+  });
+
+  it("governs Generate only by its own validity (name + criteria) once the gateway is ready", async () => {
+    useSetupMock.mockReturnValue(makeSetupResult({ gatewayReady: true }));
+    vi.mocked(evaluators.list).mockResolvedValue([]);
+    vi.mocked(api).mockResolvedValue(config);
+    const user = await openModal();
+
+    await user.click(screen.getByRole("tab", { name: "From criteria" }));
+
+    expect(screen.queryByText(GATEWAY_BLOCKER)).toBeNull();
+    expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
+
+    await user.type(screen.getByLabelText("Evaluator name"), "Criteria eval");
+    await user.type(screen.getByLabelText("Criteria"), "A good answer is concise.");
+
+    expect(screen.getByRole("button", { name: "Generate" })).not.toBeDisabled();
   });
 });

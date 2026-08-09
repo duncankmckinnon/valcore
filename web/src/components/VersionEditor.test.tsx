@@ -13,6 +13,11 @@ vi.mock("../api/client", () => ({
     copyVersion: vi.fn(),
     refine: vi.fn(),
   },
+  // RefinePanel (rendered in the rail) reads useSetup, which calls this; a ready
+  // gateway keeps this suite's existing behavior unchanged.
+  setup: {
+    get: vi.fn().mockResolvedValue({ keys: [] }),
+  },
 }));
 
 const config: AppConfig = {

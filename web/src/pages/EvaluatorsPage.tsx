@@ -16,6 +16,7 @@ import { EmptyState } from "../components/EmptyState";
 import { FormFooter } from "../components/FormFooter";
 import { Tooltip } from "../components/Tooltip";
 import { EvaluatorIcon } from "../components/icons";
+import { GATEWAY_BLOCKER, useSetup } from "../components/useSetup";
 
 type EvaluatorRow = Evaluator & {
   active_version: { version_name: string } | null;
@@ -57,6 +58,7 @@ function EvaluatorsList() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [criteria, setCriteria] = useState("");
+  const { gatewayReady } = useSetup();
 
   useEffect(() => {
     evaluators
@@ -68,8 +70,15 @@ function EvaluatorsList() {
   }, []);
 
   // One reason at a time, so a blocked primary action says why instead of sitting
-  // silently disabled. Order mirrors the fields top to bottom.
+  // silently disabled. Order mirrors the fields top to bottom, except the gateway
+  // blocker: it always leads when it applies, since no amount of filling in the form
+  // resolves it.
   const blockers: string[] = [];
+  // Only the criteria mode calls a model through the gateway; scratch-mode authoring
+  // stays fully usable regardless of gateway key presence.
+  if (mode === "criteria" && !gatewayReady) {
+    blockers.push(GATEWAY_BLOCKER);
+  }
   if (name.trim() === "") {
     blockers.push("Add a name");
   }

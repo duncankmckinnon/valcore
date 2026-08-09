@@ -5,17 +5,21 @@ injected via ``agent=``, with a real ``Store`` on a ``tmp_path`` SQLite DB.
 """
 
 import asyncio
+import importlib.util
 
 import pytest
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
+from valcore import tracing
 from valcore.errors import ContractError
 from valcore.factory import build_output_model
 from valcore.models import LabelSource, RunKind, RunStatus, ScoreKind
 from valcore.runner import RunEvent, execute_run
 from valcore.store import Store, create_engine, init_db
+
+_LOGFIRE_PRESENT = importlib.util.find_spec("logfire") is not None
 
 CATEGORICAL_SCHEMA = {"kind": "categorical", "labels": ["pass", "fail"]}
 
@@ -354,3 +358,227 @@ async def test_events_emitted_once_each(store: Store) -> None:
     # started carries the total row count.
     started = next(e for e in events if e.type == "started")
     assert started.payload["total"] == 3
+
+
+# -- Tracing --------------------------------------------------------------------
+#
+# execute_run/_score_row wrap their bodies in valcore.tracing.run_span/row_span, which
+# are no-op context managers when tracing is unconfigured. These tests prove two
+# things: (1) an unconfigured process behaves identically to before this task, and
+# (2) with logfire.testing capturing, the span tree, its attributes, and the
+# no-behavior-change guarantees (cancellation, per-row errors, only_row_ids) all hold.
+
+
+@pytest.fixture(autouse=True)
+def _reset_tracing_configured_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reset tracing's module-global idempotency guard before every test in this file.
+
+    The guard is process-global, so a leftover True from another test module (or
+    from the `traced` fixture below) must never leak into a test that assumes
+    tracing is unconfigured.
+    """
+    monkeypatch.setattr(tracing, "_configured", False, raising=False)
+
+
+@pytest.fixture
+def traced(capfire, monkeypatch: pytest.MonkeyPatch):
+    """Mark tracing as configured against ``capfire``'s in-memory exporter.
+
+    ``capfire`` configures logfire's test exporter directly, bypassing
+    ``configure_tracing`` -- so ``tracing._configured`` must be forced to True or
+    ``run_span``/``row_span`` would (correctly) treat the process as unconfigured
+    and yield no-op spans instead of exercising the real span tree.
+    """
+    monkeypatch.setattr(tracing, "_configured", True)
+    return capfire
+
+
+def test_tracing_unconfigured_by_default() -> None:
+    assert tracing._configured is False
+
+
+@pytest.mark.anyio
+async def test_run_behavior_unchanged_with_tracing_unconfigured(store: Store) -> None:
+    """The happy-path scenario, run with tracing unconfigured, to prove identical
+    results and metrics -- i.e. wrapping the engine in spans changed no behavior."""
+    assert tracing._configured is False
+    version = make_version(store)
+    dataset = make_dataset(store, ["pass", "fail", "pass", "fail", "pass"])
+    run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=3)
+
+    result = await execute_run(store, run.id, agent=constant_agent(version))
+
+    assert result.status is RunStatus.COMPLETED
+    results = store.list_results(run.id)
+    assert len(results) == 5
+    by_row = {r.row_id: r for r in results}
+    rows = store.list_rows(dataset.id)
+    expected = [True, False, True, False, True]
+    for row, exp in zip(rows, expected, strict=True):
+        assert by_row[row.id].agreement is exp
+        assert by_row[row.id].score_value == "pass"
+        assert by_row[row.id].error is None
+    assert result.metrics is not None
+    assert result.metrics["n"] == 5
+    assert result.metrics["accuracy"] == pytest.approx(3 / 5)
+
+
+@pytest.mark.skipif(not _LOGFIRE_PRESENT, reason="logfire extra not installed")
+class TestRunnerSpanTree:
+    """With tracing configured, execute_run/_score_row must produce a real span tree."""
+
+    @pytest.mark.anyio
+    async def test_run_span_wraps_one_row_span_per_row(self, store: Store, traced) -> None:
+        version = make_version(store)
+        dataset = make_dataset(store, ["pass", "fail", "pass"])
+        run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=2)
+
+        await execute_run(store, run.id, agent=constant_agent(version))
+
+        spans = traced.exporter.exported_spans_as_dict()
+        run_spans = [s for s in spans if s["name"] == "valcore.run"]
+        row_spans = [s for s in spans if s["name"] == "valcore.score_row"]
+        assert len(run_spans) == 1
+        assert len(row_spans) == 3
+        for row_data in row_spans:
+            assert row_data["parent"] == run_spans[0]["context"]
+
+    @pytest.mark.anyio
+    async def test_run_span_carries_run_id_kind_status_and_metrics_keys(
+        self, store: Store, traced
+    ) -> None:
+        version = make_version(store)
+        dataset = make_dataset(store, ["pass", "fail", "pass", "fail", "pass"])
+        run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=3)
+
+        result = await execute_run(store, run.id, agent=constant_agent(version))
+
+        assert result.metrics is not None
+        spans = traced.exporter.exported_spans_as_dict(parse_json_attributes=True)
+        run_data = next(s for s in spans if s["name"] == "valcore.run")
+        attrs = run_data["attributes"]
+        assert attrs["run_id"] == run.id
+        assert attrs["kind"] == RunKind.VALIDATION.value
+        assert attrs["status"] == result.status.value
+        for key, value in result.metrics.items():
+            assert attrs[key] == value
+
+    @pytest.mark.anyio
+    async def test_cancelled_run_still_closes_span_and_reports_cancelled(
+        self, store: Store, traced
+    ) -> None:
+        version = make_version(store)
+        dataset = make_dataset(store, ["pass"] * 5)
+        run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=1)
+
+        async def on_event(event: RunEvent) -> None:
+            if event.type == "row":
+                store.request_cancel(run.id)
+
+        result = await execute_run(store, run.id, agent=constant_agent(version), on_event=on_event)
+
+        assert result.status is RunStatus.CANCELLED
+        spans = traced.exporter.exported_spans_as_dict()
+        run_spans = [s for s in spans if s["name"] == "valcore.run"]
+        assert len(run_spans) == 1
+        assert run_spans[0]["end_time"] is not None
+        assert run_spans[0]["attributes"]["status"] == RunStatus.CANCELLED.value
+        # Fewer row spans than the dataset has rows: cancellation actually took effect.
+        row_spans = [s for s in spans if s["name"] == "valcore.score_row"]
+        assert 0 < len(row_spans) < 5
+
+    @pytest.mark.anyio
+    async def test_all_rows_erroring_still_closes_span_and_reports_completed_with_errors(
+        self, store: Store, traced
+    ) -> None:
+        version = make_version(store)
+        dataset = make_dataset(store, ["pass", "pass", "pass"])
+        run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=2)
+
+        def always_fail(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            raise RuntimeError("always fails")
+
+        agent = Agent(FunctionModel(always_fail), output_type=build_output_model(version))
+
+        result = await execute_run(store, run.id, agent=agent)
+
+        assert result.status is RunStatus.COMPLETED_WITH_ERRORS
+        # No successful rows means no metrics -- the span-attribute code must not
+        # choke iterating a metrics dict that never got computed.
+        assert result.metrics is None
+        spans = traced.exporter.exported_spans_as_dict()
+        run_spans = [s for s in spans if s["name"] == "valcore.run"]
+        assert len(run_spans) == 1
+        assert run_spans[0]["end_time"] is not None
+        assert run_spans[0]["attributes"]["status"] == RunStatus.COMPLETED_WITH_ERRORS.value
+        row_spans = [s for s in spans if s["name"] == "valcore.score_row"]
+        assert len(row_spans) == 3
+
+    @pytest.mark.anyio
+    async def test_only_row_ids_emits_row_spans_only_for_requested_rows(
+        self, store: Store, traced
+    ) -> None:
+        version = make_version(store)
+        dataset = make_dataset(store, ["pass", "fail", "pass", "fail", "pass"])
+        run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=2)
+
+        await execute_run(store, run.id, agent=constant_agent(version))
+        traced.exporter.clear()
+
+        rows = store.list_rows(dataset.id)
+        retry_ids = [rows[0].id, rows[2].id]
+        await execute_run(store, run.id, agent=constant_agent(version), only_row_ids=retry_ids)
+
+        spans = traced.exporter.exported_spans_as_dict()
+        run_spans = [s for s in spans if s["name"] == "valcore.run"]
+        row_spans = [s for s in spans if s["name"] == "valcore.score_row"]
+        assert len(run_spans) == 1
+        assert len(row_spans) == 2
+        assert {s["attributes"]["row_id"] for s in row_spans} == set(retry_ids)
+
+    @pytest.mark.anyio
+    async def test_row_span_closes_and_carries_idx_on_the_exception_path(
+        self, store: Store, traced
+    ) -> None:
+        """A row that raises must still close its span with the right ``idx`` --
+        the ``except Exception`` branch in ``_score_row`` runs inside the
+        ``with tracing.row_span(row):`` block, so an unclosed or attribute-less
+        span here would mean the span wraps only the try body, not the whole
+        function."""
+        version = make_version(store)
+        dataset = make_dataset(store, ["pass", "pass", "pass"])
+        run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=1)
+
+        def always_fail(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            raise RuntimeError("always fails")
+
+        agent = Agent(FunctionModel(always_fail), output_type=build_output_model(version))
+        await execute_run(store, run.id, agent=agent)
+
+        spans = traced.exporter.exported_spans_as_dict()
+        row_spans = [s for s in spans if s["name"] == "valcore.score_row"]
+        assert len(row_spans) == 3
+        for row_data in row_spans:
+            assert row_data["end_time"] is not None
+        assert {s["attributes"]["idx"] for s in row_spans} == {0, 1, 2}
+
+    @pytest.mark.anyio
+    async def test_eval_kind_run_span_closes_with_no_agreement_evaluator(
+        self, store: Store, traced
+    ) -> None:
+        """An EVAL-kind run has no labels to compare against, so no metrics are
+        computed -- the run span must still open, close, and report a clean
+        ``status`` attribute rather than skipping tracing for this run kind."""
+        version = make_version(store)
+        dataset = make_dataset(store, [None, None, None])
+        run = store.create_run(RunKind.EVAL, version.id, dataset.id, concurrency=2)
+        result = await execute_run(store, run.id, agent=constant_agent(version))
+
+        assert result.status is RunStatus.COMPLETED
+        assert result.metrics is None
+        spans = traced.exporter.exported_spans_as_dict()
+        run_spans = [s for s in spans if s["name"] == "valcore.run"]
+        assert len(run_spans) == 1
+        assert run_spans[0]["end_time"] is not None
+        assert run_spans[0]["attributes"]["kind"] == RunKind.EVAL.value
+        assert run_spans[0]["attributes"]["status"] == RunStatus.COMPLETED.value

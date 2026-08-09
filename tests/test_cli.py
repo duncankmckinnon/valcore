@@ -2,8 +2,16 @@
 
 No network and no real home directory: ``VALCORE_HOME`` is pointed at ``tmp_path``
 by the autouse fixture in ``conftest.py``, the store is a fresh ``tmp_path`` SQLite
-DB, and agent behavior is driven by a ``FunctionModel`` injected via a monkeypatch
-of ``valcore.runner.build_agent``.
+DB, and agent behavior for ``run`` is driven by a ``FunctionModel`` injected via a
+monkeypatch of ``valcore.runner.build_agent``; ``experiment`` tests use ``TestModel``
+against ``valcore.experiment.build_agent`` instead, per the test plan. ``logfire push``
+is exercised by monkeypatching
+``valcore.logfire_io.push_dataset`` with an async stub, following the module-qualified
+call convention the task interfaces describe (``config.require_gateway_key()``,
+``experiment.execute_experiment(...)``, ``logfire_io.push_dataset(...)``,
+``tracing.configure_tracing(...)``) -- patching the source module's attribute works
+regardless of how ``cli.main`` imports the module, as long as it calls through a
+module reference rather than a name bound at import time.
 """
 
 import json
@@ -14,9 +22,11 @@ from click.testing import CliRunner
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.test import TestModel
 
 from valcore.cli.main import cli
 from valcore.cli.resolve import resolve_dataset, resolve_evaluator, resolve_version
+from valcore.config import load_config
 from valcore.config_io import EvalPackage
 from valcore.errors import ContractError, NotFoundError
 from valcore.export import render_script
@@ -88,6 +98,22 @@ def _constant_agent_builder(verdict: str = "pass"):
     return build
 
 
+def _constant_test_model_agent_builder(verdict: str = "pass"):
+    """Return a ``build_agent`` replacement using ``TestModel`` that always emits ``verdict``.
+
+    Used for the ``experiment`` tests per the test plan's ``TestModel`` requirement;
+    ``TestModel(custom_output_args=...)`` pins the structured output without a network call.
+    """
+
+    def build(version) -> Agent:
+        return Agent(
+            TestModel(custom_output_args={"verdict": verdict}),
+            output_type=build_output_model(version),
+        )
+
+    return build
+
+
 def _invoke(runner: CliRunner, db_path, *args: str, **kwargs):
     """Invoke the CLI with ``--db`` bound to the test database."""
     return runner.invoke(cli, ["--db", str(db_path), *args], **kwargs)
@@ -98,6 +124,18 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _gateway_key_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Present a gateway key by default.
+
+    ``run`` and ``experiment`` now guard on ``config.require_gateway_key()`` before doing any
+    work. Without this, every pre-existing happy-path test below would fail on the guard before
+    its injected agent ever ran -- mirroring the identical fixture in ``test_api_runs.py`` for the
+    same guard on the API surface. Tests that target the guard itself clear the key explicitly.
+    """
+    monkeypatch.setenv("PYDANTIC_AI_GATEWAY_API_KEY", "sk-test-gateway-key")
+
+
 # -- version ------------------------------------------------------------------
 
 
@@ -105,6 +143,30 @@ def test_version(runner, db_path):
     result = _invoke(runner, db_path, "version")
     assert result.exit_code == 0
     assert result.output.strip() == package_version("valcore")
+
+
+# -- tracing --------------------------------------------------------------------
+
+
+def test_cli_group_configures_tracing_once_per_invocation(runner, db_path, monkeypatch):
+    """The ``cli`` group callback must call ``configure_tracing(load_config())`` exactly once.
+
+    Patches the whole function (not just its internals) so the module's own idempotency
+    flag is irrelevant here -- this only checks that the CLI actually calls it, once, on
+    every invocation, regardless of what command is run.
+    """
+    calls = []
+    monkeypatch.setattr("valcore.tracing.configure_tracing", lambda cfg: calls.append(cfg))
+    result = _invoke(runner, db_path, "version")
+    assert result.exit_code == 0
+    assert len(calls) == 1
+
+
+def test_cli_group_configures_tracing_with_no_token_without_error(runner, db_path):
+    """With no Logfire token configured, tracing configuration must still be a silent no-op."""
+    result = _invoke(runner, db_path, "version")
+    assert result.exit_code == 0
+    assert result.exception is None
 
 
 # -- list ---------------------------------------------------------------------
@@ -240,6 +302,141 @@ def test_run_unresolvable_evaluator_exits_1(runner, store, db_path):
     result = _invoke(runner, db_path, "run", "no-such-evaluator", "cases")
     assert result.exit_code == 1
     assert "error:" in result.stderr
+
+
+# -- gateway guard --------------------------------------------------------------
+#
+# A keyless invocation must exit non-zero with a message naming `valcore config
+# set-key`, and must persist no RunResult rows -- never the N-failed-rows outcome
+# `require_gateway_key` exists to prevent (see config.require_gateway_key's docstring).
+
+
+def test_run_no_gateway_key_exits_nonzero_naming_set_key(runner, store, db_path, monkeypatch):
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    result = _invoke(runner, db_path, "run", "judge", "cases")
+    assert result.exit_code != 0
+    assert "valcore config set-key" in result.stderr
+    for run in store.list_runs():
+        assert store.list_results(run.id) == []
+
+
+def test_experiment_no_gateway_key_exits_nonzero_naming_set_key(
+    runner, store, db_path, monkeypatch
+):
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    result = _invoke(runner, db_path, "experiment", "judge", "cases")
+    assert result.exit_code != 0
+    assert "valcore config set-key" in result.stderr
+    for run in store.list_runs():
+        assert store.list_results(run.id) == []
+
+
+def test_export_succeeds_without_gateway_key(runner, store, db_path, monkeypatch):
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    result = _invoke(runner, db_path, "export", "judge")
+    assert result.exit_code == 0
+
+
+def test_list_succeeds_without_gateway_key(runner, store, db_path, monkeypatch):
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    result = _invoke(runner, db_path, "list", "evaluators")
+    assert result.exit_code == 0
+
+
+def test_import_succeeds_without_gateway_key(runner, store, db_path, tmp_path, monkeypatch):
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    out = tmp_path / "pkg.json"
+    exported = _invoke(
+        runner, db_path, "export", "judge", "--dataset", "cases", "--format", "json", "-o", str(out)
+    )
+    assert exported.exit_code == 0
+
+    dest = tmp_path / "imported.db"
+    result = _invoke(runner, dest, "import", str(out))
+    assert result.exit_code == 0
+
+
+# -- experiment -----------------------------------------------------------------
+
+
+def test_experiment_happy_path_writes_results(runner, store, db_path, monkeypatch):
+    monkeypatch.setattr(
+        "valcore.experiment.build_agent", _constant_test_model_agent_builder("pass")
+    )
+    result = _invoke(runner, db_path, "experiment", "judge", "cases")
+    assert result.exit_code == 0
+    runs = store.list_runs()
+    assert len(runs) == 1
+    assert len(store.list_results(runs[0].id)) == 4
+
+
+def test_experiment_json_stdout_is_pure_json(runner, store, db_path, monkeypatch):
+    monkeypatch.setattr(
+        "valcore.experiment.build_agent", _constant_test_model_agent_builder("pass")
+    )
+    result = _invoke(runner, db_path, "experiment", "judge", "cases", "--json")
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["metrics"]["n"] == 4
+    assert "accuracy" in payload["metrics"]
+
+
+def test_experiment_concurrency_option_sets_run_concurrency(runner, store, db_path, monkeypatch):
+    monkeypatch.setattr(
+        "valcore.experiment.build_agent", _constant_test_model_agent_builder("pass")
+    )
+    result = _invoke(runner, db_path, "experiment", "judge", "cases", "--concurrency", "7")
+    assert result.exit_code == 0
+    assert store.list_runs()[0].concurrency == 7
+
+
+def test_experiment_unresolvable_evaluator_exits_1(runner, store, db_path):
+    result = _invoke(runner, db_path, "experiment", "no-such-evaluator", "cases")
+    assert result.exit_code == 1
+    assert "error:" in result.stderr
+
+
+def test_experiment_has_no_watch_option(runner, store, db_path, monkeypatch):
+    """``Dataset.evaluate`` cannot be cancelled, so ``experiment`` must not gain ``--watch``."""
+    monkeypatch.setattr(
+        "valcore.experiment.build_agent", _constant_test_model_agent_builder("pass")
+    )
+    result = _invoke(runner, db_path, "experiment", "judge", "cases", "--watch")
+    assert result.exit_code != 0
+
+
+def test_experiment_and_run_agree(runner, store, db_path, monkeypatch):
+    """The CLI-level version of the two-engines-agree guarantee: identical metrics."""
+    monkeypatch.setattr("valcore.runner.build_agent", _constant_test_model_agent_builder("pass"))
+    monkeypatch.setattr(
+        "valcore.experiment.build_agent", _constant_test_model_agent_builder("pass")
+    )
+
+    run_result = _invoke(runner, db_path, "run", "judge", "cases", "--json")
+    assert run_result.exit_code == 0
+    run_payload = json.loads(run_result.stdout)
+
+    experiment_result = _invoke(runner, db_path, "experiment", "judge", "cases", "--json")
+    assert experiment_result.exit_code == 0
+    experiment_payload = json.loads(experiment_result.stdout)
+
+    assert experiment_payload["status"] == "completed"
+    assert experiment_payload["metrics"] == run_payload["metrics"]
+
+
+def test_experiment_json_payload_shape_matches_run(runner, store, db_path, monkeypatch):
+    monkeypatch.setattr("valcore.runner.build_agent", _constant_test_model_agent_builder("pass"))
+    monkeypatch.setattr(
+        "valcore.experiment.build_agent", _constant_test_model_agent_builder("pass")
+    )
+
+    run_payload = json.loads(_invoke(runner, db_path, "run", "judge", "cases", "--json").stdout)
+    experiment_payload = json.loads(
+        _invoke(runner, db_path, "experiment", "judge", "cases", "--json").stdout
+    )
+
+    assert set(experiment_payload.keys()) == set(run_payload.keys())
+    assert set(experiment_payload["results"][0].keys()) == set(run_payload["results"][0].keys())
 
 
 # -- export -------------------------------------------------------------------
@@ -495,6 +692,206 @@ def test_config_get_show_key_reveals(runner, db_path):
     result = _invoke(runner, db_path, "config", "get", "--show-key")
     assert result.exit_code == 0
     assert "sk-secret-1234" in result.output
+
+
+def test_config_set_logfire_token_persists_and_preserves_others(runner, db_path):
+    _invoke(runner, db_path, "config", "set-key", "sk-secret-1234")
+    result = _invoke(runner, db_path, "config", "set-logfire-token", "lf-token-5678")
+    assert result.exit_code == 0
+
+    cfg = load_config()
+    assert cfg.logfire_token == "lf-token-5678"
+    assert cfg.gateway_api_key == "sk-secret-1234"
+
+
+def test_config_set_logfire_token_prompts_when_omitted(runner, db_path):
+    result = _invoke(runner, db_path, "config", "set-logfire-token", input="lf-prompted\n")
+    assert result.exit_code == 0
+    assert load_config().logfire_token == "lf-prompted"
+    # Hidden input: the typed value never echoes to output.
+    assert "lf-prompted" not in result.output
+
+
+def test_config_set_logfire_key_persists_and_preserves_others(runner, db_path):
+    _invoke(runner, db_path, "config", "set-logfire-token", "lf-existing-token")
+    result = _invoke(runner, db_path, "config", "set-logfire-key", "lf-key-9999")
+    assert result.exit_code == 0
+
+    cfg = load_config()
+    assert cfg.logfire_api_key == "lf-key-9999"
+    assert cfg.logfire_token == "lf-existing-token"
+
+
+def test_config_set_logfire_key_prompts_when_omitted(runner, db_path):
+    result = _invoke(runner, db_path, "config", "set-logfire-key", input="lf-key-prompted\n")
+    assert result.exit_code == 0
+    assert load_config().logfire_api_key == "lf-key-prompted"
+    assert "lf-key-prompted" not in result.output
+
+
+def test_config_get_logfire_presence_changes_when_set_and_never_leaks_values(runner, db_path):
+    before = json.loads(_invoke(runner, db_path, "config", "get", "--json").output)
+
+    _invoke(runner, db_path, "config", "set-logfire-token", "lf-secret-token")
+    _invoke(runner, db_path, "config", "set-logfire-key", "lf-secret-apikey")
+
+    after_result = _invoke(runner, db_path, "config", "get", "--json")
+    assert after_result.exit_code == 0
+    after = json.loads(after_result.output)
+
+    # Presence is reflected somehow -- as a masked string or boolean, format-agnostic here --
+    # but the raw secret is never the field's value, and never appears anywhere in output.
+    assert after["logfire_token"] != before["logfire_token"]
+    assert after["logfire_api_key"] != before["logfire_api_key"]
+    assert after["logfire_token"] != "lf-secret-token"
+    assert after["logfire_api_key"] != "lf-secret-apikey"
+    assert "lf-secret-token" not in after_result.output
+    assert "lf-secret-apikey" not in after_result.output
+
+
+def test_config_get_reports_effective_presence_from_env_only(runner, db_path, monkeypatch):
+    """An env-only key or token, never written to the config file, must report as present.
+
+    ``gateway_key_present``/``logfire_token_present`` treat an exported env var as
+    effectively set, matching ``apply_gateway_key``'s env-wins precedence -- ``config get``
+    must agree rather than fall back to the raw (``None``) file value and report a false
+    absence.
+    """
+    monkeypatch.setenv("PYDANTIC_AI_GATEWAY_API_KEY", "sk-env-only-1234")
+    monkeypatch.setenv("LOGFIRE_TOKEN", "lf-env-only-token")
+
+    result = _invoke(runner, db_path, "config", "get", "--json")
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+
+    assert payload["gateway_api_key"] not in (None, False)
+    assert payload["logfire_token"] is True
+    assert load_config().gateway_api_key is None
+    assert load_config().logfire_token is None
+    assert "sk-env-only-1234" not in result.output
+    assert "lf-env-only-token" not in result.output
+
+
+def test_config_get_show_key_does_not_reveal_logfire_secrets(runner, db_path):
+    """``--show-key`` already governs revealing the gateway key; it must not newly govern these."""
+    _invoke(runner, db_path, "config", "set-key", "sk-secret-1234")
+    _invoke(runner, db_path, "config", "set-logfire-token", "lf-secret-token")
+    _invoke(runner, db_path, "config", "set-logfire-key", "lf-secret-apikey")
+
+    result = _invoke(runner, db_path, "config", "get", "--show-key")
+    assert result.exit_code == 0
+    assert "sk-secret-1234" in result.output
+    assert "lf-secret-token" not in result.output
+    assert "lf-secret-apikey" not in result.output
+
+
+# -- logfire --------------------------------------------------------------------
+
+
+def test_logfire_push_prints_id_name_and_case_count_never_a_url(
+    runner, store, db_path, monkeypatch
+):
+    async def fake_push_dataset(
+        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+    ):
+        return {
+            "id": "abc-123",
+            "name": "pushed-cases",
+            "case_count": 4,
+            "output_schema": {"type": "string"},
+        }
+
+    monkeypatch.setattr("valcore.logfire_io.push_dataset", fake_push_dataset)
+    result = _invoke(runner, db_path, "logfire", "push", "cases")
+    assert result.exit_code == 0
+    assert "abc-123" in result.output
+    assert "pushed-cases" in result.output
+    assert "4" in result.output
+    assert "http" not in result.output.lower()
+    assert "url" not in result.output.lower()
+
+
+def test_logfire_push_resolves_dataset_and_passes_its_rows(runner, store, db_path, monkeypatch):
+    captured = {}
+
+    async def fake_push_dataset(
+        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+    ):
+        captured["dataset_name"] = dataset.name
+        captured["row_count"] = len(rows)
+        return {"id": "x", "name": dataset.name, "case_count": len(rows), "output_schema": None}
+
+    monkeypatch.setattr("valcore.logfire_io.push_dataset", fake_push_dataset)
+    result = _invoke(runner, db_path, "logfire", "push", "cases")
+    assert result.exit_code == 0
+    assert captured == {"dataset_name": "cases", "row_count": 4}
+
+
+def test_logfire_push_defaults_have_no_name_or_description(runner, store, db_path, monkeypatch):
+    calls = {}
+
+    async def fake_push_dataset(
+        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+    ):
+        calls.update(name=name, description=description, on_conflict=on_conflict)
+        return {"id": "x", "name": "cases", "case_count": len(rows), "output_schema": None}
+
+    monkeypatch.setattr("valcore.logfire_io.push_dataset", fake_push_dataset)
+    result = _invoke(runner, db_path, "logfire", "push", "cases")
+    assert result.exit_code == 0
+    assert calls == {"name": None, "description": None, "on_conflict": "update"}
+
+
+def test_logfire_push_passes_name_description_and_on_conflict_through(
+    runner, store, db_path, monkeypatch
+):
+    calls = {}
+
+    async def fake_push_dataset(
+        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+    ):
+        calls.update(name=name, description=description, on_conflict=on_conflict)
+        return {"id": "x", "name": name, "case_count": len(rows), "output_schema": None}
+
+    monkeypatch.setattr("valcore.logfire_io.push_dataset", fake_push_dataset)
+    result = _invoke(
+        runner,
+        db_path,
+        "logfire",
+        "push",
+        "cases",
+        "--name",
+        "custom-name",
+        "--description",
+        "custom description",
+        "--on-conflict",
+        "error",
+    )
+    assert result.exit_code == 0
+    assert calls == {
+        "name": "custom-name",
+        "description": "custom description",
+        "on_conflict": "error",
+    }
+
+
+def test_logfire_push_invalid_on_conflict_choice_exits_nonzero(runner, store, db_path):
+    result = _invoke(runner, db_path, "logfire", "push", "cases", "--on-conflict", "bogus")
+    assert result.exit_code != 0
+
+
+def test_logfire_push_unresolvable_dataset_exits_1(runner, store, db_path):
+    result = _invoke(runner, db_path, "logfire", "push", "no-such-dataset")
+    assert result.exit_code == 1
+    assert "error:" in result.stderr
+
+
+def test_logfire_push_no_api_key_exits_nonzero_naming_set_logfire_key(runner, store, db_path):
+    # No stub installed: with no key configured, `push_dataset` must fail before any
+    # network-facing import or call, exactly as `test_logfire_io.py` pins directly.
+    result = _invoke(runner, db_path, "logfire", "push", "cases")
+    assert result.exit_code != 0
+    assert "valcore config set-logfire-key" in result.stderr
 
 
 # -- ./valcore.db startup notice --------------------------------------------

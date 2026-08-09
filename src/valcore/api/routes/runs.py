@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict
 from pydantic_ai import Agent
 from sse_starlette.sse import EventSourceResponse
 
+from valcore import config
 from valcore.api.deps import get_store
 from valcore.api.events import bus
 from valcore.errors import ContractError
@@ -149,12 +150,17 @@ async def _run_to_completion(
 
     Any exception escaping the runner is recorded on the run as ``FAILED`` so a run
     is never left stuck in ``RUNNING``. The bus is always closed so subscribers stop.
+
+    Guards on ``config.require_gateway_key()`` before ever building an agent or calling
+    ``execute_run``: ``defer_model_check=True`` lets ``build_agent`` succeed with no key,
+    so without this a keyless run would instead fail once per row inside ``_score_row``.
     """
 
     async def on_event(event: RunEvent) -> None:
         bus.publish(run_id, {"type": event.type, "run_id": run_id, "payload": event.payload})
 
     try:
+        config.require_gateway_key()
         agent: Agent | None = None
         if agent_factory is not None:
             run = await asyncio.to_thread(store.get_run, run_id)
@@ -231,7 +237,12 @@ async def create_run(body: RunCreate, store: StoreDep, agent_factory: AgentFacto
     """Create a run (freezing its version) and launch it in the background.
 
     Returns immediately with status ``PENDING``; the run is never awaited in the handler.
+
+    Guards on ``config.require_gateway_key()`` before ``store.create_run``: a missing key
+    must surface synchronously as a ``ConfigError``, with no run ever persisted, rather than
+    as an asynchronous ``FAILED`` transition discovered by polling.
     """
+    config.require_gateway_key()
     run = store.create_run(
         kind=body.kind,
         version_id=body.version_id,
@@ -397,7 +408,12 @@ async def retry_failed(id: str, store: StoreDep, agent_factory: AgentFactoryDep)
 
     The run is reset to ``PENDING`` before relaunching so a client polling status is
     never fooled by the previous run's stale terminal state.
+
+    Guards on ``config.require_gateway_key()`` before any other work: a missing key
+    must surface synchronously as a ``ConfigError``, with the prior run's status and
+    results untouched and no background task launched.
     """
+    config.require_gateway_key()
     store.get_run(id)
     failed_row_ids = store.failed_result_row_ids(id)
     run = store.update_run_status(id, RunStatus.PENDING, error=None, finished_at=None)

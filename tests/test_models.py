@@ -7,6 +7,7 @@ from valcore.errors import ConfigError, ContractError
 from valcore.models import (
     Dataset,
     EvaluatorVersion,
+    ExperimentRun,
     FieldType,
     LabelSchema,
     OutputField,
@@ -309,3 +310,24 @@ def test_version_json_round_trip() -> None:
     validate_version(restored)
     fields = parse_output_fields(restored)
     assert [f.name for f in fields] == ["verdict"]
+
+
+# -- ExperimentRun ------------------------------------------------------------
+
+
+def test_experiment_run_defaults() -> None:
+    """A run with no ExperimentRun row is a runner run; case_count defaults to 0."""
+    experiment = ExperimentRun(run_id="run1", experiment_name="exp1")
+
+    assert experiment.run_id == "run1"
+    assert experiment.experiment_name == "exp1"
+    assert experiment.case_count == 0
+    assert experiment.id
+    assert experiment.created_at is not None
+
+
+def test_experiment_run_ids_are_unique_per_instance() -> None:
+    first = ExperimentRun(run_id="run1", experiment_name="exp1")
+    second = ExperimentRun(run_id="run1", experiment_name="exp1")
+
+    assert first.id != second.id

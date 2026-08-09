@@ -16,7 +16,7 @@ from pydantic_ai.models.test import TestModel
 
 from valcore.api.deps import get_store
 from valcore.api.main import create_app
-from valcore.api.routes.runs import get_agent_factory
+from valcore.api.routes.runs import _tasks, get_agent_factory
 from valcore.factory import build_output_model
 from valcore.models import LabelSource, RunKind, RunStatus, ScoreKind
 from valcore.store import Store, create_engine, init_db
@@ -59,6 +59,19 @@ def store(tmp_path) -> Store:
     engine = create_engine(tmp_path / "runs.db")
     init_db(engine)
     return Store(engine)
+
+
+@pytest.fixture(autouse=True)
+def _gateway_key_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Present a gateway key by default.
+
+    Launching a run now guards on ``config.require_gateway_key()`` before ever reaching
+    ``execute_run``, regardless of whether a test injects its own agent via the
+    ``get_agent_factory`` override. Without this, every pre-existing run test below would fail
+    on the guard before its injected agent ever ran. The test that targets the guard itself
+    clears the key explicitly.
+    """
+    monkeypatch.setenv("PYDANTIC_AI_GATEWAY_API_KEY", "sk-test-gateway-key")
 
 
 def _client(store: Store, agent_factory) -> httpx.AsyncClient:
@@ -432,3 +445,77 @@ async def test_background_task_failure_marks_run_failed(store: Store) -> None:
 
     assert final["status"] == RunStatus.FAILED.value
     assert final["error"]
+
+
+# -- Gateway guard --------------------------------------------------------------
+#
+# defer_model_check=True lets build_agent succeed with no gateway key, so today's failure
+# lands deep inside runner._score_row and is recorded as one error per row (20 rows -> 20
+# failed results, COMPLETED_WITH_ERRORS). The guard sits in create_run before store.create_run,
+# so a keyless run fails synchronously at request time: one 422 ConfigError, no persisted run,
+# and zero RunResult rows -- not a PENDING run whose failure is only discoverable by polling.
+
+
+@pytest.mark.anyio
+async def test_run_without_gateway_key_fails_cleanly_with_no_results(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    version = make_version(store)
+    dataset, _ = make_dataset(store, ["pass", "fail", "pass"])
+
+    async with _client(store, constant_factory()) as client:
+        resp = await client.post(
+            "/api/runs",
+            json={"kind": "validation", "version_id": version.id, "dataset_id": dataset.id},
+        )
+
+    assert resp.status_code == 422, resp.text
+    error = resp.json()["error"]
+    assert error["type"] == "ConfigError"
+    assert "valcore config set-key" in error["message"]
+    # No run was ever created, let alone any RunResult rows.
+    assert store.list_runs(dataset_id=dataset.id) == []
+
+
+@pytest.mark.anyio
+async def test_retry_failed_without_gateway_key_fails_cleanly(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard must sit before any other work in ``retry_failed``.
+
+    Without it, a keyless retry would reset the prior terminal run to ``PENDING``
+    and launch a background task that later fails it row-by-row -- mutating a run
+    that a 200 response has already told the client succeeded.
+    """
+    version = make_version(store)
+    dataset, _rows = make_dataset(store, ["pass", "pass", "pass"], inputs=["ok0", "BOOM", "ok2"])
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if "BOOM" in str(messages):
+            raise RuntimeError("kaboom")
+        name = info.output_tools[0].name
+        return ModelResponse(parts=[ToolCallPart(tool_name=name, args={"verdict": "pass"})])
+
+    factory = lambda v: Agent(FunctionModel(respond), output_type=build_output_model(v))
+
+    async with _client(store, factory) as client:
+        body = await _start_run(client, version.id, dataset.id, concurrency=1)
+        run_id = body["id"]
+        before = await _poll_until_terminal(client, run_id)
+        assert before["status"] == RunStatus.COMPLETED_WITH_ERRORS.value
+        before_results = {r.row_id: r.id for r in store.list_results(run_id)}
+
+        monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+        resp = await client.post(f"/api/runs/{run_id}/retry-failed")
+
+    assert resp.status_code == 422, resp.text
+    error = resp.json()["error"]
+    assert error["type"] == "ConfigError"
+    assert "valcore config set-key" in error["message"]
+
+    run = store.get_run(run_id)
+    assert run.status is RunStatus.COMPLETED_WITH_ERRORS
+    after_results = {r.row_id: r.id for r in store.list_results(run_id)}
+    assert after_results == before_results
+    assert run_id not in _tasks

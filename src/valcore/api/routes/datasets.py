@@ -5,16 +5,18 @@ import io
 import json
 import re
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from pydantic import BaseModel, ConfigDict
 
+from valcore import config
 from valcore.api.deps import get_store
 from valcore.config_io import EvalPackage
 from valcore.datagen import generate_rows
 from valcore.errors import ContractError
 from valcore.export import render_dataset_module, render_judge_module
+from valcore.logfire_io import push_dataset
 from valcore.models import LabelSchema, LabelSource
 from valcore.schema_migration import label_matches_schema
 from valcore.seeding import dataset_shape_from_version
@@ -97,6 +99,14 @@ class RowsAppend(BaseModel):
     """Request body to append plain data rows to a dataset."""
 
     rows: list[dict]
+
+
+class LogfirePushRequest(BaseModel):
+    """Request body to push a dataset to Logfire's hosted dataset store."""
+
+    name: str | None = None
+    description: str | None = None
+    on_conflict: Literal["update", "error"] = "update"
 
 
 class RowPatch(BaseModel):
@@ -420,6 +430,7 @@ def _check_column_notes(column_notes: dict[str, str] | None, columns: list[str])
 @router.post("/generate")
 async def generate_dataset(body: DatasetGenerate, store: StoreDep) -> DatasetCreatedOut:
     """Generate a dataset and its rows with suggested labels."""
+    config.require_gateway_key()
     if body.count > _MAX_GENERATE_COUNT:
         raise ContractError(f"count may not exceed {_MAX_GENERATE_COUNT}.")
 
@@ -467,6 +478,7 @@ async def generate_dataset_from_version(
     body: DatasetGenerateFromVersion, store: StoreDep
 ) -> DatasetCreatedOut:
     """Generate a dataset shaped by an evaluator version, runnable against it by construction."""
+    config.require_gateway_key()
     if body.count > _MAX_GENERATE_COUNT:
         raise ContractError(f"count may not exceed {_MAX_GENERATE_COUNT}.")
 
@@ -545,6 +557,7 @@ async def generate_more_rows(id: str, body: RowsGenerate, store: StoreDep) -> li
     the new rows stay compatible with the existing ones and with any evaluator that already
     runs against them.
     """
+    config.require_gateway_key()
     if body.count > _MAX_GENERATE_COUNT:
         raise ContractError(f"count may not exceed {_MAX_GENERATE_COUNT}.")
 
@@ -731,3 +744,17 @@ async def export_dataset_json(
         agent_filename = f"{stem}.agent.json" if split else f"{stem}.json"
         files["valcore_judge.py"] = render_judge_module(version, agent_filename)
     return ExportFilesResponse(files=files)
+
+
+@router.post("/{id}/logfire/push")
+async def push_dataset_to_logfire(id: str, body: LogfirePushRequest, store: StoreDep) -> dict:
+    """Push a dataset and its rows to Logfire's hosted dataset store."""
+    dataset = store.get_dataset(id)
+    rows = store.list_rows(id)
+    return await push_dataset(
+        dataset,
+        rows,
+        name=body.name,
+        description=body.description,
+        on_conflict=body.on_conflict,
+    )

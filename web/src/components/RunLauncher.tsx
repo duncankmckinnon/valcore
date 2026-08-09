@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { datasets, evaluators, runs } from "../api/client";
 import type { Dataset, DatasetStats, Evaluator, EvaluatorVersion, Run, RunKind } from "../api/types";
 import { Button, ErrorBanner, Select, Spinner } from "./ui";
+import { GATEWAY_BLOCKER, useSetup } from "./useSetup";
 
 type EvaluatorWithVersions = Evaluator & { versions: EvaluatorVersion[] };
 
@@ -28,6 +29,7 @@ export default function RunLauncher({ onStarted }: Props) {
 
   const [error, setError] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
+  const { gatewayReady } = useSetup();
 
   useEffect(() => {
     evaluators.list().then(setEvaluatorList).catch(setError);
@@ -77,8 +79,8 @@ export default function RunLauncher({ onStarted }: Props) {
   }, [validationDisabled, kind]);
 
   const canStart = useMemo(
-    () => versionId !== "" && datasetId !== "" && concurrency > 0 && !submitting,
-    [versionId, datasetId, concurrency, submitting],
+    () => versionId !== "" && datasetId !== "" && concurrency > 0 && !submitting && gatewayReady,
+    [versionId, datasetId, concurrency, submitting, gatewayReady],
   );
 
   async function start() {
@@ -183,6 +185,7 @@ export default function RunLauncher({ onStarted }: Props) {
       </label>
 
       <div className="form-actions">
+        {!gatewayReady && <span className="form-footer-blocker">{GATEWAY_BLOCKER}</span>}
         <Button onClick={start} disabled={!canStart}>
           {submitting ? <Spinner /> : "Start"}
         </Button>

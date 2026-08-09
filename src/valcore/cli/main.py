@@ -18,6 +18,8 @@ from pathlib import Path
 
 import click
 
+from valcore import config as config_module
+from valcore import experiment, logfire_io, tracing
 from valcore.cli.output import emit
 from valcore.cli.resolve import resolve_dataset, resolve_evaluator, resolve_version
 from valcore.cli.skills import skills
@@ -92,6 +94,7 @@ def _store(ctx: click.Context) -> Store:
 def cli(ctx: click.Context, db: Path | None) -> None:
     """Develop, run, and export agentic evaluations from the command line."""
     apply_gateway_key(load_config())
+    tracing.configure_tracing(load_config())
 
     db_path = db if db is not None else get_settings().db_path
     if _LOCAL_DB.exists() and not Path(db_path).exists():
@@ -422,6 +425,7 @@ def run(
     min_accuracy: float | None,
 ) -> None:
     """Run an evaluator version over a dataset."""
+    config_module.require_gateway_key()
     store = _store(ctx)
     ev = resolve_evaluator(store, evaluator)
     ver = resolve_version(store, ev, version_name)
@@ -451,6 +455,67 @@ def run(
             sys.exit(2)
 
 
+# -- experiment -----------------------------------------------------------------
+
+
+async def _drive_experiment(store: Store, run_id: str) -> Run:
+    """Drive ``experiment.execute_experiment``, streaming progress to stderr as it goes.
+
+    Mirrors ``_drive_run``'s non-``--watch`` progress line; there is no ``--watch`` mode
+    here because ``Dataset.evaluate`` has no cancellation to make one meaningful.
+    """
+    state = {"done": 0, "total": 0}
+
+    async def on_event(event: RunEvent) -> None:
+        if event.type == "started":
+            state["total"] = event.payload["total"]
+        elif event.type == "row":
+            state["done"] += 1
+            click.echo(f"\r{state['done']}/{state['total']}", nl=False, err=True)
+
+    run = await experiment.execute_experiment(store, run_id, on_event=on_event)
+    if state["total"]:
+        click.echo("", err=True)
+    return run
+
+
+@cli.command(name="experiment")
+@click.argument("evaluator")
+@click.argument("dataset")
+@click.option("--version", "version_name", default=None, help="Version name (default: active).")
+@click.option("--concurrency", type=int, default=None, help="Max concurrent rows.")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON results to stdout.")
+@click.pass_context
+def experiment_cmd(
+    ctx: click.Context,
+    evaluator: str,
+    dataset: str,
+    version_name: str | None,
+    concurrency: int | None,
+    as_json: bool,
+) -> None:
+    """Run an evaluator version over a dataset via ``pydantic_evals.Dataset.evaluate``.
+
+    A second engine over the same data as ``run``, interchangeable with it at the CLI
+    level. It has no ``--watch`` and no cancellation, because ``Dataset.evaluate`` offers
+    neither.
+    """
+    config_module.require_gateway_key()
+    store = _store(ctx)
+    ev = resolve_evaluator(store, evaluator)
+    ver = resolve_version(store, ev, version_name)
+    ds = resolve_dataset(store, dataset)
+
+    workers = concurrency if concurrency is not None else get_settings().default_concurrency
+    created = store.create_run(RunKind.VALIDATION, ver.id, ds.id, workers)
+
+    finished = asyncio.run(_drive_experiment(store, created.id))
+    if finished.status is RunStatus.FAILED:
+        raise ValcoreError(finished.error or "Experiment failed.")
+
+    _emit_run(store, finished, as_json)
+
+
 # -- config -------------------------------------------------------------------
 
 
@@ -473,11 +538,18 @@ def config_set_key(key: str | None) -> None:
 @click.option("--show-key", is_flag=True, help="Reveal the full gateway API key.")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of a table.")
 def config_get(show_key: bool, as_json: bool) -> None:
-    """Show the current config, masking the gateway key by default."""
+    """Show the current config, masking the gateway key by default.
+
+    The Logfire token and API key are never revealed, even with ``--show-key``: that flag
+    already governs revealing the gateway key specifically, and does not newly govern these.
+    Only their presence is shown.
+    """
     cfg = load_config()
     data = cfg.model_dump(mode="json")
-    if cfg.gateway_api_key and not show_key:
-        data["gateway_api_key"] = f"sk-…{cfg.gateway_api_key[-4:]}"
+    if config_module.gateway_key_present(cfg) and not show_key:
+        data["gateway_api_key"] = f"sk-…{cfg.gateway_api_key[-4:]}" if cfg.gateway_api_key else True
+    data["logfire_token"] = config_module.logfire_token_present(cfg)
+    data["logfire_api_key"] = config_module.logfire_api_key_present(cfg)
     emit(data, as_json, columns=list(data.keys()))
 
 
@@ -494,6 +566,70 @@ def config_edit() -> None:
     if not path.exists():
         save_config(load_config())
     click.edit(filename=str(path))
+
+
+@config.command("set-logfire-token")
+@click.argument("token", required=False)
+def config_set_logfire_token(token: str | None) -> None:
+    """Store the Logfire write token (for tracing) in the config file."""
+    if token is None:
+        token = click.prompt("Logfire token", hide_input=True)
+    config_module.set_logfire_token(token)
+    click.echo(f"Saved Logfire token to {config_path()}", err=True)
+
+
+@config.command("set-logfire-key")
+@click.argument("key", required=False)
+def config_set_logfire_key(key: str | None) -> None:
+    """Store the Logfire API key (for the hosted datasets API) in the config file."""
+    if key is None:
+        key = click.prompt("Logfire API key", hide_input=True)
+    config_module.set_logfire_api_key(key)
+    click.echo(f"Saved Logfire API key to {config_path()}", err=True)
+
+
+# -- logfire --------------------------------------------------------------------
+
+
+@cli.group(name="logfire")
+def logfire_group() -> None:
+    """Interact with Logfire's hosted dataset store."""
+
+
+@logfire_group.command("push")
+@click.argument("dataset")
+@click.option(
+    "--name", "name", default=None, help="Name for the pushed dataset (default: its own)."
+)
+@click.option(
+    "--description", "description", default=None, help="Description for the pushed dataset."
+)
+@click.option(
+    "--on-conflict",
+    "on_conflict",
+    type=click.Choice(["update", "error"]),
+    default="update",
+    help="How to handle a case ID that already exists on the hosted dataset.",
+)
+@click.pass_context
+def logfire_push(
+    ctx: click.Context,
+    dataset: str,
+    name: str | None,
+    description: str | None,
+    on_conflict: str,
+) -> None:
+    """Push a dataset to Logfire's hosted dataset store."""
+    store = _store(ctx)
+    ds = resolve_dataset(store, dataset)
+    rows = store.list_rows(ds.id)
+
+    result = asyncio.run(
+        logfire_io.push_dataset(
+            ds, rows, name=name, description=description, on_conflict=on_conflict
+        )
+    )
+    emit(result, as_json=False, columns=["id", "name", "case_count"])
 
 
 def main() -> None:

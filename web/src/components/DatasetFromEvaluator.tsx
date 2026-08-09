@@ -14,6 +14,7 @@ import { TOTAL_PERCENT, toProportions, totalPercent } from "./labelMix";
 import type { LabelMixPercents } from "./labelMix";
 import { Button, ErrorBanner, Modal, Spinner } from "./ui";
 import { Tooltip } from "./Tooltip";
+import { GATEWAY_BLOCKER, useSetup } from "./useSetup";
 
 type DatasetFromEvaluatorProps = {
   open: boolean;
@@ -33,6 +34,7 @@ export default function DatasetFromEvaluator({
   onClose,
 }: DatasetFromEvaluatorProps) {
   const navigate = useNavigate();
+  const { gatewayReady } = useSetup();
   const [name, setName] = useState("");
   const [instructions, setInstructions] = useState("");
   const [extraColumns, setExtraColumns] = useState<string[]>([]);
@@ -57,7 +59,13 @@ export default function DatasetFromEvaluator({
   // key sets by exact equality), and an over-count request would only fail server-side, so
   // both are blocked here rather than surfaced late.
   const countExceeds = count > maxCount;
-  const canSubmit = name.trim() !== "" && !countExceeds && !mixIncomplete;
+  const canSubmit = name.trim() !== "" && !countExceeds && !mixIncomplete && gatewayReady;
+
+  // One reason at a time, mirroring the neighbouring generate forms' blockers idiom —
+  // a missing key blocks regardless of what else is wrong, so it takes precedence.
+  const blockers: string[] = [];
+  if (!gatewayReady) blockers.push(GATEWAY_BLOCKER);
+  if (countExceeds) blockers.push(`Row count must be ${maxCount} or fewer.`);
 
   async function submit() {
     if (!canSubmit) {
@@ -207,9 +215,7 @@ export default function DatasetFromEvaluator({
           />
         </label>
 
-        {countExceeds && (
-          <p className="destructive-warning">Row count must be {maxCount} or fewer.</p>
-        )}
+        {blockers.length > 0 && <p className="destructive-warning">{blockers[0]}</p>}
       </div>
     </Modal>
   );

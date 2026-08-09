@@ -139,6 +139,22 @@ Override the default model, highest precedence first: an explicit argument,
 > OpenAI-compatible endpoint, local models — is a change to that resolution layer and the
 > config schema rather than a change to how evaluators, datasets, or runs work.
 
+## Setup
+
+`valcore serve` shows a setup card on the Overview page listing each key valcore knows
+about, whether it is currently set, and what it unlocks. Keys are never entered through
+the web UI — no secret crosses HTTP — and are always set from the CLI:
+
+```bash
+valcore config set-key                  # required: runs and generation
+valcore config set-logfire-token        # optional: sends traces to Logfire
+valcore config set-logfire-key          # optional: pushes datasets to Logfire
+```
+
+Without the gateway key, generation and runs are unavailable, and the UI shows why. Manual
+authoring, dataset upload, editing, hand-labeling, and every export still work with no key
+configured at all.
+
 ## Commands
 
 | Command | What it does |
@@ -146,12 +162,16 @@ Override the default model, highest precedence first: an explicit argument,
 | `valcore serve` | Serve the web UI and API (`--port`, `--host`, `--no-browser`). |
 | `valcore list <evaluators\|datasets\|runs>` | List resources as a table or, with `--json`, as JSON. |
 | `valcore run <evaluator> <dataset>` | Run an evaluator version over a dataset. |
+| `valcore experiment <evaluator> <dataset>` | Run an evaluator version over a dataset via `pydantic_evals.Dataset.evaluate`. |
 | `valcore export <evaluator>` | Export an evaluator (and, with `--dataset`, a dataset) as a Python script or, with `--format json`, a portable eval package. |
 | `valcore import <file>` | Import a JSON eval package back into the local database. |
 | `valcore config set-key [KEY]` | Store the gateway API key in the config file. |
+| `valcore config set-logfire-token [TOKEN]` | Store the Logfire write token in the config file. |
+| `valcore config set-logfire-key [KEY]` | Store the Logfire API key in the config file. |
 | `valcore config get` | Show the current config (the key is masked unless `--show-key`). |
 | `valcore config path` | Print the path to the config file. |
 | `valcore config edit` | Open the config file in `$EDITOR`. |
+| `valcore logfire push <dataset>` | Push a dataset to Logfire's hosted dataset store. |
 | `valcore skills install` | Install the bundled agent skills (`--claude`, `--copilot`, …). |
 | `valcore skills list` | Show the bundled skills and where each is installed. |
 | `valcore skills uninstall` | Remove the bundled skills from the selected directories. |
@@ -280,6 +300,32 @@ Exit codes:
 
 `--min-accuracy` requires a categorical accuracy metric; numeric or unlabeled runs have
 no accuracy and error rather than silently passing.
+
+## Logfire
+
+`logfire` is an optional extra — install it to get traces:
+
+```bash
+uv tool install 'valcore[logfire]'
+```
+
+With a Logfire token configured (see [Setup](#setup)), each `valcore run` opens a
+`valcore.run` span carrying the run's evaluator version, dataset, and concurrency, with a
+`valcore.score_row` child span per row; on close, the run span records its status and each
+agreement metric as attributes, so a Logfire query can filter runs by accuracy directly.
+The [Pydantic AI Gateway](https://ai.pydantic.dev/gateway/) already reports the LLM calls
+themselves — valcore adds only the surrounding run and row context around them, and
+deliberately does not re-report the calls, which would double-count tokens and cost.
+
+`valcore experiment <evaluator> <dataset>` runs the same evaluation through
+`pydantic_evals.Dataset.evaluate` instead of `run`'s own engine, so it also appears in
+Logfire's experiments view. It persists a run the same way `run` does, so it shows up on
+the Runs page too. Unlike `run`, it cannot be cancelled, because `Dataset.evaluate` has no
+cancellation.
+
+`valcore logfire push <dataset>` publishes a dataset to Logfire's hosted dataset store.
+It needs a Logfire API key (see [Setup](#setup)) with the `project:read_datasets` and
+`project:write_datasets` scopes.
 
 ## `~/.valcore`
 
