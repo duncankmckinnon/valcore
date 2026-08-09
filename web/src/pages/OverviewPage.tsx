@@ -5,15 +5,74 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { overview } from "../api/client";
-import type { Overview } from "../api/types";
+import type { Overview, SetupKey } from "../api/types";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
-import { ErrorBanner, Spinner } from "../components/ui";
+import { useSetup } from "../components/useSetup";
+import { Button, ErrorBanner, Spinner } from "../components/ui";
 
 // Both accuracy fields are 0..1 floats or null. Null is a genuine "no measurement"
 // state, not zero — render an em dash so it never reads as 0% or NaN%.
 function formatAccuracy(value: number | null): string {
   return value === null ? "—" : `${Math.round(value * 100)}%`;
+}
+
+// Renders one key's row: label, required/optional badge, purpose, and its command with a Copy
+// button. The command is always shown while the card is expanded — even for a key that is
+// already set — so a user who sets the gateway key but skips Logfire still sees exactly what to
+// run for the optional keys without re-expanding anything.
+function SetupKeyRow({ item }: { item: SetupKey }): JSX.Element {
+  const copy = () => {
+    void navigator.clipboard.writeText(item.command);
+  };
+
+  return (
+    <li className="setup-key">
+      <span>{item.label}</span>
+      <span className={item.required ? "setup-key-required" : "setup-key-optional"}>
+        {item.required ? "Required" : "Optional"}
+      </span>
+      <span>{item.set ? "Set" : "Not set"}</span>
+      <span>{item.purpose}</span>
+      <div className="setup-command">
+        <code>{item.command}</code>
+        <Button variant="secondary" onClick={copy}>
+          Copy
+        </Button>
+      </div>
+    </li>
+  );
+}
+
+// The setup walkthrough. Expanded (one row per key) whenever anything is unset, collapsed to a
+// quiet summary once everything is configured — incomplete setup is itself the trigger, so it
+// reappears on its own if a user clears their config. A still-loading or errored fetch renders
+// nothing here; the rest of the page never waits on it.
+function SetupCard(): JSX.Element | null {
+  const { status, refetch } = useSetup();
+
+  if (status === null) {
+    return null;
+  }
+
+  const allSet = status.keys.every((key) => key.set);
+
+  return (
+    <div className="setup-card">
+      {allSet ? (
+        <div className="setup-summary">All setup keys are configured.</div>
+      ) : (
+        <ul>
+          {status.keys.map((key) => (
+            <SetupKeyRow key={key.name} item={key} />
+          ))}
+        </ul>
+      )}
+      <Button variant="secondary" onClick={refetch}>
+        Recheck
+      </Button>
+    </div>
+  );
 }
 
 export default function OverviewPage(): JSX.Element {
@@ -54,6 +113,7 @@ export default function OverviewPage(): JSX.Element {
     return (
       <section>
         <PageHeader title="Overview" description={description} />
+        <SetupCard />
         <div className="overview-empty">
           <EmptyState
             message="Start by authoring an evaluator, label a dataset to score it against, run it, and gate CI on the accuracy it reports."
@@ -71,6 +131,8 @@ export default function OverviewPage(): JSX.Element {
   return (
     <section>
       <PageHeader title="Overview" description={description} />
+
+      <SetupCard />
 
       <div className="overview-stats">
         <div className="stat-card">
