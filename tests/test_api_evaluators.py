@@ -1047,6 +1047,28 @@ async def test_generate_version_without_gateway_key_is_client_error_not_500(
 
 
 @pytest.mark.anyio
+async def test_generate_version_without_gateway_key_is_client_error_even_for_unknown_evaluator(
+    app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard runs before ``store.get_evaluator``, so it fires first even for a bad id."""
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/does-not-exist/generate", json={"criteria": "x"}
+        )
+
+    assert response.status_code < 500
+    assert response.status_code == 422, response.text
+    error = response.json()["error"]
+    assert error["type"] == "ConfigError"
+    assert "valcore config set-key" in error["message"]
+    assert calls == []
+
+
+@pytest.mark.anyio
 async def test_refine_without_gateway_key_is_client_error_not_500(
     app, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -2000,6 +2000,27 @@ async def test_push_dataset_body_is_fully_optional(
 
 
 @pytest.mark.anyio
+async def test_push_dataset_defaults_on_conflict_to_update_when_omitted(
+    client: httpx.AsyncClient, store: Store, monkeypatch
+) -> None:
+    """An omitted ``on_conflict`` must reach ``push_dataset`` as ``"update"``, not ``None``."""
+    ds_id, _ = _seed_rows(store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p0"}}])
+    calls: list[dict] = []
+
+    async def fake_push_dataset(
+        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+    ):
+        calls.append({"on_conflict": on_conflict})
+        return {"id": "x", "name": dataset.name, "case_count": len(rows), "output_schema": None}
+
+    monkeypatch.setattr("valcore.api.routes.datasets.push_dataset", fake_push_dataset)
+
+    resp = await client.post(f"/api/datasets/{ds_id}/logfire/push", json={"name": "n"})
+    assert resp.status_code == 200, resp.text
+    assert calls == [{"on_conflict": "update"}]
+
+
+@pytest.mark.anyio
 async def test_push_dataset_forwards_the_resolved_dataset_rows_and_body_fields(
     client: httpx.AsyncClient, store: Store, monkeypatch
 ) -> None:
