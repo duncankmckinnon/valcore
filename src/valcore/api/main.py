@@ -4,12 +4,14 @@ import importlib
 from importlib.resources import files as _package_files
 from pathlib import Path
 
+import logfire_api as logfire
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from valcore.api.dtos import ErrorBody, ErrorResponse
+from valcore.config import load_config
 from valcore.errors import (
     ConfigError,
     ContractError,
@@ -22,6 +24,7 @@ from valcore.errors import (
 from valcore.models import VALID_CAPABILITIES
 from valcore.settings import MODEL_CATALOG
 from valcore.tools import tool_names
+from valcore.tracing import configure_tracing
 
 _STATUS_BY_ERROR: tuple[tuple[type[ValcoreError], int], ...] = (
     (NotFoundError, 404),
@@ -78,7 +81,7 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
 def _include_routers(app: FastAPI) -> None:
     """Discover and mount resource routers, tolerating ones that do not exist yet."""
-    for module_name in ("evaluators", "datasets", "runs", "overview"):
+    for module_name in ("evaluators", "datasets", "runs", "overview", "setup"):
         try:
             module = importlib.import_module(f"valcore.api.routes.{module_name}")
         except ImportError:
@@ -99,6 +102,9 @@ def create_app() -> FastAPI:
     )
 
     _register_exception_handlers(app)
+
+    configure_tracing(load_config())
+    logfire.instrument_fastapi(app)
 
     @app.get("/api/health")
     async def health() -> dict[str, str]:
