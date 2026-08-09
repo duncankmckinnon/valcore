@@ -451,8 +451,9 @@ async def test_background_task_failure_marks_run_failed(store: Store) -> None:
 #
 # defer_model_check=True lets build_agent succeed with no gateway key, so today's failure
 # lands deep inside runner._score_row and is recorded as one error per row (20 rows -> 20
-# failed results, COMPLETED_WITH_ERRORS). The guard must instead sit before execute_run so a
-# keyless run fails cleanly at setup: one error, zero RunResult rows.
+# failed results, COMPLETED_WITH_ERRORS). The guard sits in create_run before store.create_run,
+# so a keyless run fails synchronously at request time: one 422 ConfigError, no persisted run,
+# and zero RunResult rows -- not a PENDING run whose failure is only discoverable by polling.
 
 
 @pytest.mark.anyio
@@ -464,11 +465,14 @@ async def test_run_without_gateway_key_fails_cleanly_with_no_results(
     dataset, _ = make_dataset(store, ["pass", "fail", "pass"])
 
     async with _client(store, constant_factory()) as client:
-        body = await _start_run(client, version.id, dataset.id)
-        final = await _poll_until_terminal(client, body["id"])
+        resp = await client.post(
+            "/api/runs",
+            json={"kind": "validation", "version_id": version.id, "dataset_id": dataset.id},
+        )
 
-    assert final["status"] == RunStatus.FAILED.value
-    assert final["error"]
-    assert "valcore config set-key" in final["error"]
-    # Exactly one clear setup failure, not one failed result per row.
-    assert store.list_results(final["id"]) == []
+    assert resp.status_code == 422, resp.text
+    error = resp.json()["error"]
+    assert error["type"] == "ConfigError"
+    assert "valcore config set-key" in error["message"]
+    # No run was ever created, let alone any RunResult rows.
+    assert store.list_runs(dataset_id=dataset.id) == []

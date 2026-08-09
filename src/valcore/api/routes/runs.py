@@ -237,7 +237,12 @@ async def create_run(body: RunCreate, store: StoreDep, agent_factory: AgentFacto
     """Create a run (freezing its version) and launch it in the background.
 
     Returns immediately with status ``PENDING``; the run is never awaited in the handler.
+
+    Guards on ``config.require_gateway_key()`` before ``store.create_run``: a missing key
+    must surface synchronously as a ``ConfigError``, with no run ever persisted, rather than
+    as an asynchronous ``FAILED`` transition discovered by polling.
     """
+    config.require_gateway_key()
     run = store.create_run(
         kind=body.kind,
         version_id=body.version_id,
