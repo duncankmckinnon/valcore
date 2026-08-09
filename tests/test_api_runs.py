@@ -16,7 +16,7 @@ from pydantic_ai.models.test import TestModel
 
 from valcore.api.deps import get_store
 from valcore.api.main import create_app
-from valcore.api.routes.runs import get_agent_factory
+from valcore.api.routes.runs import _tasks, get_agent_factory
 from valcore.factory import build_output_model
 from valcore.models import LabelSource, RunKind, RunStatus, ScoreKind
 from valcore.store import Store, create_engine, init_db
@@ -476,3 +476,46 @@ async def test_run_without_gateway_key_fails_cleanly_with_no_results(
     assert "valcore config set-key" in error["message"]
     # No run was ever created, let alone any RunResult rows.
     assert store.list_runs(dataset_id=dataset.id) == []
+
+
+@pytest.mark.anyio
+async def test_retry_failed_without_gateway_key_fails_cleanly(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard must sit before any other work in ``retry_failed``.
+
+    Without it, a keyless retry would reset the prior terminal run to ``PENDING``
+    and launch a background task that later fails it row-by-row -- mutating a run
+    that a 200 response has already told the client succeeded.
+    """
+    version = make_version(store)
+    dataset, _rows = make_dataset(store, ["pass", "pass", "pass"], inputs=["ok0", "BOOM", "ok2"])
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if "BOOM" in str(messages):
+            raise RuntimeError("kaboom")
+        name = info.output_tools[0].name
+        return ModelResponse(parts=[ToolCallPart(tool_name=name, args={"verdict": "pass"})])
+
+    factory = lambda v: Agent(FunctionModel(respond), output_type=build_output_model(v))
+
+    async with _client(store, factory) as client:
+        body = await _start_run(client, version.id, dataset.id, concurrency=1)
+        run_id = body["id"]
+        before = await _poll_until_terminal(client, run_id)
+        assert before["status"] == RunStatus.COMPLETED_WITH_ERRORS.value
+        before_results = {r.row_id: r.id for r in store.list_results(run_id)}
+
+        monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+        resp = await client.post(f"/api/runs/{run_id}/retry-failed")
+
+    assert resp.status_code == 422, resp.text
+    error = resp.json()["error"]
+    assert error["type"] == "ConfigError"
+    assert "valcore config set-key" in error["message"]
+
+    run = store.get_run(run_id)
+    assert run.status is RunStatus.COMPLETED_WITH_ERRORS
+    after_results = {r.row_id: r.id for r in store.list_results(run_id)}
+    assert after_results == before_results
+    assert run_id not in _tasks

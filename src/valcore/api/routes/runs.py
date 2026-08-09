@@ -408,7 +408,12 @@ async def retry_failed(id: str, store: StoreDep, agent_factory: AgentFactoryDep)
 
     The run is reset to ``PENDING`` before relaunching so a client polling status is
     never fooled by the previous run's stale terminal state.
+
+    Guards on ``config.require_gateway_key()`` before any other work: a missing key
+    must surface synchronously as a ``ConfigError``, with the prior run's status and
+    results untouched and no background task launched.
     """
+    config.require_gateway_key()
     store.get_run(id)
     failed_row_ids = store.failed_result_row_ids(id)
     run = store.update_run_status(id, RunStatus.PENDING, error=None, finished_at=None)

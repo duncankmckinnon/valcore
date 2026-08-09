@@ -13,15 +13,21 @@ report identical metrics and per-row agreement over the same version and dataset
 that is the whole point of routing both through ``metrics.compute_metrics``.
 """
 
+import asyncio
+import importlib.util
+
 import pytest
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 
+from valcore import tracing
 from valcore.errors import ContractError
 from valcore.factory import build_output_model
 from valcore.models import LabelSource, RunKind, RunStatus, ScoreKind
 from valcore.runner import RunEvent, execute_run
 from valcore.store import Store, create_engine, init_db
+
+_LOGFIRE_PRESENT = importlib.util.find_spec("logfire") is not None
 
 CATEGORICAL_SCHEMA = {"kind": "categorical", "labels": ["pass", "fail"]}
 NUMERIC_SCHEMA = {"kind": "numeric"}
@@ -504,6 +510,54 @@ async def test_experiment_run_marker_written_and_blocks_cancel(
 
 
 @pytest.mark.anyio
+async def test_request_cancel_raises_while_experiment_is_still_running(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``ExperimentRun`` marker must exist before the run reaches ``RUNNING``.
+
+    A marker written only after ``evaluate()`` completes would leave ``request_cancel``
+    finding no row for the entire active run, silently accepting a cancellation that
+    ``evaluate()`` never polls -- exactly the race this finding closes. This blocks an
+    in-flight model call so the run is still ``RUNNING`` when ``request_cancel`` is called.
+    """
+    from valcore.experiment import execute_experiment
+
+    version = make_version(store)
+    dataset = make_dataset(store, ["pass", "pass"])
+    run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=1)
+
+    release = asyncio.Event()
+
+    class _BlockingTestModel(TestModel):
+        """A ``TestModel`` whose call blocks until released, keeping the run RUNNING."""
+
+        async def request(self, messages, model_settings, model_request_parameters):
+            await release.wait()
+            return await super().request(messages, model_settings, model_request_parameters)
+
+    agent = Agent(
+        _BlockingTestModel(custom_output_args={"verdict": "pass"}),
+        output_type=build_output_model(version),
+    )
+    patch_build_agent(monkeypatch, agent)
+
+    task = asyncio.create_task(execute_experiment(store, run.id))
+    try:
+        async with asyncio.timeout(5.0):
+            while store.get_run(run.id).status is not RunStatus.RUNNING:
+                await asyncio.sleep(0)
+
+        with pytest.raises(ContractError):
+            store.request_cancel(run.id)
+    finally:
+        release.set()
+        result = await task
+
+    assert result.status is RunStatus.COMPLETED
+    assert store.get_run(run.id).cancel_requested is False
+
+
+@pytest.mark.anyio
 async def test_experiment_run_case_count_excludes_failed_cases(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -673,3 +727,106 @@ async def test_event_callback_failure_fails_run_not_stuck_running(
     assert result.status is RunStatus.FAILED
     assert result.finished_at is not None
     assert result.error is not None
+
+
+# -- Tracing ----------------------------------------------------------------------
+#
+# execute_experiment wraps the transition to RUNNING through the terminal status
+# update in tracing.run_span, exactly as runner.execute_run does. These tests prove
+# the span closes with a status attribute both on the happy path and when execution
+# fails after entering the span (eval-dataset construction, evaluate() itself).
+
+
+@pytest.fixture(autouse=True)
+def _reset_tracing_configured_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reset tracing's module-global idempotency guard before every test in this file."""
+    monkeypatch.setattr(tracing, "_configured", False, raising=False)
+
+
+@pytest.fixture
+def traced(capfire, monkeypatch: pytest.MonkeyPatch):
+    """Mark tracing as configured against ``capfire``'s in-memory exporter."""
+    monkeypatch.setattr(tracing, "_configured", True)
+    return capfire
+
+
+@pytest.mark.skipif(not _LOGFIRE_PRESENT, reason="logfire extra not installed")
+class TestExperimentSpan:
+    """With tracing configured, execute_experiment must produce a real span tree."""
+
+    @pytest.mark.anyio
+    async def test_successful_run_span_carries_status_and_metrics(
+        self, store: Store, traced, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from valcore.experiment import execute_experiment
+
+        version = make_version(store)
+        dataset = make_dataset(store, ["pass", "fail", "pass"])
+        run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=2)
+
+        patch_build_agent(monkeypatch, constant_agent(version))
+        result = await execute_experiment(store, run.id)
+
+        assert result.metrics is not None
+        spans = traced.exporter.exported_spans_as_dict(parse_json_attributes=True)
+        run_spans = [s for s in spans if s["name"] == "valcore.run"]
+        assert len(run_spans) == 1
+        assert run_spans[0]["end_time"] is not None
+        attrs = run_spans[0]["attributes"]
+        assert attrs["status"] == result.status.value
+        for key, value in result.metrics.items():
+            assert attrs[key] == value
+
+    @pytest.mark.anyio
+    async def test_eval_dataset_construction_failure_closes_span_as_failed(
+        self, store: Store, traced, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failure building the ``EvalsDataset`` happens inside the span (it needs
+        the agent and rows resolved during setup) and must still close the span with
+        ``status=failed`` rather than leaving it open or attribute-less."""
+        import valcore.experiment as experiment_module
+
+        version = make_version(store)
+        dataset = make_dataset(store, ["pass", "fail"])
+        run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=1)
+
+        def boom(dataset, rows, evaluators):
+            raise RuntimeError("dataset construction exploded")
+
+        monkeypatch.setattr(experiment_module, "dataset_to_evals", boom)
+        patch_build_agent(monkeypatch, constant_agent(version))
+
+        result = await experiment_module.execute_experiment(store, run.id)
+
+        assert result.status is RunStatus.FAILED
+        assert result.finished_at is not None
+        spans = traced.exporter.exported_spans_as_dict()
+        run_spans = [s for s in spans if s["name"] == "valcore.run"]
+        assert len(run_spans) == 1
+        assert run_spans[0]["end_time"] is not None
+        assert run_spans[0]["attributes"]["status"] == RunStatus.FAILED.value
+
+    @pytest.mark.anyio
+    async def test_evaluate_failure_closes_span_as_failed(
+        self, store: Store, traced, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A malformed label breaks ``_agreement`` inside ``teardown``, which
+        ``pydantic_evals`` propagates out of ``evaluate()`` itself -- the span must
+        still close with ``status=failed`` rather than staying open."""
+        from valcore.experiment import execute_experiment
+
+        version = make_numeric_version(store)
+        dataset = store.create_dataset("ds", "", ["input", "output"], NUMERIC_SCHEMA)
+        rows = store.add_rows(dataset.id, [{"input": "in0", "output": "out0"}])
+        store.set_label(rows[0].id, {"value": "not-a-number"}, LabelSource.MANUAL)
+        run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=1)
+
+        patch_build_agent(monkeypatch, constant_numeric_agent(version, 1.0))
+        result = await execute_experiment(store, run.id)
+
+        assert result.status is RunStatus.FAILED
+        spans = traced.exporter.exported_spans_as_dict()
+        run_spans = [s for s in spans if s["name"] == "valcore.run"]
+        assert len(run_spans) == 1
+        assert run_spans[0]["end_time"] is not None
+        assert run_spans[0]["attributes"]["status"] == RunStatus.FAILED.value

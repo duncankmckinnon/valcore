@@ -222,36 +222,50 @@ async def execute_experiment(
                 f"{unlabeled} row(s) are unlabeled."
             )
 
+    # Marks this run as experiment-produced before ``RUNNING``/``evaluate()`` even start,
+    # so ``request_cancel`` fails honestly for it from the moment it becomes active --
+    # ``evaluate()`` has no cancellation hook to honor, and a marker written only after
+    # completion would let a cancel request silently no-op for the whole active run.
     await asyncio.to_thread(
-        store.update_run_status, run_id, RunStatus.RUNNING, started_at=datetime.now(UTC)
+        store.set_experiment,
+        run_id,
+        experiment_name=version.version_name,
+        case_count=len(rows),
     )
-    await emit("started", {"total": len(rows)})
 
-    # An EVAL-kind run has no labels to agree with, mirroring ``runner``'s ``want_agreement``.
-    want_agreement = run.kind is RunKind.VALIDATION
-    evaluators: list[Evaluator] = []
-    if want_agreement:
-        evaluators.append(
-            EqualsExpected() if version.score_kind is ScoreKind.CATEGORICAL else NumericDelta()
-        )
+    with run_span(run, version, dataset, len(rows)) as span:
+        try:
+            await asyncio.to_thread(
+                store.update_run_status, run_id, RunStatus.RUNNING, started_at=datetime.now(UTC)
+            )
+            await emit("started", {"total": len(rows)})
 
-    evals_dataset = dataset_to_evals(dataset, rows, evaluators)
-    task = _make_task(version, agent)
-    rows_by_id = {row.id: row for row in rows}
+            # An EVAL-kind run has no labels to agree with, mirroring ``runner``'s
+            # ``want_agreement``.
+            want_agreement = run.kind is RunKind.VALIDATION
+            evaluators: list[Evaluator] = []
+            if want_agreement:
+                evaluators.append(
+                    EqualsExpected()
+                    if version.score_kind is ScoreKind.CATEGORICAL
+                    else NumericDelta()
+                )
 
-    def lifecycle_factory(case: Case) -> PersistResults:
-        return PersistResults(
-            case,
-            store=store,
-            run_id=run_id,
-            version=version,
-            want_agreement=want_agreement,
-            rows_by_id=rows_by_id,
-            emit_row=emit_row,
-        )
+            evals_dataset = dataset_to_evals(dataset, rows, evaluators)
+            task = _make_task(version, agent)
+            rows_by_id = {row.id: row for row in rows}
 
-    try:
-        with run_span(run, version, dataset, len(rows)) as span:
+            def lifecycle_factory(case: Case) -> PersistResults:
+                return PersistResults(
+                    case,
+                    store=store,
+                    run_id=run_id,
+                    version=version,
+                    want_agreement=want_agreement,
+                    rows_by_id=rows_by_id,
+                    emit_row=emit_row,
+                )
+
             report = await evals_dataset.evaluate(
                 task,
                 name=version.version_name,
@@ -290,8 +304,8 @@ async def execute_experiment(
                 finished_at=datetime.now(UTC),
                 metrics=metrics,
             )
-            # Marks this run as experiment-produced, which is what makes ``request_cancel``
-            # fail honestly for it -- ``evaluate()`` has no cancellation hook to honor.
+            # Replaces the initial ``len(rows)`` marker with the actual case count now
+            # that ``evaluate()`` has finished.
             await asyncio.to_thread(
                 store.set_experiment,
                 run_id,
@@ -303,19 +317,21 @@ async def execute_experiment(
             if metrics is not None:
                 for key, value in metrics.items():
                     span.set_attribute(key, value)
-    except Exception as exc:  # noqa: BLE001 — an unexpected lifecycle/evaluate failure,
-        # as opposed to an ordinary per-case failure (which ``PersistResults.teardown``
-        # already records without raising), must still leave the run terminal rather
-        # than stuck ``RUNNING`` forever.
-        failed = await asyncio.to_thread(
-            store.update_run_status,
-            run_id,
-            RunStatus.FAILED,
-            error=str(exc),
-            finished_at=datetime.now(UTC),
-        )
-        await emit("error", {"error": str(exc)})
-        return failed
+        except Exception as exc:  # noqa: BLE001 — an unexpected lifecycle/evaluate failure,
+            # as opposed to an ordinary per-case failure (which ``PersistResults.teardown``
+            # already records without raising), must still leave the run terminal rather
+            # than stuck ``RUNNING`` forever. Handled while the span is still open so
+            # ``status`` is attached before it closes.
+            failed = await asyncio.to_thread(
+                store.update_run_status,
+                run_id,
+                RunStatus.FAILED,
+                error=str(exc),
+                finished_at=datetime.now(UTC),
+            )
+            span.set_attribute("status", RunStatus.FAILED.value)
+            await emit("error", {"error": str(exc)})
+            return failed
 
     await emit("finished", {"status": status.value, "metrics": metrics})
     return finished
