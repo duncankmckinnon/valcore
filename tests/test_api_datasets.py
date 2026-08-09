@@ -35,6 +35,18 @@ async def client(store: Store) -> AsyncIterator[httpx.AsyncClient]:
         yield c
 
 
+@pytest.fixture(autouse=True)
+def _gateway_key_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Present a gateway key by default.
+
+    The three generate-rows handlers now guard on ``config.require_gateway_key()`` before
+    doing any work; without this, every pre-existing generate test below (which monkeypatches
+    ``generate_rows`` itself) would fail on the guard before its stub ever ran. Tests that
+    target the guard clear the key explicitly.
+    """
+    monkeypatch.setenv("PYDANTIC_AI_GATEWAY_API_KEY", "sk-test-gateway-key")
+
+
 # -- Upload ------------------------------------------------------------------
 
 
@@ -1852,3 +1864,225 @@ async def test_upload_full_package_imports_dataset_only_no_evaluator(
         {"question": "q1", "answer": "a1"},
         {"question": "q2", "answer": "a2"},
     ]
+
+
+# -- Gateway guard: the three generate-rows handlers ---------------------------
+#
+# Today the gateway provider raises a bare UserError deep inside model plumbing, which
+# _register_exception_handlers cannot map, so it becomes a 500. Each generative handler
+# must instead call config.require_gateway_key() before doing any other work, so a missing
+# key surfaces as the documented ConfigError (422) and generate_rows is never even invoked.
+
+
+@pytest.mark.anyio
+async def test_generate_without_gateway_key_is_client_error_not_500(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    calls: list[dict] = []
+    _install_recording_generate(monkeypatch, calls)
+
+    resp = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "gen",
+            "description": "d",
+            "columns": ["prompt"],
+            "label_schema": CATEGORICAL_SCHEMA,
+            "count": 1,
+        },
+    )
+    assert resp.status_code < 500
+    assert resp.status_code == 422, resp.text
+    error = resp.json()["error"]
+    assert error["type"] == "ConfigError"
+    assert "valcore config set-key" in error["message"]
+    assert calls == []
+
+
+@pytest.mark.anyio
+async def test_generate_from_version_without_gateway_key_is_client_error_not_500(
+    client: httpx.AsyncClient, store: Store, monkeypatch
+) -> None:
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    version = _make_version(store)
+    calls: list[dict] = []
+    _install_recording_generate(monkeypatch, calls)
+
+    resp = await client.post(
+        "/api/datasets/generate-from-version",
+        json={"version_id": version.id, "name": "seeded", "count": 1},
+    )
+    assert resp.status_code < 500
+    assert resp.status_code == 422, resp.text
+    error = resp.json()["error"]
+    assert error["type"] == "ConfigError"
+    assert "valcore config set-key" in error["message"]
+    assert calls == []
+
+
+@pytest.mark.anyio
+async def test_generate_rows_without_gateway_key_is_client_error_not_500(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    calls: list[dict] = []
+    _install_recording_generate(monkeypatch, calls)
+
+    created = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "gen",
+            "description": "d",
+            "columns": ["prompt"],
+            "label_schema": CATEGORICAL_SCHEMA,
+            "count": 1,
+        },
+    )
+    ds_id = created.json()["dataset"]["id"]
+    calls.clear()
+
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    resp = await client.post(f"/api/datasets/{ds_id}/generate-rows", json={"count": 1})
+    assert resp.status_code < 500
+    assert resp.status_code == 422, resp.text
+    error = resp.json()["error"]
+    assert error["type"] == "ConfigError"
+    assert "valcore config set-key" in error["message"]
+    assert calls == []
+
+
+# -- Push a dataset to Logfire's hosted store ----------------------------------
+
+
+@pytest.mark.anyio
+async def test_push_dataset_returns_the_documented_shape(
+    client: httpx.AsyncClient, store: Store, monkeypatch
+) -> None:
+    ds_id, _ = _seed_rows(store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p0"}}])
+
+    async def fake_push_dataset(
+        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+    ):
+        return {
+            "id": "logfire-dataset-id",
+            "name": name or dataset.name,
+            "case_count": len(rows),
+            "output_schema": {"enum": ["good", "bad"], "type": "string"},
+        }
+
+    monkeypatch.setattr("valcore.api.routes.datasets.push_dataset", fake_push_dataset)
+
+    resp = await client.post(f"/api/datasets/{ds_id}/logfire/push", json={"name": "custom-name"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "id": "logfire-dataset-id",
+        "name": "custom-name",
+        "case_count": 1,
+        "output_schema": {"enum": ["good", "bad"], "type": "string"},
+    }
+
+
+@pytest.mark.anyio
+async def test_push_dataset_body_is_fully_optional(
+    client: httpx.AsyncClient, store: Store, monkeypatch
+) -> None:
+    ds_id, _ = _seed_rows(store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p0"}}])
+
+    async def fake_push_dataset(
+        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+    ):
+        return {"id": "x", "name": dataset.name, "case_count": len(rows), "output_schema": None}
+
+    monkeypatch.setattr("valcore.api.routes.datasets.push_dataset", fake_push_dataset)
+
+    resp = await client.post(f"/api/datasets/{ds_id}/logfire/push", json={})
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.anyio
+async def test_push_dataset_defaults_on_conflict_to_update_when_omitted(
+    client: httpx.AsyncClient, store: Store, monkeypatch
+) -> None:
+    """An omitted ``on_conflict`` must reach ``push_dataset`` as ``"update"``, not ``None``."""
+    ds_id, _ = _seed_rows(store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p0"}}])
+    calls: list[dict] = []
+
+    async def fake_push_dataset(
+        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+    ):
+        calls.append({"on_conflict": on_conflict})
+        return {"id": "x", "name": dataset.name, "case_count": len(rows), "output_schema": None}
+
+    monkeypatch.setattr("valcore.api.routes.datasets.push_dataset", fake_push_dataset)
+
+    resp = await client.post(f"/api/datasets/{ds_id}/logfire/push", json={"name": "n"})
+    assert resp.status_code == 200, resp.text
+    assert calls == [{"on_conflict": "update"}]
+
+
+@pytest.mark.anyio
+async def test_push_dataset_forwards_the_resolved_dataset_rows_and_body_fields(
+    client: httpx.AsyncClient, store: Store, monkeypatch
+) -> None:
+    ds_id, row_ids = _seed_rows(
+        store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p0"}}, {"data": {"prompt": "p1"}}]
+    )
+    calls: list[dict] = []
+
+    async def fake_push_dataset(
+        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+    ):
+        calls.append(
+            {
+                "dataset_id": dataset.id,
+                "row_count": len(rows),
+                "name": name,
+                "description": description,
+                "on_conflict": on_conflict,
+            }
+        )
+        return {
+            "id": "x",
+            "name": name or dataset.name,
+            "case_count": len(rows),
+            "output_schema": None,
+        }
+
+    monkeypatch.setattr("valcore.api.routes.datasets.push_dataset", fake_push_dataset)
+
+    resp = await client.post(
+        f"/api/datasets/{ds_id}/logfire/push",
+        json={"name": "custom-name", "description": "custom-desc", "on_conflict": "error"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert calls == [
+        {
+            "dataset_id": ds_id,
+            "row_count": len(row_ids),
+            "name": "custom-name",
+            "description": "custom-desc",
+            "on_conflict": "error",
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_push_dataset_missing_logfire_api_key_is_client_error(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    # No stub installed here: the real push_dataset resolves the API key and raises
+    # ConfigError, which must surface as a 422 client error naming the config command.
+    ds_id, _ = _seed_rows(store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p0"}}])
+
+    resp = await client.post(f"/api/datasets/{ds_id}/logfire/push", json={})
+    assert resp.status_code < 500
+    assert resp.status_code == 422, resp.text
+    error = resp.json()["error"]
+    assert error["type"] == "ConfigError"
+    assert "valcore config set-logfire-key" in error["message"]
+
+
+@pytest.mark.anyio
+async def test_push_dataset_unknown_dataset_id_is_404(client: httpx.AsyncClient) -> None:
+    resp = await client.post("/api/datasets/does-not-exist/logfire/push", json={})
+    assert resp.status_code == 404, resp.text

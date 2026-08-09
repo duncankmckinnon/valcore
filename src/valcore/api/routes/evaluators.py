@@ -7,7 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict
 
-from valcore import generator
+from valcore import config, generator
 from valcore.api.deps import get_store
 from valcore.config_io import EvalPackage
 from valcore.errors import ContractError, FrozenVersionError
@@ -405,6 +405,7 @@ async def generate(body: GenerateRequest, store: StoreDep) -> GeneratedConfig:
     Calls an LLM and can take tens of seconds; the UI presents the returned config as an
     editable draft saved as a version separately.
     """
+    config.require_gateway_key()
     columns, label_schema = _resolve_seed(body, store)
     return await generator.generate_config(
         body.criteria,
@@ -422,6 +423,7 @@ async def generate_version(id: str, body: GenerateRequest, store: StoreDep) -> G
     of seconds; the UI presents the returned config as an editable draft that the user
     saves as a version separately.
     """
+    config.require_gateway_key()
     store.get_evaluator(id)
     columns, label_schema = _resolve_seed(body, store)
     return await generator.generate_config(
@@ -439,4 +441,5 @@ async def refine_version(body: RefineRequest) -> RefinedConfig:
     Calls an LLM and can take tens of seconds. The response includes ``changed_fields``
     for the diff view; nothing is saved until the user submits a new version.
     """
+    config.require_gateway_key()
     return await generator.refine_config(body.config, body.instruction)
