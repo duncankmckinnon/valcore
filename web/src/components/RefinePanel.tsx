@@ -7,6 +7,7 @@ import { evaluators } from "../api/client";
 import type { GeneratedConfig } from "../api/types";
 import { ConfigDiff } from "./ConfigDiff";
 import { Button, ErrorBanner, Spinner, TextArea } from "./ui";
+import { GATEWAY_BLOCKER, useSetup } from "./useSetup";
 
 type RefinePanelProps = {
   config: GeneratedConfig;
@@ -18,6 +19,7 @@ export function RefinePanel({ config, onApply }: RefinePanelProps) {
   const [refining, setRefining] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [diff, setDiff] = useState<{ config: GeneratedConfig; changed: string[] } | null>(null);
+  const { gatewayReady } = useSetup();
 
   const handleRefine = async () => {
     if (instruction.trim() === "") {
@@ -45,7 +47,8 @@ export function RefinePanel({ config, onApply }: RefinePanelProps) {
         value={instruction}
         onChange={(event) => setInstruction(event.target.value)}
       />
-      <Button variant="secondary" onClick={handleRefine} disabled={refining}>
+      {!gatewayReady && <p className="form-footer-blocker">{GATEWAY_BLOCKER}</p>}
+      <Button variant="secondary" onClick={handleRefine} disabled={refining || !gatewayReady}>
         {refining ? <Spinner /> : "Refine"}
       </Button>
       {diff && (

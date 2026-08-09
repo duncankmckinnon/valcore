@@ -12,6 +12,7 @@ import { evaluators } from "../api/client";
 import type { Dataset, GeneratedConfig, LabelSchema } from "../api/types";
 import { Button, ErrorBanner, Modal, TextArea } from "./ui";
 import { ColumnNotesEditor } from "./ColumnNotesEditor";
+import { GATEWAY_BLOCKER, useSetup } from "./useSetup";
 
 type EvaluatorFromDatasetProps = {
   open: boolean;
@@ -36,10 +37,11 @@ export function EvaluatorFromDataset({
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [error, setError] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
+  const { gatewayReady } = useSetup();
 
   const schema = dataset.label_schema;
   const hasLabelSpace = declaresLabelSpace(schema);
-  const canSubmit = criteria.trim() !== "" && !submitting;
+  const canSubmit = criteria.trim() !== "" && !submitting && gatewayReady;
 
   const submit = async () => {
     if (!canSubmit) return;
@@ -72,6 +74,7 @@ export function EvaluatorFromDataset({
       onClose={onClose}
       footer={
         <div className="modal-actions">
+          {!gatewayReady && <span className="form-footer-blocker">{GATEWAY_BLOCKER}</span>}
           <Button variant="secondary" onClick={onClose} disabled={submitting}>
             Cancel
           </Button>
