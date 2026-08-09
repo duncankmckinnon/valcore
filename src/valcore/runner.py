@@ -17,6 +17,7 @@ from pydantic_ai import Agent
 from pydantic_ai.usage import RunUsage
 from sqlmodel import select
 
+from valcore import tracing
 from valcore.errors import ContractError
 from valcore.factory import build_agent, extract_score, render_prompt
 from valcore.metrics import compute_metrics
@@ -141,81 +142,87 @@ async def execute_run(
                 f"{unlabeled} row(s) are unlabeled."
             )
 
-    if only_row_ids is not None:
-        await asyncio.to_thread(_clear_results, store, run_id, list(only_row_ids))
+    with tracing.run_span(run, version, dataset, row_count=len(rows)) as span:
+        if only_row_ids is not None:
+            await asyncio.to_thread(_clear_results, store, run_id, list(only_row_ids))
 
-    await asyncio.to_thread(
-        store.update_run_status, run_id, RunStatus.RUNNING, started_at=datetime.now(UTC)
-    )
-    await emit("started", {"total": len(rows)})
+        await asyncio.to_thread(
+            store.update_run_status, run_id, RunStatus.RUNNING, started_at=datetime.now(UTC)
+        )
+        await emit("started", {"total": len(rows)})
 
-    want_agreement = run.kind is RunKind.VALIDATION
-    semaphore = asyncio.Semaphore(run.concurrency)
+        want_agreement = run.kind is RunKind.VALIDATION
+        semaphore = asyncio.Semaphore(run.concurrency)
 
-    async def process(row: DatasetRow) -> _Outcome:
-        try:
-            outcome = await _score_row(store, run_id, version, built_agent, row, want_agreement)
-            await emit(
-                "row",
-                {
-                    "row_id": row.id,
-                    "success": outcome.success,
-                    "score_value": outcome.predicted,
-                },
-            )
-            return outcome
-        finally:
-            semaphore.release()
+        async def process(row: DatasetRow) -> _Outcome:
+            try:
+                outcome = await _score_row(store, run_id, version, built_agent, row, want_agreement)
+                await emit(
+                    "row",
+                    {
+                        "row_id": row.id,
+                        "success": outcome.success,
+                        "score_value": outcome.predicted,
+                    },
+                )
+                return outcome
+            finally:
+                semaphore.release()
 
-    tasks: list[asyncio.Task[_Outcome]] = []
-    cancelled = False
-    for row in rows:
-        await semaphore.acquire()
-        current = await asyncio.to_thread(store.get_run, run_id)
-        if current.cancel_requested:
-            semaphore.release()
-            cancelled = True
-            break
-        tasks.append(asyncio.create_task(process(row)))
+        tasks: list[asyncio.Task[_Outcome]] = []
+        cancelled = False
+        for row in rows:
+            await semaphore.acquire()
+            current = await asyncio.to_thread(store.get_run, run_id)
+            if current.cancel_requested:
+                semaphore.release()
+                cancelled = True
+                break
+            tasks.append(asyncio.create_task(process(row)))
 
-    await asyncio.gather(*tasks)
+        await asyncio.gather(*tasks)
 
-    # Derive terminal status and metrics from every persisted result, not just
-    # this batch's outcomes: a retry via ``only_row_ids`` must summarize the whole
-    # run, whose store now holds both the replaced rows and the untouched ones.
-    persisted = await asyncio.to_thread(store.list_results, run_id)
-    any_error = any(result.error is not None for result in persisted)
+        # Derive terminal status and metrics from every persisted result, not just
+        # this batch's outcomes: a retry via ``only_row_ids`` must summarize the whole
+        # run, whose store now holds both the replaced rows and the untouched ones.
+        persisted = await asyncio.to_thread(store.list_results, run_id)
+        any_error = any(result.error is not None for result in persisted)
 
-    if cancelled:
-        status = RunStatus.CANCELLED
-    elif any_error:
-        status = RunStatus.COMPLETED_WITH_ERRORS
-    else:
-        status = RunStatus.COMPLETED
+        if cancelled:
+            status = RunStatus.CANCELLED
+        elif any_error:
+            status = RunStatus.COMPLETED_WITH_ERRORS
+        else:
+            status = RunStatus.COMPLETED
 
-    # A cancelled run's partial agreement would misrepresent the dataset, so
-    # metrics are computed only for terminal states that ran to completion.
-    metrics: dict | None = None
-    if want_agreement and not cancelled:
-        label_by_row = {row.id: _label_value(row) for row in all_rows}
-        pairs = [
-            (result.score_value, label_by_row.get(result.row_id))
-            for result in persisted
-            if result.error is None and label_by_row.get(result.row_id) is not None
-        ]
-        if pairs:
-            labels = version.score_labels if version.score_kind is ScoreKind.CATEGORICAL else None
-            metrics = compute_metrics(pairs, version.score_kind, labels)
+        # A cancelled run's partial agreement would misrepresent the dataset, so
+        # metrics are computed only for terminal states that ran to completion.
+        metrics: dict | None = None
+        if want_agreement and not cancelled:
+            label_by_row = {row.id: _label_value(row) for row in all_rows}
+            pairs = [
+                (result.score_value, label_by_row.get(result.row_id))
+                for result in persisted
+                if result.error is None and label_by_row.get(result.row_id) is not None
+            ]
+            if pairs:
+                labels = (
+                    version.score_labels if version.score_kind is ScoreKind.CATEGORICAL else None
+                )
+                metrics = compute_metrics(pairs, version.score_kind, labels)
 
-    finished = await asyncio.to_thread(
-        store.update_run_status,
-        run_id,
-        status,
-        finished_at=datetime.now(UTC),
-        metrics=metrics,
-    )
-    await emit("finished", {"status": status.value, "metrics": metrics})
-    return finished
+        finished = await asyncio.to_thread(
+            store.update_run_status,
+            run_id,
+            status,
+            finished_at=datetime.now(UTC),
+            metrics=metrics,
+        )
+        span.set_attribute("status", status.value)
+        for key, value in (metrics or {}).items():
+            span.set_attribute(key, value)
+        await emit("finished", {"status": status.value, "metrics": metrics})
+        return finished
 
 
 async def _score_row(
@@ -227,38 +234,39 @@ async def _score_row(
     want_agreement: bool,
 ) -> _Outcome:
     """Score one row and persist its result; row failures are recorded, not raised."""
-    label_value = _label_value(row) if want_agreement else None
-    start = time.perf_counter()
-    try:
-        prompt = render_prompt(version, row.data)
-        result = await agent.run(prompt)
-        latency_ms = int((time.perf_counter() - start) * 1000)
-        output: BaseModel = result.output
-        score = extract_score(version, output)
-        agreement = (
-            _agreement(version.score_kind, score, label_value)
-            if want_agreement and label_value is not None
-            else None
-        )
-        await asyncio.to_thread(
-            store.add_result,
-            run_id,
-            row_id=row.id,
-            output=output.model_dump(mode="json"),
-            score_value=score,
-            agreement=agreement,
-            latency_ms=latency_ms,
-            usage=_usage_dict(result.usage),
-        )
-        return _Outcome(row.id, True, score)
-    except Exception as exc:  # noqa: BLE001 — a row failure is recorded, never fatal
-        latency_ms = int((time.perf_counter() - start) * 1000)
-        await asyncio.to_thread(
-            store.add_result,
-            run_id,
-            row_id=row.id,
-            output=None,
-            error=str(exc),
-            latency_ms=latency_ms,
-        )
-        return _Outcome(row.id, False, None)
+    with tracing.row_span(row):
+        label_value = _label_value(row) if want_agreement else None
+        start = time.perf_counter()
+        try:
+            prompt = render_prompt(version, row.data)
+            result = await agent.run(prompt)
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            output: BaseModel = result.output
+            score = extract_score(version, output)
+            agreement = (
+                _agreement(version.score_kind, score, label_value)
+                if want_agreement and label_value is not None
+                else None
+            )
+            await asyncio.to_thread(
+                store.add_result,
+                run_id,
+                row_id=row.id,
+                output=output.model_dump(mode="json"),
+                score_value=score,
+                agreement=agreement,
+                latency_ms=latency_ms,
+                usage=_usage_dict(result.usage),
+            )
+            return _Outcome(row.id, True, score)
+        except Exception as exc:  # noqa: BLE001 — a row failure is recorded, never fatal
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            await asyncio.to_thread(
+                store.add_result,
+                run_id,
+                row_id=row.id,
+                output=None,
+                error=str(exc),
+                latency_ms=latency_ms,
+            )
+            return _Outcome(row.id, False, None)
