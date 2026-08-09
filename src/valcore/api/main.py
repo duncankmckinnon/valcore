@@ -4,7 +4,6 @@ import importlib
 from importlib.resources import files as _package_files
 from pathlib import Path
 
-import logfire_api as logfire
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -24,7 +23,7 @@ from valcore.errors import (
 from valcore.models import VALID_CAPABILITIES
 from valcore.settings import MODEL_CATALOG
 from valcore.tools import tool_names
-from valcore.tracing import configure_tracing
+from valcore.tracing import configure_tracing, instrument_app
 
 _STATUS_BY_ERROR: tuple[tuple[type[ValcoreError], int], ...] = (
     (NotFoundError, 404),
@@ -104,7 +103,7 @@ def create_app() -> FastAPI:
     _register_exception_handlers(app)
 
     configure_tracing(load_config())
-    logfire.instrument_fastapi(app)
+    instrument_app(app)
 
     @app.get("/api/health")
     async def health() -> dict[str, str]:

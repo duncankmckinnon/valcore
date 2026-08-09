@@ -82,6 +82,22 @@ def configure_tracing(cfg: FileConfig) -> None:
     _configured = True
 
 
+def instrument_app(app: Any) -> None:
+    """Instrument a FastAPI app, but only when Logfire's FastAPI extra is installed.
+
+    Unlike ``configure`` and ``span``, ``instrument_fastapi`` does **not** degrade to a
+    no-op: it raises ``RuntimeError`` when ``opentelemetry-instrumentation-fastapi`` is
+    missing. And the shim offers no protection here, because ``pydantic-ai-slim`` depends
+    on ``logfire[httpx]`` -- so real ``logfire`` is present in every install and
+    ``logfire_api`` forwards to it, while the FastAPI instrumentation ships only in
+    valcore's own ``[logfire]`` extra. Guarding on ``logfire`` would therefore still
+    crash; the guard has to be on the instrumentation package itself.
+    """
+    if importlib.util.find_spec("opentelemetry.instrumentation.fastapi") is None:
+        return
+    logfire.instrument_fastapi(app)
+
+
 @contextmanager
 def run_span(
     run: Run, version: EvaluatorVersion, dataset: Dataset, row_count: int
