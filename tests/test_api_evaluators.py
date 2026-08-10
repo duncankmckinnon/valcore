@@ -713,7 +713,13 @@ async def test_generate_dataset_id_empty_schema_passes_none(app, store: Store, m
 
 
 @pytest.mark.anyio
-async def test_generate_dataset_id_and_columns_conflict(app, store: Store, monkeypatch) -> None:
+async def test_generate_columns_narrow_the_dataset_seed(app, store: Store, monkeypatch) -> None:
+    """``columns`` beside ``dataset_id`` narrows the seed instead of conflicting with it.
+
+    An evaluator should not have to require every column its dataset happens to carry, so the
+    named subset is what reaches the generator -- while the label space still comes from the
+    dataset.
+    """
     calls: list[dict] = []
     monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
 
@@ -731,9 +737,32 @@ async def test_generate_dataset_id_and_columns_conflict(app, store: Store, monke
             },
         )
 
-    # Supplying both a seed and explicit columns is ambiguous; the handler refuses.
+    assert response.status_code == 200
+    assert calls[0]["columns"] == ["question"]
+    assert calls[0]["label_schema"] is not None
+
+
+@pytest.mark.anyio
+async def test_generate_rejects_a_column_absent_from_the_dataset(
+    app, store: Store, monkeypatch
+) -> None:
+    """A typo must not silently drop a column the caller meant to keep."""
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    dataset = store.create_dataset(
+        "ds", "", ["question", "answer"], {"kind": "categorical", "labels": ["good", "bad"]}
+    )
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={"criteria": "grade it", "dataset_id": dataset.id, "columns": ["quesiton"]},
+        )
+
     assert response.status_code == 422
     assert response.json()["error"]["type"] == "ContractError"
+    assert calls == []
     # The ambiguity was caught before any generation happened.
     assert calls == []
 
@@ -911,9 +940,10 @@ async def test_generate_version_empty_schema_passes_none(app, store: Store, monk
 
 
 @pytest.mark.anyio
-async def test_generate_version_dataset_id_and_columns_conflict(
+async def test_generate_version_columns_narrow_the_dataset_seed(
     app, store: Store, monkeypatch
 ) -> None:
+    """The per-evaluator endpoint narrows the same way ``/generate`` does."""
     calls: list[dict] = []
     monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
 
@@ -928,13 +958,12 @@ async def test_generate_version_dataset_id_and_columns_conflict(
             json={
                 "criteria": "grade it",
                 "dataset_id": dataset.id,
-                "columns": ["question"],
+                "columns": ["answer"],
             },
         )
 
-    assert response.status_code == 422
-    assert response.json()["error"]["type"] == "ContractError"
-    assert calls == []
+    assert response.status_code == 200
+    assert calls[0]["columns"] == ["answer"]
 
 
 @pytest.mark.anyio

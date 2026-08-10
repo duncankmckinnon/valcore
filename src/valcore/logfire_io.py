@@ -69,7 +69,10 @@ async def push_dataset(
             "The 'logfire' extra is required to push datasets to Logfire's hosted store."
         ) from exc
 
-    evals_dataset = dataset_to_evals(dataset, rows, evaluators=[])
+    # wrap_output: the hosted API types ``expected_output`` as a dictionary and rejects a scalar
+    # with ``dict_type: Input should be a valid dictionary``, so each label goes up as
+    # ``{"value": label}``. Exported ``.dataset.json`` files keep the scalar form.
+    evals_dataset = dataset_to_evals(dataset, rows, evaluators=[], wrap_output=True)
     try:
         async with AsyncLogfireAPIClient(api_key=resolved_key) as client:
             detail = await client.push_dataset(

@@ -16,6 +16,7 @@ import ``yaml``, touch the store, read the environment, or use ``Dataset.to_file
 
 from typing import Any, Literal
 
+from pydantic import create_model
 from pydantic_ai.agent.spec import AgentSpec
 from pydantic_evals import Dataset as EvalsDataset
 from pydantic_evals.dataset import Case
@@ -202,8 +203,16 @@ def valcore_meta(version: EvaluatorVersion) -> dict:
 # --- Dataset <-> pydantic_evals.Dataset ---------------------------------------
 
 
-def _row_to_case(row: DatasetRow) -> Case:
-    """Map one valcore row to a pydantic-evals case, carrying provenance in ``valcore_row``."""
+def _row_to_case(row: DatasetRow, wrap_output: bool = False) -> Case:
+    """Map one valcore row to a pydantic-evals case, carrying provenance in ``valcore_row``.
+
+    ``wrap_output`` emits ``expected_output`` as ``{"value": label}`` instead of the bare label.
+    Logfire's hosted datasets API types that field as a dictionary -- a scalar is rejected with
+    ``dict_type: Input should be a valid dictionary``, and its client only passes dicts through
+    untouched, serializing anything else as-is. ``{"value": ...}`` is valcore's own storage shape
+    for ``DatasetRow.label``, so the hosted form matches the database rather than inventing a
+    third representation. Local exports stay scalar for ``EqualsExpected``.
+    """
     valcore_row: dict = {"idx": row.idx}
     if row.note is not None:
         valcore_row["note"] = row.note
@@ -215,7 +224,9 @@ def _row_to_case(row: DatasetRow) -> Case:
         valcore_row["suggested_label"] = row.suggested_label
 
     # A row with no label omits ``expected_output`` rather than asserting a null ground truth.
-    expected = row.label["value"] if row.label is not None else None
+    expected = None
+    if row.label is not None:
+        expected = {"value": row.label["value"]} if wrap_output else row.label["value"]
     return Case(
         name=row.id,
         inputs=row.data,
@@ -224,35 +235,52 @@ def _row_to_case(row: DatasetRow) -> Case:
     )
 
 
-def _output_type(dataset: VDataset) -> Any:
+def _output_type(dataset: VDataset, wrap: bool = False) -> Any:
     """Derive ``OutputT`` from the dataset's label schema so a hosted push carries a real schema.
 
     A bare ``object`` infers to ``{}`` in ``TypeAdapter(...).json_schema()``, which is what
-    ``LogfireAPIClient.push_dataset`` reads to build the hosted expected-output schema. valcore
-    knows the label space exactly, so it is encoded here rather than left to infer to nothing.
+    ``push_dataset`` reads to build the hosted expected-output schema. valcore knows the label
+    space exactly, so it is encoded here rather than left to infer to nothing.
+
+    With ``wrap``, the scalar is wrapped in a single-field model so the inferred schema is an
+    *object*. Logfire's hosted datasets API requires ``expected_output`` to be a dictionary and
+    rejects a scalar with ``dict_type: Input should be a valid dictionary``; see
+    :func:`_row_to_case`. Only the hosted push wraps -- the exported ``pydantic_evals`` dataset
+    keeps a scalar, which is what ``EqualsExpected`` compares against.
     """
     kind = dataset.label_schema.get("kind")
     if kind == "categorical":
         labels = dataset.label_schema.get("labels") or []
-        if labels:
-            return Literal[tuple(labels)]  # type: ignore[valid-type]
-        return str
-    if kind == "numeric":
-        return float
-    return str
+        inner: Any = Literal[tuple(labels)] if labels else str  # type: ignore[valid-type]
+    elif kind == "numeric":
+        inner = float
+    else:
+        inner = str
+
+    if not wrap:
+        return inner
+    return create_model("ExpectedOutput", value=(inner, ...))
 
 
 def dataset_to_evals(
-    dataset: VDataset, rows: list[DatasetRow], evaluators: list[dict]
+    dataset: VDataset,
+    rows: list[DatasetRow],
+    evaluators: list[dict],
+    *,
+    wrap_output: bool = False,
 ) -> EvalsDataset:
     """Map a valcore dataset and its rows onto a ``pydantic_evals.Dataset``.
 
     Concrete generics are used deliberately: constructing ``EvalsDataset`` with unparameterized
     generics emits a ``UserWarning``. ``OutputT`` is derived from the dataset's label schema
     rather than left as ``object`` so a hosted push infers a real expected-output schema.
+
+    ``wrap_output`` shapes the result for Logfire's hosted datasets API, which requires
+    ``expected_output`` to be an object; see :func:`_row_to_case`. It defaults off so exported
+    ``.dataset.json`` files keep the scalar form that ``EqualsExpected`` compares against.
     """
-    cases = [_row_to_case(row) for row in rows]
-    output_type = _output_type(dataset)
+    cases = [_row_to_case(row, wrap_output=wrap_output) for row in rows]
+    output_type = _output_type(dataset, wrap=wrap_output)
     return EvalsDataset[dict[str, Any], output_type, dict[str, Any]](  # type: ignore[valid-type]
         name=dataset.name, cases=cases, evaluators=evaluators
     )
@@ -273,6 +301,23 @@ def _infer_columns(cases: list[Case]) -> list[str]:
     return columns
 
 
+def _expected_label(case: Case) -> Any:
+    """Return a case's ground-truth label, accepting both shapes ``expected_output`` arrives in.
+
+    valcore's own export writes a scalar. A dataset round-tripped through Logfire's hosted store
+    comes back wrapped as ``{"value": ...}``, because that API requires an object and rejects a
+    scalar (see :func:`_row_to_case`). Unwrapping in one place means schema inference and the
+    stored label cannot disagree about which shape they are reading.
+
+    Only a lone ``value`` key is unwrapped: a richer dict is a genuine structured label and is
+    kept whole rather than being guessed at.
+    """
+    expected = case.expected_output
+    if isinstance(expected, dict) and set(expected) == {"value"}:
+        return expected["value"]
+    return expected
+
+
 def _resolve_label_schema(cases: list[Case], valcore: dict | None) -> dict:
     """Resolve the dataset's label schema, preferring an explicit ``valcore`` block.
 
@@ -286,7 +331,7 @@ def _resolve_label_schema(cases: list[Case], valcore: dict | None) -> dict:
             return {"kind": "categorical", "labels": valcore.get("score_labels")}
         return {"kind": "numeric"}
 
-    labels = [c.expected_output for c in cases if c.expected_output is not None]
+    labels = [label for label in (_expected_label(c) for c in cases) if label is not None]
     if not labels:
         return {}
     if all(isinstance(label, str) for label in labels):
@@ -300,8 +345,9 @@ def _case_to_prepared(case: Case) -> dict:
     """Map one pydantic-evals case to the prepared-row dict ``Store.add_prepared_rows`` accepts."""
     data = case.inputs if isinstance(case.inputs, dict) else {"input": case.inputs}
     fields: dict = {"data": data}
-    if case.expected_output is not None:
-        fields["label"] = {"value": case.expected_output}
+    label = _expected_label(case)
+    if label is not None:
+        fields["label"] = {"value": label}
 
     valcore_row = (case.metadata or {}).get("valcore_row") or {}
     for key in _PROVENANCE_KEYS:

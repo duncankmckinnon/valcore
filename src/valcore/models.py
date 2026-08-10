@@ -354,14 +354,29 @@ def validate_version(version: EvaluatorVersion) -> None:
             )
 
 
-def check_dataset_compatibility(version: EvaluatorVersion, dataset: Dataset) -> None:
-    """Raise ContractError with an actionable message if the dataset and version disagree."""
+def check_dataset_compatibility(
+    version: EvaluatorVersion, dataset: Dataset, *, kind: RunKind = RunKind.VALIDATION
+) -> None:
+    """Raise ContractError with an actionable message if the dataset and version disagree.
+
+    Required columns must always be present -- the prompt template reads them, so their absence
+    breaks any run. The *label space* checks apply only to ``VALIDATION``, where predictions are
+    compared against ground truth and a mismatched vocabulary would make agreement meaningless.
+    An ``EVAL`` run never compares, so its score space is free to differ from the dataset's: the
+    evaluator can carry finer labels, different wording, or a different kind entirely.
+
+    ``kind`` defaults to ``VALIDATION`` so a caller that does not say what it is running gets the
+    stricter contract rather than silently skipping a check it wanted.
+    """
     missing = [c for c in version.required_columns if c not in dataset.columns]
     if missing:
         raise ContractError(
             f"Dataset {dataset.name!r} is missing required column(s) {missing}; "
             f"it has columns {dataset.columns}."
         )
+
+    if kind is RunKind.EVAL:
+        return
 
     # An empty label schema is the legal "no ground truth" state: the dataset asserts no
     # label space, so there is nothing to reconcile with the evaluator's score space and

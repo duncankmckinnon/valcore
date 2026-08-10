@@ -337,8 +337,9 @@ def import_(ctx: click.Context, path: Path, name: str | None) -> None:
 
     if pkg.dataset is not None:
         ds_name, columns, label_schema, prepared_rows = pkg.to_dataset_fields()
-        if name is not None:
-            ds_name = name
+        # A bare case array (Logfire's export shape) carries no dataset name, so fall back to the
+        # filename the way the evaluator branch below already does.
+        ds_name = name or ds_name or path.stem
         created = store.create_dataset(ds_name, "", columns, label_schema)
         store.add_prepared_rows(created.id, prepared_rows)
         click.echo(f"dataset {created.id} {created.name}")

@@ -10,8 +10,10 @@ import type {
   DatasetStats,
   GeneratedConfig,
   LabelSchema,
+  LogfirePushResult,
 } from "../api/types";
 import { Button, ConfirmDialog, ErrorBanner, Spinner } from "../components/ui";
+import { useSetup } from "../components/useSetup";
 import { PageHeader } from "../components/PageHeader";
 import DatasetSettingsModal from "../components/DatasetSettingsModal";
 import { ExportModal } from "../components/ExportModal";
@@ -42,6 +44,26 @@ export default function DatasetDetail({ datasetId }: Props) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<unknown>(null);
+  const [pushing, setPushing] = useState(false);
+  const [pushResult, setPushResult] = useState<LogfirePushResult | null>(null);
+  const [pushError, setPushError] = useState<unknown>(null);
+
+  // Pushing needs the Logfire API key, which is a different credential from the write token
+  // that sends traces — so gate on that key specifically rather than on tracing being on.
+  const { status } = useSetup();
+  const logfireKeySet =
+    status?.keys.find((key) => key.name === "logfire_api_key")?.set ?? false;
+
+  const pushToLogfire = () => {
+    setPushing(true);
+    setPushError(null);
+    setPushResult(null);
+    datasets
+      .logfirePush(datasetId, { name: dataset?.name })
+      .then(setPushResult)
+      .catch(setPushError)
+      .finally(() => setPushing(false));
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -128,6 +150,15 @@ export default function DatasetDetail({ datasetId }: Props) {
       <div className="detail-breadcrumb">
         <Link to="/datasets">Datasets</Link> / {dataset.name}
       </div>
+      {/* Push feedback is inline rather than routed through `error`, which replaces the whole
+          page — a failed push must not take the dataset view down with it. */}
+      {pushError !== null && <ErrorBanner error={pushError} onDismiss={() => setPushError(null)} />}
+      {pushResult !== null && (
+        <p className="field-hint" role="status">
+          Pushed to Logfire as “{pushResult.name}”
+          {pushResult.case_count !== null && ` with ${pushResult.case_count} cases`}.
+        </p>
+      )}
       <PageHeader
         title={dataset.name}
         description={dataset.description || undefined}
@@ -141,6 +172,18 @@ export default function DatasetDetail({ datasetId }: Props) {
             </Button>
             <Button variant="secondary" onClick={() => setExporting(true)}>
               Export
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={pushToLogfire}
+              disabled={pushing || !logfireKeySet}
+              title={
+                logfireKeySet
+                  ? "Publish this dataset to Logfire's hosted dataset store"
+                  : "Set the Logfire API key first: valcore config set-logfire-key"
+              }
+            >
+              {pushing ? "Pushing…" : "Push to Logfire"}
             </Button>
             <Button variant="secondary" onClick={() => setEditing(true)}>
               Edit

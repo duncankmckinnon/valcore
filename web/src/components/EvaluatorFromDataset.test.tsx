@@ -163,7 +163,7 @@ describe("EvaluatorFromDataset", () => {
     ).toMatch(/assess/i);
   });
 
-  it("sends dataset_id and column_notes and no columns key on submit", async () => {
+  it("sends dataset_id, every column, and column_notes on submit", async () => {
     const draft = madeDraft();
     generateMock.mockResolvedValue(draft);
     const user = userEvent.setup();
@@ -179,9 +179,71 @@ describe("EvaluatorFromDataset", () => {
     expect(arg.dataset_id).toBe("d1");
     expect(arg.column_notes).toEqual({ question: "the customer's problem" });
     expect(arg.criteria).toBe("Does the answer resolve the ticket?");
-    // Sending an explicit `columns` array alongside `dataset_id` is a server-side error;
-    // the shape must come from the dataset alone.
-    expect(arg).not.toHaveProperty("columns");
+    // `columns` now narrows the dataset-derived set rather than conflicting with it, and
+    // defaults to every column so the pre-subset behaviour is preserved.
+    expect(arg.columns).toEqual(["question", "answer"]);
+  });
+
+  it("narrows columns to the included ones and drops an excluded column's note", async () => {
+    generateMock.mockResolvedValue(madeDraft());
+    const user = userEvent.setup();
+    renderModal({ dataset: madeDataset({ columns: ["question", "answer"] }) });
+
+    await user.type(screen.getByLabelText("Criteria"), "grade it");
+    await user.type(screen.getByLabelText("Note for answer"), "stale note");
+    await user.click(screen.getByLabelText("Include answer"));
+
+    await user.click(screen.getByRole("button", { name: "Generate evaluator" }));
+
+    await waitFor(() => expect(generateMock).toHaveBeenCalledTimes(1));
+    const arg = generateMock.mock.calls[0][0];
+    expect(arg.columns).toEqual(["question"]);
+    // A note keyed outside the resolved set is a server-side error, so it must not travel.
+    expect(arg.column_notes).toEqual({});
+  });
+
+  it("inherits the dataset's label space by default and sends no label_schema", async () => {
+    generateMock.mockResolvedValue(madeDraft());
+    const user = userEvent.setup();
+    renderModal({ dataset: madeDataset({ label_schema: LABELLED_SCHEMA }) });
+
+    expect(screen.getByLabelText("Use this dataset's label space")).toBeChecked();
+
+    await user.type(screen.getByLabelText("Criteria"), "grade it");
+    await user.click(screen.getByRole("button", { name: "Generate evaluator" }));
+
+    await waitFor(() => expect(generateMock).toHaveBeenCalledTimes(1));
+    // Omitted, not sent-as-the-dataset's: the server seeds it, so there is one source of truth.
+    expect(generateMock.mock.calls[0][0]).not.toHaveProperty("label_schema");
+  });
+
+  it("sends a prescribed label_schema once the dataset labels are turned off", async () => {
+    generateMock.mockResolvedValue(madeDraft());
+    const user = userEvent.setup();
+    renderModal({ dataset: madeDataset({ label_schema: LABELLED_SCHEMA }) });
+
+    await user.click(screen.getByLabelText("Use this dataset's label space"));
+    // The schema editor replaces the read-only chips.
+    expect(screen.getByPlaceholderText("Add a label")).toBeInTheDocument();
+    // The consequence is stated where the choice is made, not when a run later fails.
+    expect(screen.getByText(/cannot be validated against it/)).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Criteria"), "grade it");
+    await user.click(screen.getByRole("button", { name: "Generate evaluator" }));
+
+    await waitFor(() => expect(generateMock).toHaveBeenCalledTimes(1));
+    expect(generateMock.mock.calls[0][0].label_schema).toEqual(LABELLED_SCHEMA);
+  });
+
+  it("blocks submission when every column is excluded", async () => {
+    const user = userEvent.setup();
+    renderModal({ dataset: madeDataset({ columns: ["question"] }) });
+
+    await user.type(screen.getByLabelText("Criteria"), "grade it");
+    await user.click(screen.getByLabelText("Include question"));
+
+    expect(screen.getByText("Include at least one column.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate evaluator" })).toBeDisabled();
   });
 
   it("renders a declared label space read-only with a line that the evaluator will use it", () => {

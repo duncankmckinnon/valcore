@@ -80,12 +80,20 @@ def build_capabilities(specs: Sequence[CapabilitySpec]) -> list[Any]:
 
 
 def build_agent(version: EvaluatorVersion) -> Agent[None, BaseModel]:
-    """Build a live evaluator Agent from a validated version configuration."""
+    """Build a live evaluator Agent from a validated version configuration.
+
+    Named ``scoring_agent`` so instrumented traces identify it, rather than falling back to the
+    generic ``agent`` an unnamed ``Agent`` produces. The name is set here, not per caller: the
+    runner and the experiment engine build the same agent for the same job, and naming it in one
+    path only would make the identical agent appear under two names in Logfire and defeat
+    comparing a run against an experiment.
+    """
     validate_version(version)
     specs = [CapabilitySpec.model_validate(c) for c in version.capabilities]
     return Agent(
         version.model,
         output_type=build_output_model(version),
+        name="scoring_agent",
         instructions=version.instructions,
         tools=get_tools(version.tools),
         capabilities=build_capabilities(specs),

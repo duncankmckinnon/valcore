@@ -5,8 +5,9 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 
-from valcore.errors import ConfigError
+from valcore.errors import ConfigError, ContractError
 from valcore.models import (
     VALID_CAPABILITIES,
     CapabilitySpec,
@@ -93,6 +94,10 @@ def build_generator_agent(model: str | None = None) -> Agent[None, GeneratedConf
         model or get_settings().default_model,
         output_type=GeneratedConfig,
         name="evaluator_generator",
+        # See build_datagen_agent: the default budget of one output-validation retry turns a
+        # single malformed response into a failed generation, where a retry carrying the
+        # validation error usually succeeds.
+        retries={"output": 3},
         instructions=instructions,
     )
 
@@ -111,6 +116,8 @@ def build_refiner_agent(model: str | None = None) -> Agent[None, RefinedConfig]:
         model or get_settings().default_model,
         output_type=RefinedConfig,
         name="evaluator_refiner",
+        # Same reasoning as build_generator_agent.
+        retries={"output": 3},
         instructions=instructions,
     )
 
@@ -145,18 +152,33 @@ async def _produce(
     model: str,
     extract: Callable[[_Output], GeneratedConfig],
 ) -> _Output:
-    """Run the agent, then validate its config; on ConfigError retry exactly once."""
-    result = await agent.run(prompt)
+    """Run the agent, then validate its config; on ConfigError retry exactly once.
+
+    An exhausted output-validation budget arrives as ``UnexpectedModelBehavior``, which is not a
+    ``ValcoreError`` and would otherwise reach the API's handler table unmatched and surface as a
+    500. It is converted here so both the API and the CLI report something actionable.
+    """
+
+    async def run(text: str) -> _Output:
+        try:
+            return (await agent.run(text)).output
+        except UnexpectedModelBehavior as exc:
+            raise ContractError(
+                f"The model did not return a usable configuration after retrying: {exc}. "
+                "Try again, or describe the criteria more concretely."
+            ) from exc
+
+    output = await run(prompt)
     try:
-        _validate(extract(result.output), model)
+        _validate(extract(output), model)
     except ConfigError as exc:
         retry_prompt = (
             f"{prompt}\n\nThe previous configuration was invalid: {exc}\n"
             "Return a corrected, complete configuration."
         )
-        result = await agent.run(retry_prompt)
-        _validate(extract(result.output), model)
-    return result.output
+        output = await run(retry_prompt)
+        _validate(extract(output), model)
+    return output
 
 
 def _columns_section(columns: list[str] | None, column_notes: dict[str, str] | None) -> str:

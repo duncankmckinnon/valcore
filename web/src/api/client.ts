@@ -18,6 +18,7 @@ import type {
   ExportResponse,
   GeneratedConfig,
   LabelMix,
+  LogfirePushResult,
   LabelSchema,
   Overview,
   RefinedConfig,
@@ -117,6 +118,9 @@ export const evaluators = {
     model?: string;
     dataset_id?: string;
     column_notes?: Record<string, string>;
+    // Prescribes the score space instead of inheriting the dataset's. Sending one makes the
+    // evaluator EVAL-only against that dataset, since validation compares the label sets.
+    label_schema?: LabelSchema;
   }) => api<GeneratedConfig>("/api/evaluators/generate", { method: "POST", ...jsonBody(data) }),
   refine: (data: { config: GeneratedConfig; instruction: string; model?: string }) =>
     api<RefinedConfig>("/api/evaluators/refine", { method: "POST", ...jsonBody(data) }),
@@ -204,6 +208,11 @@ export const datasets = {
     const response = await api<ExportFilesResponse>(path);
     return response.files;
   },
+  logfirePush: (id: string, body: { name?: string; description?: string } = {}) =>
+    api<LogfirePushResult>(`/api/datasets/${id}/logfire/push`, {
+      method: "POST",
+      ...jsonBody(body),
+    }),
 };
 
 export const overview = {
@@ -223,6 +232,9 @@ export const runs = {
     version_id: string;
     dataset_id: string;
     concurrency?: number;
+    // Engine, not kind: drives pydantic-evals so the run lands in Logfire's experiments
+    // view. Cannot be cancelled, since `Dataset.evaluate` has no cancellation.
+    experiment?: boolean;
   }) => api<Run>("/api/runs", { method: "POST", ...jsonBody(data) }),
   results: (
     id: string,

@@ -231,10 +231,11 @@ describe("DatasetDetail", () => {
     expect(screen.getByLabelText("Version name")).toHaveValue("v1");
     expect(screen.getByLabelText("Instructions")).toHaveValue(draft.instructions);
     expect(screen.getByLabelText("Prompt template")).toHaveValue(draft.prompt_template);
-    // Seeded generation sends dataset_id + column_notes, never an explicit columns array.
+    // Seeded generation sends dataset_id plus the columns to expose, which defaults to all of
+    // them; `columns` narrows the dataset-derived set rather than conflicting with it.
     const arg = generateMock.mock.calls[0][0];
     expect(arg.dataset_id).toBe("d1");
-    expect(arg).not.toHaveProperty("columns");
+    expect(arg.columns).toEqual(["question", "answer"]);
     // The draft is editable, not saved: nothing was persisted from the modal.
     expect(createMock).not.toHaveBeenCalled();
     expect(createVersionMock).not.toHaveBeenCalled();

@@ -83,7 +83,14 @@ def test_first_run_provisions_venv(env: dict[str, str]) -> None:
 
     log = _log(env)
     assert "venv --python >=3.11" in log
-    assert f"pip install --python {home}/venv/bin/python valcore==0.1.0" in log
+    # --refresh-package valcore: the pinned version is published moments before the
+    # formula bump, so uv's cached index listing for valcore predates it and resolution
+    # fails with "there is no version of valcore==X". Scoped to the one package so the
+    # cache still serves the dependency tree.
+    assert (
+        f"pip install --python {home}/venv/bin/python "
+        "--refresh-package valcore valcore==0.1.0" in log
+    )
 
     stamp = home / "venv" / ".version"
     assert stamp.read_text() == "0.1.0"

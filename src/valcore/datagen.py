@@ -4,9 +4,10 @@ from collections import Counter
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 from valcore import settings
-from valcore.errors import ConfigError
+from valcore.errors import ConfigError, ContractError
 from valcore.models import LabelSchema, ScoreKind
 
 # Proportions are authored by hand, so 1/3 + 1/3 + 1/3 must be accepted as summing to 1.
@@ -49,6 +50,12 @@ def build_datagen_agent(model: str | None = None) -> Agent[None, GeneratedDatase
         resolved,
         output_type=GeneratedDataset,
         name="datagen_agent",
+        # pydantic-ai budgets one output-validation retry by default, so a single malformed
+        # response -- e.g. calling the output tool with `{}`, which fails as "rows: Field
+        # required" -- discards the whole batch. A retry feeds the validation error back to the
+        # model, which usually corrects it, so the budget is raised rather than left at the
+        # default that turns one bad response into a failed generation.
+        retries={"output": 3},
         instructions=_INSTRUCTIONS,
     )
 
@@ -292,14 +299,29 @@ async def generate_rows(
             target=batch_target,
         )
 
-    result = await agent.run(render(count, target))
+    async def run(prompt: str) -> object:
+        """Run the agent, converting an exhausted-retries failure into a domain error.
+
+        ``UnexpectedModelBehavior`` is not a ``ValcoreError``, so it reaches the API's handler
+        table unmatched and surfaces as a 500 with a traceback rather than the actionable client
+        error a recoverable model failure deserves.
+        """
+        try:
+            return await agent.run(prompt)
+        except UnexpectedModelBehavior as exc:
+            raise ContractError(
+                f"The model did not return a usable dataset after retrying: {exc}. "
+                "Try again, lower the row count, or make the column notes more specific."
+            ) from exc
+
+    result = await run(render(count, target))
     valid = _valid_rows(result.output.rows, columns, label_schema)
 
     if len(valid) < count:
         shortfall = count - len(valid)
         deficit = _deficit(target, valid) if target else None
         batch = sum(deficit.values()) if deficit else shortfall
-        top_up = await agent.run(render(batch, deficit))
+        top_up = await run(render(batch, deficit))
         valid.extend(_valid_rows(top_up.output.rows, columns, label_schema))
 
     return _select(valid, target, count) if target else valid[:count]

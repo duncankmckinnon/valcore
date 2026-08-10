@@ -325,11 +325,13 @@ export interface RowsGenerate {
   label_guidance?: string;
 }
 
+export type SetupKeyName = "gateway_api_key" | "logfire_token" | "logfire_api_key";
+
 // One credential the setup walkthrough checks for. `set` reflects effective
 // presence (env or CLI-written config); `command` is the CLI invocation shown
 // to the user when it is missing.
 export interface SetupKey {
-  name: "gateway_api_key" | "logfire_token" | "logfire_api_key";
+  name: SetupKeyName;
   set: boolean;
   required: boolean;
   label: string;
@@ -339,4 +341,15 @@ export interface SetupKey {
 
 export interface SetupStatus {
   keys: SetupKey[];
+}
+
+// What `POST /api/datasets/{id}/logfire/push` returns, mirroring the fields Logfire's
+// DatasetDetail carries. Every field but `id` and `name` is NotRequired upstream, so the
+// endpoint normalises absent ones to null rather than omitting them. There is no URL:
+// Logfire's API does not return one, and valcore never constructs one.
+export interface LogfirePushResult {
+  id: string;
+  name: string;
+  case_count: number | null;
+  output_schema: Record<string, unknown> | null;
 }

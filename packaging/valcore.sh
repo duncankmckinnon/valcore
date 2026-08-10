@@ -12,7 +12,11 @@ if [ ! -x "$venv/bin/valcore" ] || [ "$(cat "$stamp" 2>/dev/null)" != "$version"
   # then reuses an interpreter the user already has instead of downloading a
   # toolchain, and brew installs keep working after 3.12 goes end-of-life.
   uv venv --python ">=3.11" "$venv" >&2
-  uv pip install --python "$venv/bin/python" "valcore==$version" >&2
+  # --refresh-package: $version is a release published moments before the formula bump,
+  # so uv's cached index listing for valcore predates it and resolution fails with
+  # "there is no version of valcore==$version". Scoped to this one package so the cache
+  # still serves the dependency tree, which is what keeps provisioning fast.
+  uv pip install --python "$venv/bin/python" --refresh-package valcore "valcore==$version" >&2
   printf '%s' "$version" > "$stamp"
 fi
 

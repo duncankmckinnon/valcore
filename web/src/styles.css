@@ -1483,10 +1483,14 @@ kbd {
   gap: var(--space-2);
 }
 
-/* A locked note is derived, not user-editable: dim it and drop pointer interaction. */
-.column-note-locked {
+/* "Locked" describes the column, not its note: the name is fixed here (change it upstream --
+   the Columns field, or the evaluator's required columns) but the note is the whole point of
+   this editor, so only the name is dimmed and the row stays interactive.
+   This previously set `opacity` and `pointer-events: none` on the row, which made every note
+   input untypable in the Generate flow, where all columns are locked. No test could catch it:
+   jsdom loads no stylesheet, so user-event's own pointer-events check never saw the rule. */
+.column-note-locked .column-note-name {
   opacity: 0.7;
-  pointer-events: none;
 }
 
 .column-note-name {

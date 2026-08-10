@@ -167,6 +167,28 @@ async def test_post_returns_pending_and_completes_in_background(store: Store) ->
 
 
 @pytest.mark.anyio
+async def test_experiment_flag_selects_the_experiment_engine(store: Store) -> None:
+    """``experiment`` must route to ``execute_experiment``, not silently to the runner.
+
+    An ``ExperimentRun`` row is the marker only the experiment engine writes, so its presence
+    is what distinguishes the two engines. A silent fallback to the runner is precisely the
+    failure that makes runs look like experiments while emitting no experiment span at all.
+    """
+    version = make_version(store)
+    dataset, _ = make_dataset(store, ["pass", "fail"])
+    factory = lambda v: Agent(TestModel(), output_type=build_output_model(v))
+
+    async with _client(store, factory) as client:
+        plain = await _start_run(client, version.id, dataset.id)
+        await _poll_until_terminal(client, plain["id"])
+        assert store.get_experiment(plain["id"]) is None
+
+        experiment = await _start_run(client, version.id, dataset.id, experiment=True)
+        await _poll_until_terminal(client, experiment["id"])
+        assert store.get_experiment(experiment["id"]) is not None
+
+
+@pytest.mark.anyio
 async def test_list_runs_filters_by_dataset(store: Store) -> None:
     version = make_version(store)
     ds_a, _ = make_dataset(store, ["pass"])

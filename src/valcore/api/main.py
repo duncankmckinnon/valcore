@@ -4,11 +4,13 @@ import importlib
 from importlib.resources import files as _package_files
 from pathlib import Path
 
-import logfire_api as logfire
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException
+from starlette.responses import Response
+from starlette.types import Scope
 
 from valcore.api.dtos import ErrorBody, ErrorResponse
 from valcore.config import load_config
@@ -24,7 +26,7 @@ from valcore.errors import (
 from valcore.models import VALID_CAPABILITIES
 from valcore.settings import MODEL_CATALOG
 from valcore.tools import tool_names
-from valcore.tracing import configure_tracing
+from valcore.tracing import configure_tracing, instrument_app
 
 _STATUS_BY_ERROR: tuple[tuple[type[ValcoreError], int], ...] = (
     (NotFoundError, 404),
@@ -52,6 +54,51 @@ def _resolve_dist_dir() -> Path | None:
             return candidate
 
     return None
+
+
+class _Spa(StaticFiles):
+    """Serve the built SPA with history routing and a revalidated shell.
+
+    Two behaviours ``StaticFiles`` does not provide on its own:
+
+    **History-routing fallback.** ``html=True`` only serves ``index.html`` for *directory*
+    requests and looks for a ``404.html`` on a miss, so a client-side route such as
+    ``/evaluators`` 404s on a deep link, a refresh, or any full navigation. Clicking
+    through from ``/`` hides this because react-router never reaches the server. Unknown
+    non-API paths therefore fall back to the shell and let the client router resolve them.
+
+    **Cache correctness.** Without ``Cache-Control`` a browser applies heuristic freshness
+    and serves a cached ``index.html`` without revalidating; that shell references the
+    previous build's hashed assets, which are cached too, so a rebuilt UI never appears.
+    The shell is marked ``no-cache`` so it always revalidates -- cheap, since the ``ETag``
+    turns that into a 304 -- while content-hashed assets are cached immutably, which is
+    what makes the hashes worth having.
+    """
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        """Return the asset at ``path``, or the shell for an unresolved client route.
+
+        A miss surfaces as a raised ``HTTPException(404)`` rather than a 404 response --
+        ``StaticFiles`` only returns one when a ``404.html`` exists -- so the fallback has
+        to catch, not inspect a status code.
+        """
+        try:
+            response = await super().get_response(path, scope)
+            served_shell = False
+        except HTTPException as exc:
+            # A miss under /api is a genuine 404: answering it with the SPA shell would
+            # hand an API client an HTML body instead of an error it can read. Anything
+            # else is treated as a client-side route and resolved by the browser router.
+            if exc.status_code != 404 or path == "api" or path.startswith("api/"):
+                raise
+            response = await super().get_response("index.html", scope)
+            served_shell = True
+
+        is_shell = served_shell or path in ("", ".", "index.html")
+        response.headers["cache-control"] = (
+            "no-cache" if is_shell else "public, max-age=31536000, immutable"
+        )
+        return response
 
 
 def _error_response(status_code: int, exc: Exception) -> JSONResponse:
@@ -104,7 +151,7 @@ def create_app() -> FastAPI:
     _register_exception_handlers(app)
 
     configure_tracing(load_config())
-    logfire.instrument_fastapi(app)
+    instrument_app(app)
 
     @app.get("/api/health")
     async def health() -> dict[str, str]:
@@ -124,6 +171,6 @@ def create_app() -> FastAPI:
 
     dist_dir = _resolve_dist_dir()
     if dist_dir:
-        app.mount("/", StaticFiles(directory=dist_dir, html=True), name="spa")
+        app.mount("/", _Spa(directory=dist_dir, html=True), name="spa")
 
     return app

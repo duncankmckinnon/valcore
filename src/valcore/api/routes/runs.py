@@ -20,7 +20,8 @@ from valcore import config
 from valcore.api.deps import get_store
 from valcore.api.events import bus
 from valcore.errors import ContractError
-from valcore.models import EvaluatorVersion, RunKind, RunStatus
+from valcore.experiment import execute_experiment
+from valcore.models import EvaluatorVersion, RunKind, RunStatus, check_dataset_compatibility
 from valcore.runner import RunEvent, execute_run
 from valcore.store import Store
 
@@ -66,6 +67,11 @@ class RunCreate(BaseModel):
     version_id: str
     dataset_id: str
     concurrency: int | None = None
+    # Which engine executes the run. Orthogonal to ``kind`` -- an experiment can be either EVAL
+    # or VALIDATION -- which is why it is a separate field rather than a third ``RunKind``.
+    # ``experiment`` drives ``pydantic_evals.Dataset.evaluate``, so the run appears in Logfire's
+    # experiments view; it cannot be cancelled, because ``evaluate()`` has no cancellation.
+    experiment: bool = False
 
 
 # -- Response bodies ----------------------------------------------------------
@@ -145,6 +151,7 @@ async def _run_to_completion(
     run_id: str,
     agent_factory: AgentFactory | None,
     only_row_ids: list[str] | None,
+    experiment: bool = False,
 ) -> None:
     """Execute a run to completion, publishing events and never dying silently.
 
@@ -166,7 +173,14 @@ async def _run_to_completion(
             run = await asyncio.to_thread(store.get_run, run_id)
             version = await asyncio.to_thread(store.get_version, run.version_id)
             agent = agent_factory(version)
-        await execute_run(store, run_id, agent=agent, on_event=on_event, only_row_ids=only_row_ids)
+        if experiment:
+            # The experiment engine builds its own agent and has no row-subset retry, so
+            # neither `agent` nor `only_row_ids` applies here.
+            await execute_experiment(store, run_id, on_event=on_event)
+        else:
+            await execute_run(
+                store, run_id, agent=agent, on_event=on_event, only_row_ids=only_row_ids
+            )
     except Exception as exc:  # noqa: BLE001 — a dying task must mark the run FAILED
         await asyncio.to_thread(
             store.update_run_status,
@@ -185,9 +199,12 @@ def _launch_run(
     run_id: str,
     agent_factory: AgentFactory | None,
     only_row_ids: list[str] | None = None,
+    experiment: bool = False,
 ) -> None:
     """Register and launch a background run task, cleaning up the registry on completion."""
-    task = asyncio.create_task(_run_to_completion(store, run_id, agent_factory, only_row_ids))
+    task = asyncio.create_task(
+        _run_to_completion(store, run_id, agent_factory, only_row_ids, experiment)
+    )
     _tasks[run_id] = task
     task.add_done_callback(lambda _t: _tasks.pop(run_id, None))
 
@@ -241,15 +258,26 @@ async def create_run(body: RunCreate, store: StoreDep, agent_factory: AgentFacto
     Guards on ``config.require_gateway_key()`` before ``store.create_run``: a missing key
     must surface synchronously as a ``ConfigError``, with no run ever persisted, rather than
     as an asynchronous ``FAILED`` transition discovered by polling.
+
+    Compatibility is checked here for the same reason. ``execute_run`` checks it too, but only
+    after the run exists, so an incompatible pairing -- most often a VALIDATION run whose
+    evaluator prescribes its own label space -- would otherwise persist a ``FAILED`` run that
+    the user has to go and read. Passing ``body.kind`` keeps an EVAL run permitted when the
+    label spaces differ, which is the whole point of prescribing them.
     """
     config.require_gateway_key()
+    check_dataset_compatibility(
+        store.get_version(body.version_id),
+        store.get_dataset(body.dataset_id),
+        kind=body.kind,
+    )
     run = store.create_run(
         kind=body.kind,
         version_id=body.version_id,
         dataset_id=body.dataset_id,
         concurrency=body.concurrency or _DEFAULT_CONCURRENCY,
     )
-    _launch_run(store, run.id, agent_factory)
+    _launch_run(store, run.id, agent_factory, experiment=body.experiment)
     return RunOut.model_validate(run)
 
 

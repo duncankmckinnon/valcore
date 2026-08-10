@@ -16,6 +16,11 @@ type ColumnNotesEditorProps = {
   // Why a locked column is locked, e.g. "required". Omit where the columns are the user's
   // own and nothing upstream fixes them, so no badge is rendered rather than a wrong one.
   lockedBadge?: string;
+  // Opt-in selection: when both are supplied, each locked column gets an include checkbox and
+  // the caller sends only the checked ones. Omit both where every column always applies, so no
+  // checkbox is rendered rather than a decorative one that controls nothing.
+  selectedColumns?: string[];
+  onChangeSelected?: (columns: string[]) => void;
   onChangeNotes: (notes: Record<string, string>) => void;
   onChangeExtraColumns: (columns: string[]) => void;
 };
@@ -27,10 +32,25 @@ export function ColumnNotesEditor({
   notePlaceholder,
   allowAddColumns,
   lockedBadge,
+  selectedColumns,
+  onChangeSelected,
   onChangeNotes,
   onChangeExtraColumns,
 }: ColumnNotesEditorProps) {
   const [draft, setDraft] = useState("");
+
+  const selectable = selectedColumns !== undefined && onChangeSelected !== undefined;
+  const isSelected = (column: string) => !selectable || selectedColumns.includes(column);
+
+  const toggle = (column: string) => {
+    if (!selectable) return;
+    onChangeSelected(
+      selectedColumns.includes(column)
+        ? selectedColumns.filter((c) => c !== column)
+        : // Re-add in `lockedColumns` order so the payload never depends on click order.
+          lockedColumns.filter((c) => c === column || selectedColumns.includes(c)),
+    );
+  };
 
   const setNote = (column: string, note: string) => {
     onChangeNotes({ ...notes, [column]: note });
@@ -57,8 +77,16 @@ export function ColumnNotesEditor({
     <div className="column-notes-editor">
       {lockedColumns.map((column) => (
         <div key={column} className="column-note-row column-note-locked">
+          {selectable && (
+            <input
+              type="checkbox"
+              aria-label={`Include ${column}`}
+              checked={isSelected(column)}
+              onChange={() => toggle(column)}
+            />
+          )}
           <span className="column-note-name">{column}</span>
-          {lockedBadge && (
+          {lockedBadge && isSelected(column) && (
             <span className="badge" aria-hidden="true">
               {lockedBadge}
             </span>
@@ -69,6 +97,9 @@ export function ColumnNotesEditor({
             placeholder={notePlaceholder}
             value={notes[column] ?? ""}
             onChange={(event) => setNote(column, event.target.value)}
+            // A note on an excluded column would be sent nowhere, so disable rather than
+            // collect it. `disabled` and not `pointer-events`, which leaves keyboard entry open.
+            disabled={!isSelected(column)}
           />
         </div>
       ))}

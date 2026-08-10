@@ -381,9 +381,14 @@ def test_from_text_rejects_unsupported_version() -> None:
     assert "2" in str(exc.value)
 
 
-def test_from_text_rejects_non_object_root() -> None:
+def test_from_text_rejects_a_root_that_is_neither_object_nor_case_array() -> None:
+    # An array root is now read as a bare case list (Logfire's export shape), so the rejection
+    # here is about the *contents* not being cases -- and about a scalar root having no shape at
+    # all. Both must surface as ContractError rather than a raw pydantic or JSON error.
     with pytest.raises(ContractError):
         EvalPackage.from_text(json.dumps([1, 2, 3]))
+    with pytest.raises(ContractError):
+        EvalPackage.from_text(json.dumps("just a string"))
 
 
 def test_from_text_rejects_unparseable_json() -> None:

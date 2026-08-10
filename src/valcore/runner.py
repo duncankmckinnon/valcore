@@ -111,7 +111,9 @@ async def execute_run(
     try:
         version = await asyncio.to_thread(store.get_version, run.version_id)
         dataset = await asyncio.to_thread(store.get_dataset, run.dataset_id)
-        check_dataset_compatibility(version, dataset)
+        # kind matters: an EVAL run never compares predictions to ground truth, so its label
+        # space is free to differ from the dataset's. Only VALIDATION requires them to agree.
+        check_dataset_compatibility(version, dataset, kind=run.kind)
 
         all_rows = await asyncio.to_thread(store.list_rows, dataset.id)
         if only_row_ids is not None:
