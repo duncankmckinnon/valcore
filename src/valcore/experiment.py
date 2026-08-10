@@ -2,8 +2,15 @@
 
 ``runner.execute_run`` stays the primary engine -- it keeps cancellation and row-subset
 retry, which ``evaluate()`` cannot express. This module trades those for what
-``pydantic_evals`` gives for free: concurrency, retries, and (via ``spec.dataset_to_evals``
-and ``tracing``) a shape Logfire's experiment view can render directly.
+``pydantic_evals`` gives for free: concurrency, retries, and a span shape Logfire's
+experiment view can render directly.
+
+Deliberately emits **no valcore spans**. ``evaluate()`` opens its own span carrying
+``gen_ai.operation.name='experiment'`` -- the attribute Logfire keys on -- plus per-case
+``case:``/``execute`` spans. Wrapping that in ``valcore.run`` made the experiment span a
+child rather than a trace root, which is how a plain ``dataset.evaluate()`` call presents
+it, so the runner's span helpers are not used here. Run identity is not lost: it lives on
+the ``Run`` and ``ExperimentRun`` rows.
 
 The task/evaluator mapping here is the inverse of the *exported* package: there the
 consumer's task is measured by a ``ValcoreJudge`` evaluator; here the judge itself is the
@@ -15,7 +22,6 @@ that is what keeps a run and an experiment over the same data reporting identica
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -40,14 +46,6 @@ from valcore.models import (
 from valcore.runner import RunEvent, _agreement, _label_value
 from valcore.spec import dataset_to_evals
 from valcore.store import Store
-from valcore.tracing import row_span, run_span
-
-# Set by ``PersistResults.setup`` and read inside the task so the Gateway's per-call span
-# nests under the right ``valcore.score_row`` span. Safe under concurrency: ``evaluate()``
-# schedules each case as its own asyncio task, so each gets an independent copy of the
-# context created at that point -- setting this in one case's ``setup`` never leaks into
-# another case running at the same time.
-_current_row: ContextVar[DatasetRow | None] = ContextVar("_experiment_current_row", default=None)
 
 _USAGE_KEYS = ("input_tokens", "output_tokens", "total_tokens", "requests")
 
@@ -85,18 +83,19 @@ def _make_task(version: EvaluatorVersion, agent: Agent) -> Callable[[dict], Awai
     """
 
     async def task(inputs: dict) -> str | float:
-        row = _current_row.get()
-        with row_span(row):
-            prompt = render_prompt(version, inputs)
-            result = await agent.run(prompt)
-            output = result.output
-            score = extract_score(version, output)
-            set_eval_attribute("output", output.model_dump(mode="json"))
-            usage = result.usage
-            increment_eval_metric("input_tokens", usage.input_tokens)
-            increment_eval_metric("output_tokens", usage.output_tokens)
-            increment_eval_metric("total_tokens", usage.total_tokens)
-            increment_eval_metric("requests", usage.requests)
+        # No valcore span here: ``evaluate()`` already opens a ``case:`` and an ``execute``
+        # span per case, so one of ours would only add a redundant layer between them and the
+        # Gateway's own per-call span.
+        prompt = render_prompt(version, inputs)
+        result = await agent.run(prompt)
+        output = result.output
+        score = extract_score(version, output)
+        set_eval_attribute("output", output.model_dump(mode="json"))
+        usage = result.usage
+        increment_eval_metric("input_tokens", usage.input_tokens)
+        increment_eval_metric("output_tokens", usage.output_tokens)
+        increment_eval_metric("total_tokens", usage.total_tokens)
+        increment_eval_metric("requests", usage.requests)
         return score
 
     return task
@@ -128,10 +127,6 @@ class PersistResults(CaseLifecycle):
         self._want_agreement = want_agreement
         self._emit_row = emit_row
         self._row = rows_by_id[case.name]
-
-    async def setup(self) -> None:
-        """Publish this case's row so the task can open the matching ``valcore.score_row`` span."""
-        _current_row.set(self._row)
 
     async def teardown(self, result: ReportCase | ReportCaseFailure | None) -> None:
         """Persist the case's outcome and emit its ``row`` event.
@@ -198,7 +193,9 @@ async def execute_experiment(
     try:
         version = await asyncio.to_thread(store.get_version, run.version_id)
         dataset = await asyncio.to_thread(store.get_dataset, run.dataset_id)
-        check_dataset_compatibility(version, dataset)
+        # Mirrors the runner: only a VALIDATION experiment compares against ground truth, so
+        # only it requires the evaluator's label space to match the dataset's.
+        check_dataset_compatibility(version, dataset, kind=run.kind)
         rows = await asyncio.to_thread(store.list_rows, dataset.id)
         agent = build_agent(version)
     except Exception as exc:  # noqa: BLE001 — any setup failure becomes a FAILED run
@@ -233,105 +230,95 @@ async def execute_experiment(
         case_count=len(rows),
     )
 
-    with run_span(run, version, dataset, len(rows)) as span:
-        try:
-            await asyncio.to_thread(
-                store.update_run_status, run_id, RunStatus.RUNNING, started_at=datetime.now(UTC)
-            )
-            await emit("started", {"total": len(rows)})
+    try:
+        await asyncio.to_thread(
+            store.update_run_status, run_id, RunStatus.RUNNING, started_at=datetime.now(UTC)
+        )
+        await emit("started", {"total": len(rows)})
 
-            # An EVAL-kind run has no labels to agree with, mirroring ``runner``'s
-            # ``want_agreement``.
-            want_agreement = run.kind is RunKind.VALIDATION
-            evaluators: list[Evaluator] = []
-            if want_agreement:
-                evaluators.append(
-                    EqualsExpected()
-                    if version.score_kind is ScoreKind.CATEGORICAL
-                    else NumericDelta()
+        # An EVAL-kind run has no labels to agree with, mirroring ``runner``'s
+        # ``want_agreement``.
+        want_agreement = run.kind is RunKind.VALIDATION
+        evaluators: list[Evaluator] = []
+        if want_agreement:
+            evaluators.append(
+                EqualsExpected() if version.score_kind is ScoreKind.CATEGORICAL else NumericDelta()
+            )
+
+        evals_dataset = dataset_to_evals(dataset, rows, evaluators)
+        task = _make_task(version, agent)
+        rows_by_id = {row.id: row for row in rows}
+
+        def lifecycle_factory(case: Case) -> PersistResults:
+            return PersistResults(
+                case,
+                store=store,
+                run_id=run_id,
+                version=version,
+                want_agreement=want_agreement,
+                rows_by_id=rows_by_id,
+                emit_row=emit_row,
+            )
+
+        report = await evals_dataset.evaluate(
+            task,
+            name=version.version_name,
+            max_concurrency=run.concurrency,
+            progress=False,
+            lifecycle=lifecycle_factory,
+        )
+
+        # Derived from every persisted result, exactly as ``runner.execute_run`` does,
+        # so the two engines can never disagree about the run's terminal status or
+        # metrics.
+        persisted = await asyncio.to_thread(store.list_results, run_id)
+        any_error = any(result.error is not None for result in persisted)
+        status = RunStatus.COMPLETED_WITH_ERRORS if any_error else RunStatus.COMPLETED
+
+        metrics: dict | None = None
+        if want_agreement:
+            label_by_row = {row.id: _label_value(row) for row in rows}
+            pairs = [
+                (result.score_value, label_by_row.get(result.row_id))
+                for result in persisted
+                if result.error is None and label_by_row.get(result.row_id) is not None
+            ]
+            if pairs:
+                labels = (
+                    version.score_labels if version.score_kind is ScoreKind.CATEGORICAL else None
                 )
+                metrics = compute_metrics(pairs, version.score_kind, labels)
 
-            evals_dataset = dataset_to_evals(dataset, rows, evaluators)
-            task = _make_task(version, agent)
-            rows_by_id = {row.id: row for row in rows}
+        finished = await asyncio.to_thread(
+            store.update_run_status,
+            run_id,
+            status,
+            finished_at=datetime.now(UTC),
+            metrics=metrics,
+        )
+        # Replaces the initial ``len(rows)`` marker with the actual case count now
+        # that ``evaluate()`` has finished.
+        await asyncio.to_thread(
+            store.set_experiment,
+            run_id,
+            experiment_name=version.version_name,
+            case_count=len(report.cases),
+        )
 
-            def lifecycle_factory(case: Case) -> PersistResults:
-                return PersistResults(
-                    case,
-                    store=store,
-                    run_id=run_id,
-                    version=version,
-                    want_agreement=want_agreement,
-                    rows_by_id=rows_by_id,
-                    emit_row=emit_row,
-                )
-
-            report = await evals_dataset.evaluate(
-                task,
-                name=version.version_name,
-                max_concurrency=run.concurrency,
-                progress=False,
-                lifecycle=lifecycle_factory,
-            )
-
-            # Derived from every persisted result, exactly as ``runner.execute_run`` does,
-            # so the two engines can never disagree about the run's terminal status or
-            # metrics.
-            persisted = await asyncio.to_thread(store.list_results, run_id)
-            any_error = any(result.error is not None for result in persisted)
-            status = RunStatus.COMPLETED_WITH_ERRORS if any_error else RunStatus.COMPLETED
-
-            metrics: dict | None = None
-            if want_agreement:
-                label_by_row = {row.id: _label_value(row) for row in rows}
-                pairs = [
-                    (result.score_value, label_by_row.get(result.row_id))
-                    for result in persisted
-                    if result.error is None and label_by_row.get(result.row_id) is not None
-                ]
-                if pairs:
-                    labels = (
-                        version.score_labels
-                        if version.score_kind is ScoreKind.CATEGORICAL
-                        else None
-                    )
-                    metrics = compute_metrics(pairs, version.score_kind, labels)
-
-            finished = await asyncio.to_thread(
-                store.update_run_status,
-                run_id,
-                status,
-                finished_at=datetime.now(UTC),
-                metrics=metrics,
-            )
-            # Replaces the initial ``len(rows)`` marker with the actual case count now
-            # that ``evaluate()`` has finished.
-            await asyncio.to_thread(
-                store.set_experiment,
-                run_id,
-                experiment_name=version.version_name,
-                case_count=len(report.cases),
-            )
-
-            span.set_attribute("status", status.value)
-            if metrics is not None:
-                for key, value in metrics.items():
-                    span.set_attribute(key, value)
-        except Exception as exc:  # noqa: BLE001 — an unexpected lifecycle/evaluate failure,
-            # as opposed to an ordinary per-case failure (which ``PersistResults.teardown``
-            # already records without raising), must still leave the run terminal rather
-            # than stuck ``RUNNING`` forever. Handled while the span is still open so
-            # ``status`` is attached before it closes.
-            failed = await asyncio.to_thread(
-                store.update_run_status,
-                run_id,
-                RunStatus.FAILED,
-                error=str(exc),
-                finished_at=datetime.now(UTC),
-            )
-            span.set_attribute("status", RunStatus.FAILED.value)
-            await emit("error", {"error": str(exc)})
-            return failed
+    except Exception as exc:  # noqa: BLE001 — an unexpected lifecycle/evaluate failure,
+        # as opposed to an ordinary per-case failure (which ``PersistResults.teardown``
+        # already records without raising), must still leave the run terminal rather
+        # than stuck ``RUNNING`` forever. Handled while the span is still open so
+        # ``status`` is attached before it closes.
+        failed = await asyncio.to_thread(
+            store.update_run_status,
+            run_id,
+            RunStatus.FAILED,
+            error=str(exc),
+            finished_at=datetime.now(UTC),
+        )
+        await emit("error", {"error": str(exc)})
+        return failed
 
     await emit("finished", {"status": status.value, "metrics": metrics})
     return finished

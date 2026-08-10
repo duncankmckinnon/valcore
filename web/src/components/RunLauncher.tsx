@@ -25,6 +25,9 @@ export default function RunLauncher({ onStarted }: Props) {
   const [versionId, setVersionId] = useState("");
   const [datasetId, setDatasetId] = useState("");
   const [kind, setKind] = useState<RunKind>("eval");
+  // Off by default: the runner engine keeps cancellation and per-row retry, so an experiment
+  // is the deliberate choice you make when you want it in Logfire's experiments view.
+  const [experiment, setExperiment] = useState(false);
   const [concurrency, setConcurrency] = useState(8);
 
   const [error, setError] = useState<unknown>(null);
@@ -92,6 +95,7 @@ export default function RunLauncher({ onStarted }: Props) {
         version_id: versionId,
         dataset_id: datasetId,
         concurrency,
+        experiment,
       });
       onStarted(run);
     } catch (err) {
@@ -170,6 +174,23 @@ export default function RunLauncher({ onStarted }: Props) {
           </span>
         )}
       </label>
+
+      {/* An engine choice, not a run kind: an experiment can be eval or validation, which is
+          why this is a checkbox beside the kind select rather than a third option inside it. */}
+      <label className="field-inline">
+        <input
+          type="checkbox"
+          checked={experiment}
+          onChange={(event) => setExperiment(event.target.checked)}
+        />
+        Run as a Logfire experiment
+      </label>
+      {experiment && (
+        <span className="muted">
+          Runs through pydantic-evals so it appears in Logfire&apos;s experiments view. Cannot
+          be cancelled once started, and re-running single rows is unavailable.
+        </span>
+      )}
 
       <label className="field">
         <span className="field-label">Concurrency</span>

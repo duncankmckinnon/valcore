@@ -86,9 +86,16 @@ class GenerateRequest(BaseModel):
     """
 
     criteria: str
+    # Without ``dataset_id`` this is the whole column set; with it, the subset of the dataset's
+    # columns to expose, so an evaluator need not require every column the dataset carries.
     columns: list[str] | None = None
     dataset_id: str | None = None
     column_notes: dict[str, str] | None = None
+    # Prescribes the score space instead of inheriting the dataset's. Supplying one alongside
+    # ``dataset_id`` deliberately overrides the seed, which means the evaluator can score that
+    # dataset but not be validated against it -- ``check_dataset_compatibility`` requires the
+    # label sets to agree for a VALIDATION run.
+    label_schema: LabelSchema | None = None
 
 
 class RefineRequest(BaseModel):
@@ -364,22 +371,41 @@ def _resolve_seed(
 ) -> tuple[list[str] | None, LabelSchema | None]:
     """Resolve the column set and label space a generation call should be seeded with.
 
-    A ``dataset_id`` derives the shape from that dataset; explicit ``columns`` are used
-    as-is. The two are mutually exclusive — picking a winner silently would hide a
-    caller mistake — and ``column_notes`` must key only into the resolved column set,
-    which is why validation happens here rather than being left to ``generate_config``.
-    """
-    if body.dataset_id is not None and body.columns:
-        raise ContractError(
-            "Provide either 'dataset_id' to seed columns from a dataset or explicit "
-            "'columns', not both."
-        )
+    An explicit ``label_schema`` prescribes the score space and overrides whatever the dataset
+    would have seeded, so an evaluator can grade a dataset in its own vocabulary.
 
+    Without ``dataset_id``, explicit ``columns`` are the whole set. With ``dataset_id``, the
+    shape derives from that dataset and ``columns`` *narrows* it: only the named ones are
+    offered to the generator, so an evaluator need not require every column its dataset
+    happens to carry. The narrowing is validated as a subset — a typo would otherwise silently
+    drop a column the caller meant to keep — and the label space still comes from the dataset
+    either way.
+
+    ``column_notes`` must key only into the resolved set, which is why validation happens here
+    rather than being left to ``generate_config``.
+    """
     columns = body.columns
-    label_schema: LabelSchema | None = None
+    label_schema: LabelSchema | None = body.label_schema
     if body.dataset_id is not None:
         dataset = store.get_dataset(body.dataset_id)
-        columns, label_schema = evaluator_seed_from_dataset(dataset)
+        available, seeded_schema = evaluator_seed_from_dataset(dataset)
+        # An explicit schema is a deliberate override, so it wins over the dataset's. The
+        # consequence is documented on GenerateRequest: a differing label space makes this
+        # evaluator EVAL-only against that dataset.
+        if label_schema is None:
+            label_schema = seeded_schema
+        if body.columns:
+            unknown = [name for name in body.columns if name not in available]
+            if unknown:
+                raise ContractError(
+                    f"column(s) {unknown} are not in dataset {dataset.name!r}, whose columns "
+                    f"are {available}."
+                )
+            # Preserve the dataset's own ordering rather than the request's: the prompt lists
+            # columns in this order, and a run reads rows keyed by name regardless.
+            columns = [name for name in available if name in set(body.columns)]
+        else:
+            columns = available
 
     if body.column_notes:
         if not columns:

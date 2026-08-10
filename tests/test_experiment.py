@@ -751,11 +751,17 @@ def traced(capfire, monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.skipif(not _LOGFIRE_PRESENT, reason="logfire extra not installed")
-class TestExperimentSpan:
-    """With tracing configured, execute_experiment must produce a real span tree."""
+class TestExperimentSpans:
+    """Experiment mode must emit pydantic-evals' experiment span as a trace ROOT.
+
+    Logfire identifies an experiment by ``gen_ai.operation.name='experiment'`` on the span
+    (pydantic_evals/dataset.py). Wrapping ``evaluate()`` in ``valcore.run`` made that span a
+    child rather than a root, which is not how a plain ``dataset.evaluate()`` presents it, so
+    this module emits no valcore spans of its own.
+    """
 
     @pytest.mark.anyio
-    async def test_successful_run_span_carries_status_and_metrics(
+    async def test_experiment_span_is_a_root_and_valcore_emits_none(
         self, store: Store, traced, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from valcore.experiment import execute_experiment
@@ -766,24 +772,22 @@ class TestExperimentSpan:
 
         patch_build_agent(monkeypatch, constant_agent(version))
         result = await execute_experiment(store, run.id)
-
         assert result.metrics is not None
+
         spans = traced.exporter.exported_spans_as_dict(parse_json_attributes=True)
-        run_spans = [s for s in spans if s["name"] == "valcore.run"]
-        assert len(run_spans) == 1
-        assert run_spans[0]["end_time"] is not None
-        attrs = run_spans[0]["attributes"]
-        assert attrs["status"] == result.status.value
-        for key, value in result.metrics.items():
-            assert attrs[key] == value
+        experiments = [
+            s for s in spans if s["attributes"].get("gen_ai.operation.name") == "experiment"
+        ]
+        assert len(experiments) == 1, "evaluate() must emit exactly one experiment span"
+        assert experiments[0]["parent"] is None, "the experiment span must be a trace root"
+        # Ours would re-parent it and duplicate pydantic-evals' own per-case spans.
+        assert [s for s in spans if s["name"] in ("valcore.run", "valcore.score_row")] == []
 
     @pytest.mark.anyio
-    async def test_eval_dataset_construction_failure_closes_span_as_failed(
+    async def test_eval_dataset_construction_failure_still_marks_the_run_failed(
         self, store: Store, traced, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A failure building the ``EvalsDataset`` happens inside the span (it needs
-        the agent and rows resolved during setup) and must still close the span with
-        ``status=failed`` rather than leaving it open or attribute-less."""
+        """A failure building the ``EvalsDataset`` must still leave the run terminal."""
         import valcore.experiment as experiment_module
 
         version = make_version(store)
@@ -800,19 +804,15 @@ class TestExperimentSpan:
 
         assert result.status is RunStatus.FAILED
         assert result.finished_at is not None
-        spans = traced.exporter.exported_spans_as_dict()
-        run_spans = [s for s in spans if s["name"] == "valcore.run"]
-        assert len(run_spans) == 1
-        assert run_spans[0]["end_time"] is not None
-        assert run_spans[0]["attributes"]["status"] == RunStatus.FAILED.value
+        assert result.error is not None
 
     @pytest.mark.anyio
-    async def test_evaluate_failure_closes_span_as_failed(
+    async def test_evaluate_failure_still_marks_the_run_failed(
         self, store: Store, traced, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A malformed label breaks ``_agreement`` inside ``teardown``, which
-        ``pydantic_evals`` propagates out of ``evaluate()`` itself -- the span must
-        still close with ``status=failed`` rather than staying open."""
+        ``pydantic_evals`` propagates out of ``evaluate()`` itself -- the run must still end
+        ``FAILED`` rather than stuck ``RUNNING``."""
         from valcore.experiment import execute_experiment
 
         version = make_numeric_version(store)
@@ -825,8 +825,4 @@ class TestExperimentSpan:
         result = await execute_experiment(store, run.id)
 
         assert result.status is RunStatus.FAILED
-        spans = traced.exporter.exported_spans_as_dict()
-        run_spans = [s for s in spans if s["name"] == "valcore.run"]
-        assert len(run_spans) == 1
-        assert run_spans[0]["end_time"] is not None
-        assert run_spans[0]["attributes"]["status"] == RunStatus.FAILED.value
+        assert result.finished_at is not None
