@@ -326,6 +326,40 @@ describe("stylesheet class contract", () => {
   });
 });
 
+// Anchors with no class of their own — the dataset and run names in their list tables are
+// bare react-router <Link>s — inherit the browser's link colours: blue when unvisited and
+// *purple* once visited. Purple is not in the palette and reads badly on the dark panel.
+// The stylesheet has to colour bare anchors itself, in both states, so that a link's colour
+// never depends on whether it has been clicked before.
+describe("link colour", () => {
+  const css = readFileSync(cssPath, "utf8");
+  // Strip comments so prose mentioning a selector cannot satisfy the check.
+  const rules = css.replace(/\/\*[\s\S]*?\*\//g, "");
+
+  // Selectors of every rule whose body sets the accent colour.
+  const accentSelectors = rules
+    .split("}")
+    .filter((block) => /color:\s*var\(--accent\)/.test(block))
+    .map((block) => block.split("{")[0].trim());
+
+  const targets = (selector: string) =>
+    accentSelectors.some((sel) => sel.split(",").some((part) => part.trim() === selector));
+
+  it("colours bare anchors with the accent token", () => {
+    expect(
+      targets("a"),
+      "no rule sets `color: var(--accent)` on a bare `a`, so unclassed links fall back to the browser's blue/purple defaults",
+    ).toBe(true);
+  });
+
+  it("colours visited anchors with the accent token", () => {
+    expect(
+      targets("a:visited"),
+      "no rule sets `color: var(--accent)` on `a:visited`, so a followed link can still render purple",
+    ).toBe(true);
+  });
+});
+
 describe("favicon", () => {
   it("copies the logo into public/ as a non-empty binary", () => {
     const logo = join(webDir, "public", "logo.png");

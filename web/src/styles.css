@@ -54,6 +54,18 @@ body {
   font-size: var(--text-md);
 }
 
+/* One link colour for the whole app. Without this, an anchor carrying no class of its own
+   — the dataset and run names in their list tables are bare react-router <Link>s — inherits
+   the browser defaults: blue unvisited, purple once visited. Neither is in the palette, and
+   a name that changes colour after you click it reads as a different kind of thing.
+
+   `a:visited` is listed explicitly so the link colour never depends on history. Components
+   that set their own colour (.nav-link, .docs-tab) still win on specificity. */
+a,
+a:visited {
+  color: var(--accent);
+}
+
 /* A single visible focus ring for every interactive element. The pre-redesign
    stylesheet defined none. */
 a:focus-visible,
