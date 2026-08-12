@@ -56,7 +56,7 @@ Either way you get an `valcore` command on your `PATH`.
 
 ## Web UI
 
-`valcore serve` opens a dark-themed web UI with four surfaces:
+`valcore serve` opens a dark-themed web UI with five surfaces:
 
 - **Overview** — the landing page, summarizing what you have and pointing to the next
   step.
@@ -65,6 +65,12 @@ Either way you get an `valcore` command on your `PATH`.
   from a description.
 - **Runs** — inspect completed runs, their metrics, and per-row scores, and compare runs
   against each other.
+- **Docs** — how the product works, in four tabs: Evals, Datasets, Runs, and CLI.
+
+The docs surface explains the concepts the other four assume — label spaces, frozen
+versions, run kinds, agreement metrics — so you can read them without leaving the app.
+It covers the workflow; this README stays the reference for install, credentials,
+portable packages, CI, and Logfire.
 
 ## Quickstart
 
@@ -79,6 +85,9 @@ valcore serve
 (pass `--no-browser` to skip that, or `--port` to bind elsewhere). Author evaluators
 and datasets in the UI, then drive runs from the command line. Both can be written by
 hand or generated from a description; a generated result is an editable draft either way.
+
+From there, the **Docs** tab in the app walks through the full workflow — authoring a
+judge, getting labeled rows, and reading what a run measured.
 
 ## Seeding one from the other
 

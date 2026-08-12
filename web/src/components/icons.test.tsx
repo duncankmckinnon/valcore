@@ -4,6 +4,7 @@ import {
   ChevronIcon,
   CompareIcon,
   DatasetIcon,
+  DocsIcon,
   EvaluatorIcon,
   InfoIcon,
   OverviewIcon,
@@ -26,6 +27,7 @@ const ICONS = [
   ["InfoIcon", InfoIcon],
   ["ChevronIcon", ChevronIcon],
   ["PlusIcon", PlusIcon],
+  ["DocsIcon", DocsIcon],
 ] as const;
 
 describe("icons", () => {

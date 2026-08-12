@@ -107,3 +107,15 @@ export function PlusIcon(props: IconProps): JSX.Element {
     </Svg>
   );
 }
+
+// An open book: two facing pages over a spine. Distinct from DatasetIcon's stacked
+// rules at 16px, which matters because both sit in the same nav column.
+export function DocsIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="M12 6 C10 4.5 7.5 4 4 4 L4 18 C7.5 18 10 18.5 12 20" />
+      <path d="M12 6 C14 4.5 16.5 4 20 4 L20 18 C16.5 18 14 18.5 12 20" />
+      <line x1="12" y1="6" x2="12" y2="20" />
+    </Svg>
+  );
+}

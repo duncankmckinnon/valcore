@@ -33,14 +33,47 @@ describe("Layout nav", () => {
     expect(screen.getByRole("link", { name: "Datasets" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Runs" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Compare" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Docs" })).toBeTruthy();
   });
 
-  it("renders exactly the five expected nav links and nothing else", () => {
+  it("renders exactly the six expected nav links and nothing else", () => {
     renderLayout("/");
 
     // Guards against a stray link (e.g. the brand wordmark accidentally becoming
     // a link, or a footer/version badge that this task must not add).
-    expect(screen.getAllByRole("link")).toHaveLength(5);
+    expect(screen.getAllByRole("link")).toHaveLength(6);
+  });
+
+  it("orders Docs directly under Overview, above the labelled groups", () => {
+    renderLayout("/");
+
+    // Docs sits with Overview as the two ungrouped entries at the top: it is read
+    // before you have anything to author or measure, so it should not be buried under
+    // the working surfaces.
+    expect(screen.getAllByRole("link").map((link) => link.textContent)).toEqual([
+      "Overview",
+      "Docs",
+      "Evaluators",
+      "Datasets",
+      "Runs",
+      "Compare",
+    ]);
+  });
+
+  it("points Docs at /docs", () => {
+    renderLayout("/");
+
+    expect(screen.getByRole("link", { name: "Docs" }).getAttribute("href")).toBe("/docs");
+  });
+
+  it("keeps Docs active on a docs sub-route", () => {
+    renderLayout("/docs/datasets");
+
+    // Docs deliberately omits `end`: every /docs/:slug tab must keep the nav item
+    // lit, otherwise the sidebar goes blank-looking while reading any tab but the
+    // first.
+    expect(screen.getByRole("link", { name: "Docs" }).getAttribute("aria-current")).toBe("page");
+    expect(screen.getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBeNull();
   });
 
   it("points Overview at / and Compare at /runs/compare", () => {
