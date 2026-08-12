@@ -1641,3 +1641,129 @@ kbd {
   color: var(--muted);
   font-size: var(--text-sm);
 }
+
+/* -- Docs ------------------------------------------------------------------- */
+
+/* Secondary navigation under the page header. Underline-on-active rather than a filled
+   pill: the sidebar already uses fill for its active surface, and repeating that here
+   would leave two things looking equally selected. */
+.docs-tabs {
+  display: flex;
+  gap: var(--space-4);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--space-6);
+  overflow-x: auto;
+}
+
+.docs-tab {
+  padding: var(--space-2) 0;
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: var(--text-md);
+  white-space: nowrap;
+  border-bottom: 2px solid transparent;
+  /* Overlap the strip's own border so the active underline replaces it rather than
+     stacking two rules. */
+  margin-bottom: -1px;
+}
+
+.docs-tab:hover {
+  color: var(--text);
+}
+
+.docs-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* Prose column, capped for line length. An uncapped measure across the full app shell
+   is the main thing that makes documentation unpleasant to read. */
+.doc-body {
+  max-width: 68ch;
+}
+
+.doc-section + .doc-section {
+  margin-top: var(--space-6);
+}
+
+.doc-section h2 {
+  font-size: var(--text-lg);
+  margin: 0 0 var(--space-3);
+}
+
+.doc-section p {
+  color: var(--text-dim);
+  line-height: 1.65;
+  margin: 0 0 var(--space-3);
+}
+
+.doc-section ul {
+  color: var(--text-dim);
+  line-height: 1.65;
+  margin: 0 0 var(--space-3);
+  padding-left: var(--space-5);
+}
+
+.doc-section li {
+  margin-bottom: var(--space-1);
+}
+
+.doc-section code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--text-sm);
+  background: var(--panel-sunk);
+  border-radius: var(--radius);
+  padding: 1px var(--space-1);
+}
+
+/* Copyable command. The Copy button lives inside the block so it travels with the
+   command it copies, matching the setup card on Overview. */
+.doc-code {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  background: var(--panel-sunk);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  margin: 0 0 var(--space-3);
+}
+
+.doc-code code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--text-sm);
+  color: var(--text);
+  background: none;
+  padding: 0;
+  overflow-x: auto;
+}
+
+.doc-note {
+  display: flex;
+  gap: var(--space-2);
+  background: var(--accent-wash);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  margin: 0 0 var(--space-3);
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+/* The icon sits on the first line of text rather than centred on the block, which reads
+   wrong as soon as a note wraps to three lines. */
+.doc-note svg {
+  flex: 0 0 auto;
+  margin-top: 3px;
+  color: var(--accent);
+}
+
+.doc-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.doc-link:hover {
+  text-decoration: underline;
+}
