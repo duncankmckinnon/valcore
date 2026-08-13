@@ -17,6 +17,7 @@ from valcore.errors import (
     ReferencedError,
     ValcoreError,
 )
+from valcore.settings import get_settings
 
 
 @pytest.fixture
@@ -56,6 +57,23 @@ async def test_config_populated() -> None:
     assert payload["models"]
     assert payload["tools"]
     assert payload["capabilities"]
+
+
+@pytest.mark.anyio
+async def test_config_default_model_is_not_merely_the_head_of_the_catalog() -> None:
+    """The SPA seeds new versions from ``default_model``, never ``models[0]``.
+
+    The catalog is sorted alphabetically, so its first entry is an arbitrary Bedrock
+    model. This pins the two apart so a regression to ``models[0]`` is caught here
+    rather than by a user wondering why their evaluator picked a model they never chose.
+    """
+    app = create_app()
+    async with _client(app) as client:
+        payload = (await client.get("/api/config")).json()
+
+    assert payload["default_model"] == get_settings().default_model
+    assert payload["default_model"] in payload["models"]
+    assert payload["default_model"] != payload["models"][0]
 
 
 @pytest.mark.anyio

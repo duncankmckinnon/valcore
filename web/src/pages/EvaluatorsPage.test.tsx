@@ -50,7 +50,12 @@ function makeSetupResult(overrides: Partial<UseSetupResult> = {}): UseSetupResul
   };
 }
 
-const config = { models: ["model-a", "model-b"], tools: [], capabilities: [] };
+const config = {
+  models: ["model-a", "model-b"],
+  default_model: "model-b",
+  tools: [],
+  capabilities: [],
+};
 
 function makeEvaluator(overrides: Partial<Evaluator> = {}): Evaluator {
   return {

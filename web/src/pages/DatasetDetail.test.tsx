@@ -123,7 +123,12 @@ function renderDetail() {
 }
 
 beforeEach(() => {
-  apiMock.mockResolvedValue({ models: ["model-a"], tools: [], capabilities: [] });
+  apiMock.mockResolvedValue({
+    models: ["model-a"],
+    default_model: "model-a",
+    tools: [],
+    capabilities: [],
+  });
   listMock.mockResolvedValue([]);
   getMock.mockResolvedValue(madeDataset());
   statsMock.mockResolvedValue({ total: 5, labeled: 5, unlabeled: 0, label_distribution: {} });

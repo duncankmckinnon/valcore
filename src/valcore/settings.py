@@ -29,13 +29,25 @@ GATEWAY_ROUTES: tuple[str, ...] = (
     "gateway/groq",
 )
 
-MODEL_CATALOG: list[str] = [
-    "gateway/anthropic:claude-sonnet-5",
-    "gateway/anthropic:claude-opus-4-5",
-    "gateway/anthropic:claude-haiku-4-5",
-    "gateway/openai:gpt-5",
-    "gateway/google:gemini-2.5-pro",
-]
+
+@functools.lru_cache
+def model_catalog() -> tuple[str, ...]:
+    """Return the gateway-routable model names known to the pinned ``pydantic-ai``.
+
+    These are type-ahead suggestions, not a whitelist -- ``validate_model_string``
+    accepts any well-formed ``gateway/<route>:<name>`` string and leaves it to the
+    Gateway to reject names it does not serve. Filtering through ``GATEWAY_ROUTES``
+    (rather than a bare ``gateway/`` prefix) keeps the two in step: every suggestion
+    is a string ``validate_model_string`` accepts.
+
+    ``pydantic_ai.models`` is imported here rather than at module scope because it
+    costs ~235ms to import, and every CLI invocation loads this module while only the
+    API's config endpoint needs the catalog.
+    """
+    from pydantic_ai.models import known_model_names
+
+    prefixes = tuple(f"{route}:" for route in GATEWAY_ROUTES)
+    return tuple(sorted(n for n in known_model_names() if n.startswith(prefixes)))
 
 
 class _TomlConfigSource(PydanticBaseSettingsSource):

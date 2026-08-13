@@ -22,6 +22,9 @@ vi.mock("../api/client", () => ({
 
 const config: AppConfig = {
   models: ["gateway/anthropic:claude-sonnet-5", "gateway/openai:gpt-5"],
+  // Deliberately not `models[0]`, so the defaulting assertions below would fail if the
+  // editor went back to seeding new versions from the head of the catalog.
+  default_model: "gateway/openai:gpt-5",
   tools: ["row_get"],
   capabilities: ["FileSystem", "Shell"],
 };
@@ -186,9 +189,87 @@ describe("VersionEditor: draft mode", () => {
     expect((screen.getByLabelText("Version name") as HTMLInputElement).value).toBe("");
     expect((screen.getByLabelText("Instructions") as HTMLTextAreaElement).value).toBe("");
     expect((screen.getByLabelText("Prompt template") as HTMLTextAreaElement).value).toBe("");
-    expect((screen.getByLabelText("Model") as HTMLSelectElement).value).toBe(config.models[0]);
+    expect((screen.getByLabelText("Model") as HTMLInputElement).value).toBe(config.default_model);
     expect(screen.getByRole("button", { name: "Create version" })).not.toBeNull();
     expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
+  });
+
+  it("prefills every field from seedFrom, so a new version starts as an edit", async () => {
+    const source = makeVersion({
+      id: "v1",
+      version_name: "tone-check",
+      notes: "the prior notes",
+      model: "gateway/openai:gpt-5",
+      instructions: "Judge the tone.",
+      prompt_template: "Rate {answer}",
+      required_columns: ["answer"],
+      tools: ["row_get"],
+    });
+    render(
+      <VersionEditor version={null} seedFrom={source} evaluatorId="e1" config={config} />,
+    );
+
+    expect((screen.getByLabelText("Version name") as HTMLInputElement).value).toBe("tone-check");
+    expect((screen.getByLabelText("Instructions") as HTMLTextAreaElement).value).toBe(
+      "Judge the tone.",
+    );
+    expect((screen.getByLabelText("Prompt template") as HTMLTextAreaElement).value).toBe(
+      "Rate {answer}",
+    );
+    expect((screen.getByLabelText("Model") as HTMLInputElement).value).toBe(
+      "gateway/openai:gpt-5",
+    );
+
+    // Seeded, not adopted: this is still a create, so it saves via createVersion.
+    expect(screen.getByRole("button", { name: "Create version" })).not.toBeNull();
+  });
+
+  it("seeds a copy, so editing the draft cannot mutate the source version", async () => {
+    const source = makeVersion({ required_columns: ["answer"], tools: ["row_get"] });
+    const before = JSON.stringify(source);
+    const user = userEvent.setup();
+    render(
+      <VersionEditor version={null} seedFrom={source} evaluatorId="e1" config={config} />,
+    );
+
+    await user.clear(screen.getByLabelText("Instructions"));
+    await user.type(screen.getByLabelText("Instructions"), "Different.");
+
+    expect(JSON.stringify(source)).toBe(before);
+  });
+
+  it("falls back to a blank form when there is no seed", () => {
+    render(<VersionEditor version={null} evaluatorId="e1" config={config} />);
+
+    expect((screen.getByLabelText("Version name") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Instructions") as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("accepts a model the catalog does not list", async () => {
+    // The Gateway serves more models than the pinned pydantic-ai knows about, so the
+    // field must take a well-formed name that is absent from the suggestions.
+    const user = userEvent.setup();
+    render(<VersionEditor version={null} evaluatorId="e1" config={config} />);
+
+    const field = screen.getByLabelText("Model") as HTMLInputElement;
+    const unlisted = "gateway/groq:llama-4-maverick";
+    expect(config.models).not.toContain(unlisted);
+
+    await user.clear(field);
+    await user.type(field, unlisted);
+
+    expect(field.value).toBe(unlisted);
+  });
+
+  it("offers the catalog as suggestions without constraining the field", () => {
+    render(<VersionEditor version={null} evaluatorId="e1" config={config} />);
+
+    const field = screen.getByLabelText("Model") as HTMLInputElement;
+    expect(field.tagName).toBe("INPUT");
+    expect(field.getAttribute("list")).toBeTruthy();
+
+    const options = document.querySelectorAll(`#${field.getAttribute("list")} option`);
+    expect([...options].map((o) => o.getAttribute("value"))).toEqual(config.models);
   });
 
   it("disables Save and shows an inline error for an incomplete draft", () => {
@@ -307,7 +388,10 @@ describe("VersionEditor: sectioned layout", () => {
     expect(screen.getByText(/read-only/i)).not.toBeNull();
     expect((screen.getByLabelText("Version name") as HTMLInputElement).readOnly).toBe(true);
     expect((screen.getByLabelText("Instructions") as HTMLTextAreaElement).readOnly).toBe(true);
-    expect((screen.getByLabelText("Model") as HTMLSelectElement).disabled).toBe(true);
+    // `readOnly`, not `disabled`: the old control was a <select>, which has no readOnly
+    // attribute. As an input it now matches its siblings and stays selectable, so a frozen
+    // version's model string can still be copied.
+    expect((screen.getByLabelText("Model") as HTMLInputElement).readOnly).toBe(true);
   });
 });
 

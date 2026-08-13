@@ -12,6 +12,13 @@ import { ChevronIcon } from "./icons";
 import { Tooltip } from "./Tooltip";
 import { Button, Select, TextArea } from "./ui";
 
+// The model field is a free-text input backed by a `<datalist>` rather than a `<select>`: the
+// Gateway serves far more models than any list we ship, so the catalog is type-ahead only and
+// an unrecognised-but-well-formed name must still be enterable. `MODEL_TEMPLATE` seeds an empty
+// field on focus so the suggestion list opens on the route prefix instead of all ~160 entries.
+const MODEL_OPTIONS_ID = "model-catalog-options";
+const MODEL_TEMPLATE = "gateway/";
+
 // A field label paired with its optional info affordance. The tooltip trigger is a
 // `type="button"`, so it never carries `aria-expanded` and stays distinct from the one
 // collapsible section's disclosure. A `<button>` is itself a labelable element, so a field
@@ -64,14 +71,29 @@ export function IdentitySection({
         </label>
 
         <div className="field">
-          <FieldLabel text="Model" tooltip="The judge model that runs this evaluator's prompt." />
-          <Select
+          <FieldLabel
+            text="Model"
+            tooltip="The judge model that runs this evaluator's prompt. Suggestions cover the models this pydantic-ai version knows; any gateway/<provider>:<model> the Gateway serves is accepted."
+          />
+          <input
+            className="input"
             aria-label="Model"
-            disabled={frozen}
+            list={MODEL_OPTIONS_ID}
+            placeholder={MODEL_TEMPLATE}
+            readOnly={frozen}
             value={model}
-            options={models.map((name) => ({ value: name, label: name }))}
+            onFocus={() => {
+              if (!model && !frozen) {
+                onModel(MODEL_TEMPLATE);
+              }
+            }}
             onChange={(event) => onModel(event.target.value)}
           />
+          <datalist id={MODEL_OPTIONS_ID}>
+            {models.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
           {modelError}
         </div>
       </div>
