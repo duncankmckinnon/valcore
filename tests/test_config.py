@@ -362,3 +362,51 @@ def test_logfire_extra_is_present_in_dev_environment() -> None:
     failing loudly here.
     """
     assert importlib.util.find_spec("logfire") is not None
+
+
+# --- model catalog -----------------------------------------------------------------
+
+
+def test_model_catalog_is_derived_and_covers_every_gateway_route() -> None:
+    """The catalog comes from pydantic-ai, not a hand-maintained literal.
+
+    The old five-entry list went stale silently. Asserting a floor well above it,
+    plus coverage of every route, means a future pydantic-ai bump that drops a
+    provider fails here instead of quietly shrinking the picker.
+    """
+    catalog = settings.model_catalog()
+
+    assert len(catalog) > 100
+    routes_seen = {name.split(":", 1)[0] for name in catalog}
+    assert routes_seen == set(settings.GATEWAY_ROUTES)
+
+
+def test_every_catalog_entry_passes_model_validation() -> None:
+    """The catalog and the validator cannot drift apart.
+
+    `model_catalog` filters through GATEWAY_ROUTES precisely so that suggesting a
+    model the validator would then reject is impossible.
+    """
+    for name in settings.model_catalog():
+        settings.validate_model_string(name)
+
+
+def test_default_model_is_in_the_catalog() -> None:
+    assert settings.Settings().default_model in settings.model_catalog()
+
+
+def test_validate_model_string_accepts_names_absent_from_the_catalog() -> None:
+    """Shape is the only gate; the Gateway is the authority on what exists.
+
+    The Gateway serves more models than any pinned pydantic-ai knows about, so an
+    unrecognised-but-well-formed name must pass rather than block the user.
+    """
+    unknown = "gateway/anthropic:some-model-released-tomorrow"
+    assert unknown not in settings.model_catalog()
+    settings.validate_model_string(unknown)  # must not raise
+
+
+def test_validate_model_string_still_rejects_malformed_names() -> None:
+    for bad in ("claude-sonnet-5", "gateway/nope:x", "gateway/anthropic:"):
+        with pytest.raises(ConfigError):
+            settings.validate_model_string(bad)

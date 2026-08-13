@@ -3,6 +3,7 @@
 import importlib
 from importlib.resources import files as _package_files
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +25,7 @@ from valcore.errors import (
     ValcoreError,
 )
 from valcore.models import VALID_CAPABILITIES
-from valcore.settings import MODEL_CATALOG
+from valcore.settings import get_settings, model_catalog
 from valcore.tools import tool_names
 from valcore.tracing import configure_tracing, instrument_app
 
@@ -159,10 +160,17 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/api/config")
-    async def config() -> dict[str, list[str]]:
-        """Return the pickers the SPA needs: models, tools, and capabilities."""
+    async def config() -> dict[str, Any]:
+        """Return the pickers the SPA needs: models, tools, and capabilities.
+
+        ``models`` is a suggestion list for type-ahead, not a closed set -- the SPA
+        accepts any well-formed ``gateway/<route>:<name>`` string. ``default_model``
+        is sent separately because the catalog is sorted alphabetically, so its first
+        entry is arbitrary and not a sensible default.
+        """
         return {
-            "models": list(MODEL_CATALOG),
+            "models": list(model_catalog()),
+            "default_model": get_settings().default_model,
             "tools": tool_names(),
             "capabilities": sorted(VALID_CAPABILITIES),
         }

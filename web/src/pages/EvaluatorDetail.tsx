@@ -286,6 +286,7 @@ export default function EvaluatorDetail({ id }: EvaluatorDetailProps) {
         <VersionEditor
           key="draft"
           version={null}
+          seedFrom={selected}
           evaluatorId={detail.id}
           config={config}
           evaluatorName={detail.name}

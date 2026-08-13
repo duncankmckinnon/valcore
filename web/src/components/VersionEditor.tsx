@@ -27,7 +27,10 @@ import type { VersionErrors } from "./versionValidation";
 import { Badge, Button, ErrorBanner, Spinner } from "./ui";
 
 export type AppConfig = {
+  /** Type-ahead suggestions, not a closed set -- any `gateway/<route>:<name>` is accepted. */
   models: string[];
+  /** Seed for new versions. The catalog is sorted, so `models[0]` is not a sensible default. */
+  default_model: string;
   tools: string[];
   capabilities: string[];
 };
@@ -55,6 +58,8 @@ type VersionEditorProps = {
   config: AppConfig;
   evaluatorName?: string;
   initialDraft?: GeneratedConfig;
+  /** Prefill a new draft from this version, so "New version" starts as an edit, not a blank slate. */
+  seedFrom?: EvaluatorVersion | null;
   onCreateDraft?: (version: Partial<EvaluatorVersion>) => Promise<EvaluatorVersion>;
   onSaved?: (version: EvaluatorVersion) => void;
 };
@@ -82,7 +87,7 @@ function blankForm(config: AppConfig): FormState {
   return {
     version_name: "",
     notes: "",
-    model: config.models[0] ?? "",
+    model: config.default_model,
     instructions: "",
     prompt_template: "",
     required_columns: [],
@@ -97,11 +102,28 @@ function blankForm(config: AppConfig): FormState {
   };
 }
 
+// Which form a mount starts from, in precedence order: an existing version being edited, a
+// generated draft, the version the user was looking at when they hit "New version", and only
+// then an empty form. Seeding from `seedFrom` mirrors the server's `copy_version` (the frozen
+// "save as new version" path), so both routes to a new version behave the same -- including
+// carrying `version_name` over verbatim, which the server does not constrain to be unique.
+function initialForm(
+  version: EvaluatorVersion | null,
+  initialDraft: GeneratedConfig | undefined,
+  seedFrom: EvaluatorVersion | null | undefined,
+  config: AppConfig,
+): FormState {
+  if (version) return toForm(version);
+  if (initialDraft) return generatedForm(initialDraft, config);
+  if (seedFrom) return toForm(seedFrom);
+  return blankForm(config);
+}
+
 function generatedForm(draft: GeneratedConfig, config: AppConfig): FormState {
   return {
     version_name: draft.version_name,
     notes: "",
-    model: config.models[0] ?? "",
+    model: config.default_model,
     instructions: draft.instructions,
     prompt_template: draft.prompt_template,
     required_columns: [...draft.required_columns],
@@ -171,22 +193,23 @@ export function VersionEditor({
   config,
   evaluatorName,
   initialDraft,
+  seedFrom,
   onCreateDraft,
   onSaved,
 }: VersionEditorProps) {
   const [form, setForm] = useState<FormState>(() =>
-    version ? toForm(version) : initialDraft ? generatedForm(initialDraft, config) : blankForm(config),
+    initialForm(version, initialDraft, seedFrom, config),
   );
   const [error, setError] = useState<unknown>(null);
   const [saving, setSaving] = useState(false);
   const [columnDraft, setColumnDraft] = useState("");
 
   useEffect(() => {
-    setForm(
-      version ? toForm(version) : initialDraft ? generatedForm(initialDraft, config) : blankForm(config),
-    );
+    setForm(initialForm(version, initialDraft, seedFrom, config));
     setError(null);
     // config is stable for the lifetime of an editor; only a version swap resets the form.
+    // `seedFrom` is deliberately excluded: it seeds the initial draft, and re-running on a
+    // parent re-render would discard whatever the user has typed since.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version, initialDraft]);
 

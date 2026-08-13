@@ -15,20 +15,24 @@ vi.mock("react-router-dom", async () => {
 
 // The page-level tests exercise EvaluatorDetail's own wiring, so VersionEditor is
 // stubbed to a marker that reports whether it received a draft (null) or a version,
-// and to which evaluator id it was bound.
+// which evaluator id it was bound to, and which version a draft was seeded from.
+// Whether the seed actually prefills the fields is VersionEditor's own test's business.
 vi.mock("../components/VersionEditor", () => ({
   VersionEditor: ({
     version,
+    seedFrom,
     evaluatorId,
     onSaved,
   }: {
     version: EvaluatorVersion | null;
+    seedFrom?: EvaluatorVersion | null;
     evaluatorId: string;
     onSaved?: (version: EvaluatorVersion) => void;
   }) => (
     <div>
       <p>{version === null ? "Draft editor" : `Editing version ${version.id}`}</p>
       <p>editor-evaluator-id: {evaluatorId}</p>
+      <p>editor-seed: {seedFrom ? seedFrom.id : "none"}</p>
       <button type="button" onClick={() => onSaved?.({ id: "v-new" } as EvaluatorVersion)}>
         simulate save
       </button>
@@ -58,7 +62,7 @@ vi.mock("../api/client", async () => {
   };
 });
 
-const config = { models: ["model-a"], tools: [], capabilities: [] };
+const config = { models: ["model-a"], default_model: "model-a", tools: [], capabilities: [] };
 
 function makeVersion(overrides: Partial<EvaluatorVersion> = {}): EvaluatorVersion {
   return {
@@ -161,6 +165,38 @@ describe("EvaluatorDetail: draft editor", () => {
     expect(within(versionSelect).getAllByRole("option")).toHaveLength(2);
     expect(screen.getByRole("button", { name: "Export" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
+  });
+
+  it("seeds a new draft from the version currently on screen", async () => {
+    vi.mocked(api).mockResolvedValue(config);
+    vi.mocked(evaluators.get).mockResolvedValue(
+      makeDetail({
+        active_version_id: "v1",
+        versions: [makeVersion({ id: "v1" }), makeVersion({ id: "v2", version_name: "v2" })],
+      }),
+    );
+    const user = userEvent.setup();
+    renderDetail();
+
+    expect(await screen.findByText("Editing version v1")).toBeTruthy();
+
+    // Switch versions first, so this pins "the one on screen" rather than "the first one".
+    await user.selectOptions(screen.getByRole("combobox", { name: "Version" }), "v2");
+    await user.click(screen.getByRole("button", { name: "New version" }));
+
+    expect(screen.getByText("Draft editor")).toBeTruthy();
+    expect(screen.getByText("editor-seed: v2")).toBeTruthy();
+  });
+
+  it("seeds nothing when the evaluator has no versions yet", async () => {
+    vi.mocked(api).mockResolvedValue(config);
+    vi.mocked(evaluators.get).mockResolvedValue(
+      makeDetail({ active_version_id: null, versions: [] }),
+    );
+    renderDetail();
+
+    expect(await screen.findByText("Draft editor")).toBeTruthy();
+    expect(screen.getByText("editor-seed: none")).toBeTruthy();
   });
 
   it("selects the newly created version after a draft is saved", async () => {

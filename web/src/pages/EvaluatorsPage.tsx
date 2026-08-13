@@ -102,7 +102,7 @@ function EvaluatorsList() {
         }
         const draft = await evaluators.generate({ criteria });
         const evaluator = await evaluators.create({ name });
-        const model = config.models[0] ?? "";
+        const model = config.default_model;
         await evaluators.createVersion(evaluator.id, draftToVersion(draft, model));
         navigate(`/evaluators/${evaluator.id}`);
       }
