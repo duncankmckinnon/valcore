@@ -16,19 +16,40 @@ import pytest
 LAUNCHER = Path(__file__).resolve().parent.parent / "packaging" / "valcore.sh"
 
 # A fake ``uv`` that logs every invocation and materializes the files the launcher
-# expects: ``uv venv`` creates the venv bin dir, ``uv pip install`` drops in an
-# executable ``valcore`` entrypoint that echoes a marker so we can prove the exec
+# expects: ``uv venv`` creates the venv bin dir and interpreter, ``uv pip install`` drops
+# in an executable ``valcore`` entrypoint that echoes a marker so we can prove the exec
 # passthrough happened.
+#
+# The ``venv`` case refuses a path that already holds a venv unless ``--clear`` is passed,
+# because that is what the real uv does. The original stub used a bare ``mkdir -p``, which
+# succeeded either way -- so the upgrade path looked healthy in tests while failing for
+# real users the moment no TTY was attached to answer uv's replace prompt.
+#
+# ``UV_FAIL_INSTALL_MARKER``, when it points at an existing file, makes ``pip install``
+# fail; ``venv --clear`` removes it. That models a reused venv whose interpreter no longer
+# satisfies the new release's requires-python, and recovering by rebuilding.
 FAKE_UV = """#!/bin/bash
 echo "$@" >> "$UV_LOG"
 case "$1" in
   venv)
     venv="${@: -1}"
+    if [ -d "$venv" ] && [[ "$*" != *--clear* ]]; then
+      echo "error: A virtual environment already exists at: $venv" >&2
+      exit 1
+    fi
+    rm -f "${UV_FAIL_INSTALL_MARKER:-/nonexistent}"
+    rm -rf "$venv"
     mkdir -p "$venv/bin"
+    printf '#!/bin/bash\\n' > "$venv/bin/python"
+    chmod +x "$venv/bin/python"
     ;;
   pip)
     python="$4"
     bin="$(dirname "$python")"
+    if [ -f "${UV_FAIL_INSTALL_MARKER:-/nonexistent}" ]; then
+      echo "error: no interpreter satisfies requires-python" >&2
+      exit 1
+    fi
     mkdir -p "$bin"
     printf '#!/bin/bash\\necho "VALCORE_RAN $@"\\n' > "$bin/valcore"
     chmod +x "$bin/valcore"
@@ -73,6 +94,11 @@ def _log(env: dict[str, str]) -> str:
     return log.read_text() if log.exists() else ""
 
 
+def _called_venv(log: str) -> bool:
+    """Whether `uv venv` was invoked, ignoring the venv path in `pip install` lines."""
+    return any(line.startswith("venv ") for line in log.splitlines())
+
+
 def test_first_run_provisions_venv(env: dict[str, str]) -> None:
     result = _run(env, "serve")
     assert result.returncode == 0, result.stderr
@@ -82,7 +108,7 @@ def test_first_run_provisions_venv(env: dict[str, str]) -> None:
     assert oct(home.stat().st_mode & 0o777) == "0o700"
 
     log = _log(env)
-    assert "venv --python >=3.11" in log
+    assert "venv --clear --python >=3.11" in log
     # --refresh-package valcore: the pinned version is published moments before the
     # formula bump, so uv's cached index listing for valcore predates it and resolution
     # fails with "there is no version of valcore==X". Scoped to the one package so the
@@ -111,6 +137,13 @@ def test_second_run_skips_provisioning(env: dict[str, str]) -> None:
 
 
 def test_stale_stamp_triggers_reprovision(env: dict[str, str]) -> None:
+    """A `brew upgrade` reinstalls the pinned version without recreating the venv.
+
+    The venv is reused deliberately. Recreating it would be slow (~115 packages for a
+    version bump) and, worse, `uv venv` refuses a path that already holds a venv: it
+    prompts at a TTY and fails outright without one, so under `set -e` every post-upgrade
+    run from a script or CI job used to die before reaching the install.
+    """
     first = _run(env, "serve")
     assert first.returncode == 0, first.stderr
 
@@ -123,9 +156,61 @@ def test_stale_stamp_triggers_reprovision(env: dict[str, str]) -> None:
     assert second.returncode == 0, second.stderr
 
     log = _log(env)
-    assert "venv --python >=3.11" in log
+    # Match the *command*, not the substring: every `pip install` line contains the venv
+    # path, so a bare `"venv" not in log` would never hold.
+    assert not _called_venv(log), "upgrade must reuse the existing venv, not recreate it"
     assert "pip install" in log
     assert stamp.read_text() == "0.1.0"
+    assert "VALCORE_RAN serve" in second.stdout
+
+
+def test_upgrade_reports_upgrading_not_first_run(env: dict[str, str]) -> None:
+    _run(env, "serve")
+    (Path(env["VALCORE_HOME"]) / "venv" / ".version").write_text("0.0.9")
+
+    result = _run(env, "serve")
+
+    assert "upgrading environment to 0.1.0" in result.stderr
+    assert "first run" not in result.stderr
+
+
+def test_upgrade_rebuilds_when_the_reused_venv_cannot_take_the_install(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """A venv whose interpreter no longer satisfies requires-python is rebuilt, not fatal."""
+    _run(env, "serve")
+
+    stamp = Path(env["VALCORE_HOME"]) / "venv" / ".version"
+    stamp.write_text("0.0.9")
+
+    # Poison installs into the existing venv; only `venv --clear` clears the marker.
+    marker = tmp_path / "install-fails"
+    marker.write_text("")
+    env = {**env, "UV_FAIL_INSTALL_MARKER": str(marker)}
+    Path(env["UV_LOG"]).write_text("")
+
+    result = _run(env, "serve")
+    assert result.returncode == 0, result.stderr
+
+    log = _log(env)
+    assert "venv --clear" in log, "must rebuild after the in-place install fails"
+    assert "rebuilding" in result.stderr
+    assert stamp.read_text() == "0.1.0"
+    assert "VALCORE_RAN serve" in result.stdout
+
+
+def test_partial_venv_from_an_interrupted_run_is_cleared(env: dict[str, str]) -> None:
+    """A venv dir with no interpreter is a half-written first run, not something to reuse."""
+    venv = Path(env["VALCORE_HOME"]) / "venv"
+    venv.mkdir(parents=True)
+    (venv / "lib").mkdir()
+
+    result = _run(env, "serve")
+    assert result.returncode == 0, result.stderr
+
+    assert "first run" in result.stderr
+    assert "venv --clear" in _log(env)
+    assert "VALCORE_RAN serve" in result.stdout
 
 
 def test_missing_version_exits_nonzero(env: dict[str, str]) -> None:
