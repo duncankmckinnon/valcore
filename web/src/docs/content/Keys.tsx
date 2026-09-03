@@ -26,7 +26,7 @@ export function Keys(): JSX.Element {
           </li>
           <li>
             <strong>Logfire API key</strong> — optional. Pushes datasets to Logfire&apos;s hosted
-            store.
+            store, and pulls datasets from Logfire queries.
           </li>
         </ul>
         <DocNote>
@@ -98,23 +98,31 @@ export function Keys(): JSX.Element {
         </DocNote>
       </DocSection>
 
-      <DocSection title="Logfire API key: hosted datasets">
+      <DocSection title="Logfire API key: hosted datasets and queries">
         <p>
-          The API key is a separate credential from the write token, and it is only needed for
-          one thing: pushing a dataset to Logfire&apos;s hosted dataset store.
+          The API key is a separate credential from the write token. It pushes a dataset to
+          Logfire&apos;s hosted store, and it queries a project so you can pull traces into a
+          local dataset. The query path needs the <code>project:read</code> scope in addition
+          to the dataset scopes.
         </p>
         <CodeBlock>valcore config set-logfire-key</CodeBlock>
         <p>
-          It must carry the <code>project:read_datasets</code> and{" "}
+          It must carry the <code>project:read</code>, <code>project:read_datasets</code>, and{" "}
           <code>project:write_datasets</code> scopes. A key without them will authenticate and
-          then fail on the push. API keys are issued from your Logfire account settings:
+          then fail on the call. API keys are issued from your Logfire account settings:
         </p>
         <p>
           <ExternalLink href="https://logfire.pydantic.dev/docs/reference/api/">
             Logfire API reference
           </ExternalLink>
         </p>
+        <CodeBlock>valcore logfire pull --sql &quot;SELECT span_id FROM records LIMIT 100&quot; --name traces --count 20</CodeBlock>
         <CodeBlock>valcore logfire push my-dataset</CodeBlock>
+        <p>
+          To open Logfire&apos;s SQL Workbench from the dataset form, store the Explore URL
+          (it is not a secret):
+        </p>
+        <CodeBlock>valcore config set-logfire-explore-url https://logfire-us.pydantic.dev/org/project/explore</CodeBlock>
       </DocSection>
 
       <DocSection title="Where keys are stored">

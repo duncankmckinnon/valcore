@@ -61,8 +61,8 @@ Either way you get an `valcore` command on your `PATH`.
 - **Overview** — the landing page, summarizing what you have and pointing to the next
   step.
 - **Evaluators** — author, version, and validate LLM-as-judge evaluators.
-- **Datasets** — build and edit the datasets evaluators run over, by hand or generated
-  from a description.
+- **Datasets** — build and edit the datasets evaluators run over, by hand, generated
+  from a description, or pulled from a Logfire query.
 - **Runs** — inspect completed runs, their metrics, and per-row scores, and compare runs
   against each other.
 - **Docs** — how the product works, in four tabs: Evals, Datasets, Runs, and CLI.
@@ -157,7 +157,8 @@ the web UI — no secret crosses HTTP — and are always set from the CLI:
 ```bash
 valcore config set-key                  # required: runs and generation
 valcore config set-logfire-token        # optional: sends traces to Logfire
-valcore config set-logfire-key          # optional: pushes datasets to Logfire
+valcore config set-logfire-key          # optional: pushes and pulls Logfire datasets
+valcore config set-logfire-explore-url  # optional: SQL Workbench link in the UI
 ```
 
 Without the gateway key, generation and runs are unavailable, and the UI shows why. Manual
@@ -177,9 +178,11 @@ configured at all.
 | `valcore config set-key [KEY]` | Store the gateway API key in the config file. |
 | `valcore config set-logfire-token [TOKEN]` | Store the Logfire write token in the config file. |
 | `valcore config set-logfire-key [KEY]` | Store the Logfire API key in the config file. |
+| `valcore config set-logfire-explore-url [URL]` | Store the Logfire SQL Workbench URL. |
 | `valcore config get` | Show the current config (the key is masked unless `--show-key`). |
 | `valcore config path` | Print the path to the config file. |
 | `valcore config edit` | Open the config file in `$EDITOR`. |
+| `valcore logfire pull` | Create a dataset from a Logfire SQL query (`--sql` or `--sql-file`, `--name`, `--count`). |
 | `valcore logfire push <dataset>` | Push a dataset to Logfire's hosted dataset store. |
 | `valcore skills install` | Install the bundled agent skills (`--claude`, `--copilot`, …). |
 | `valcore skills list` | Show the bundled skills and where each is installed. |
@@ -332,9 +335,19 @@ Logfire's experiments view. It persists a run the same way `run` does, so it sho
 the Runs page too. Unlike `run`, it cannot be cancelled, because `Dataset.evaluate` has no
 cancellation.
 
+`valcore logfire pull --sql '…' --name traces --count 20` runs that SQL against Logfire,
+nests child spans that the query actually returned, samples top-level entries, and stores
+them as a local dataset. Child spans become a JSON `children` column on the parent row.
+The API key needs `project:read` for the query (and the existing dataset scopes to push).
+Open Logfire's SQL Workbench from the Datasets form after storing the Explore URL:
+
+```bash
+valcore config set-logfire-explore-url https://logfire-us.pydantic.dev/org/project/explore
+```
+
 `valcore logfire push <dataset>` publishes a dataset to Logfire's hosted dataset store.
-It needs a Logfire API key (see [Setup](#setup)) with the `project:read_datasets` and
-`project:write_datasets` scopes.
+It needs a Logfire API key (see [Setup](#setup)) with the `project:read`,
+`project:read_datasets`, and `project:write_datasets` scopes.
 
 ## `~/.valcore`
 

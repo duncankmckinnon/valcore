@@ -87,7 +87,10 @@ async def test_logfire_api_key_metadata_matches_the_documented_contract() -> Non
     assert entry["required"] is False
     assert entry["label"] == "Logfire API key"
     assert entry["command"] == "valcore config set-logfire-key"
-    assert entry["purpose"] == "Pushes datasets to Logfire's hosted store."
+    assert (
+        entry["purpose"]
+        == "Pushes datasets to Logfire's hosted store, and pulls datasets from Logfire queries."
+    )
 
 
 # -- Effective presence: gateway_api_key (env + file, four cases) --------------
@@ -186,6 +189,28 @@ async def test_logfire_api_key_present_from_both_file_and_env_lookalike(
     save_config(FileConfig(logfire_api_key="lf-api-key-from-file"))
     body = await _get_setup(create_app())
     assert _by_name(body)["logfire_api_key"]["set"] is True
+
+
+# -- SQL Workbench URL (not a secret; returned as the value) -------------------
+
+
+@pytest.mark.anyio
+async def test_setup_returns_explore_url_when_configured() -> None:
+    save_config(
+        FileConfig(
+            logfire_explore_url="https://logfire-us.pydantic.dev/duncan/agent-tracing/explore"
+        )
+    )
+    body = await _get_setup(create_app())
+    assert body["logfire_explore_url"] == (
+        "https://logfire-us.pydantic.dev/duncan/agent-tracing/explore"
+    )
+
+
+@pytest.mark.anyio
+async def test_setup_explore_url_is_null_by_default() -> None:
+    body = await _get_setup(create_app())
+    assert body["logfire_explore_url"] is None
 
 
 # -- No key value ever appears in the response ---------------------------------

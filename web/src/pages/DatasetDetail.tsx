@@ -7,6 +7,7 @@ import { datasets } from "../api/client";
 import type {
   Dataset,
   DatasetGeneration,
+  DatasetLogfirePull,
   DatasetStats,
   GeneratedConfig,
   LabelSchema,
@@ -20,6 +21,7 @@ import { ExportModal } from "../components/ExportModal";
 import EvaluatorFromDataset from "../components/EvaluatorFromDataset";
 import GenerateMoreRows from "../components/GenerateMoreRows";
 import GenerationSettings from "../components/GenerationSettings";
+import { LogfirePullSettings } from "../components/LogfirePullSettings";
 import LabelingGrid from "../components/LabelingGrid";
 
 // Mirrors the server's generation cap so an over-large ask is refused before it costs a
@@ -36,6 +38,7 @@ export default function DatasetDetail({ datasetId }: Props) {
   const [stats, setStats] = useState<DatasetStats | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [generation, setGeneration] = useState<DatasetGeneration | null>(null);
+  const [logfirePull, setLogfirePull] = useState<DatasetLogfirePull | null>(null);
   const [editing, setEditing] = useState(false);
   const [generatingRows, setGeneratingRows] = useState(false);
   const [gridEpoch, setGridEpoch] = useState(0);
@@ -93,6 +96,15 @@ export default function DatasetDetail({ datasetId }: Props) {
   useEffect(() => {
     refreshGeneration();
   }, [refreshGeneration]);
+
+  useEffect(() => {
+    datasets
+      .logfirePull(datasetId)
+      .then(setLogfirePull)
+      .catch(() => {
+        // Provenance is non-critical: a failure just leaves the panel empty.
+      });
+  }, [datasetId]);
 
   const refreshStats = useCallback(() => {
     datasets
@@ -226,6 +238,7 @@ export default function DatasetDetail({ datasetId }: Props) {
       )}
 
       <GenerationSettings generation={generation} />
+      <LogfirePullSettings pull={logfirePull} />
 
       <LabelingGrid
         key={gridKey}

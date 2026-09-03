@@ -2086,3 +2086,74 @@ async def test_push_dataset_missing_logfire_api_key_is_client_error(
 async def test_push_dataset_unknown_dataset_id_is_404(client: httpx.AsyncClient) -> None:
     resp = await client.post("/api/datasets/does-not-exist/logfire/push", json={})
     assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.anyio
+async def test_from_logfire_creates_dataset_and_stores_provenance(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime
+
+    from valcore.logfire_pull import PullResult
+
+    async def fake_pull_records(sql: str, sample_n: int, **kwargs: object) -> PullResult:
+        return PullResult(
+            columns=["span_id", "message", "children"],
+            prepared=[
+                {
+                    "data": {
+                        "span_id": "root",
+                        "message": "parent",
+                        "children": '[{"span_id": "c1"}]',
+                    }
+                }
+            ],
+            sql=sql,
+            sample_n=sample_n,
+            seed=11,
+            min_timestamp=datetime(2026, 9, 2, tzinfo=UTC),
+            max_timestamp=None,
+            label_column=None,
+        )
+
+    monkeypatch.setattr("valcore.api.routes.datasets.pull_records", fake_pull_records)
+
+    resp = await client.post(
+        "/api/datasets/from-logfire",
+        json={
+            "name": "from-lf",
+            "description": "traces",
+            "sql": "SELECT span_id, message FROM records",
+            "sample_n": 5,
+            "seed": 11,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["row_count"] == 1
+    assert body["dataset"]["columns"][-1] == "children"
+    ds_id = body["dataset"]["id"]
+    pull = (await client.get(f"/api/datasets/{ds_id}/logfire-pull")).json()
+    assert pull["sql"] == "SELECT span_id, message FROM records"
+    assert pull["seed"] == 11
+    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
+    assert rows[0]["data"]["span_id"] == "root"
+
+
+@pytest.mark.anyio
+async def test_from_logfire_empty_sql_is_422(client: httpx.AsyncClient) -> None:
+    resp = await client.post(
+        "/api/datasets/from-logfire",
+        json={"name": "x", "sql": "  ", "sample_n": 1},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_logfire_pull_provenance_is_null_for_an_uploaded_dataset(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    dataset = store.create_dataset(name="blank", description="", columns=["a"], label_schema={})
+    resp = await client.get(f"/api/datasets/{dataset.id}/logfire-pull")
+    assert resp.status_code == 200
+    assert resp.json() is None

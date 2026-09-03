@@ -894,6 +894,61 @@ def test_logfire_push_no_api_key_exits_nonzero_naming_set_logfire_key(runner, st
     assert "valcore config set-logfire-key" in result.stderr
 
 
+def test_config_set_logfire_explore_url_persists(runner, db_path):
+    result = _invoke(
+        runner,
+        db_path,
+        "config",
+        "set-logfire-explore-url",
+        "https://logfire-us.pydantic.dev/duncan/agent-tracing/explore",
+    )
+    assert result.exit_code == 0
+    assert load_config().logfire_explore_url == (
+        "https://logfire-us.pydantic.dev/duncan/agent-tracing/explore"
+    )
+
+
+def test_logfire_pull_creates_dataset_from_stubbed_query(runner, db_path, monkeypatch):
+    from datetime import UTC, datetime
+
+    from valcore.logfire_pull import PullResult
+
+    async def fake_pull_records(sql: str, sample_n: int, **kwargs: object) -> PullResult:
+        return PullResult(
+            columns=["span_id", "message"],
+            prepared=[{"data": {"span_id": "a", "message": "m"}}],
+            sql=sql,
+            sample_n=sample_n,
+            seed=kwargs.get("seed") or 3,
+            min_timestamp=datetime(2026, 9, 2, tzinfo=UTC),
+            max_timestamp=None,
+            label_column=None,
+        )
+
+    monkeypatch.setattr("valcore.logfire_pull.pull_records", fake_pull_records)
+    result = _invoke(
+        runner,
+        db_path,
+        "logfire",
+        "pull",
+        "--sql",
+        "SELECT span_id FROM records",
+        "--name",
+        "pulled",
+        "--count",
+        "4",
+        "--seed",
+        "3",
+    )
+    assert result.exit_code == 0, result.stderr
+    assert "pulled" in result.output
+
+
+def test_logfire_pull_requires_sql_or_sql_file(runner, db_path):
+    result = _invoke(runner, db_path, "logfire", "pull", "--name", "x", "--count", "1")
+    assert result.exit_code != 0
+
+
 # -- ./valcore.db startup notice --------------------------------------------
 
 

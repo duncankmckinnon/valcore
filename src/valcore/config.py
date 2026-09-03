@@ -1,6 +1,6 @@
 """TOML config layer stored at ``~/.valcore/config.toml``.
 
-Read with the stdlib :mod:`tomllib`; written by hand (seven keys does not justify
+Read with the stdlib :mod:`tomllib`; written by hand (eight keys does not justify
 a TOML-writing dependency). ``apply_gateway_key`` and ``apply_logfire_token`` are
 the only bridges between the stored config and the environment variables that
 pydantic-ai and logfire read; nothing else in the codebase reads, stores, or
@@ -34,6 +34,7 @@ class FileConfig(BaseModel):
     db_path: Path | None = None
     logfire_token: str | None = None
     logfire_api_key: str | None = None
+    logfire_explore_url: str | None = None
 
 
 def _toml_str(value: str) -> str:
@@ -59,6 +60,8 @@ def _dump_toml(cfg: FileConfig) -> str:
         lines.append(f"logfire_token = {_toml_str(cfg.logfire_token)}")
     if cfg.logfire_api_key is not None:
         lines.append(f"logfire_api_key = {_toml_str(cfg.logfire_api_key)}")
+    if cfg.logfire_explore_url is not None:
+        lines.append(f"logfire_explore_url = {_toml_str(cfg.logfire_explore_url)}")
     return "\n".join(lines) + ("\n" if lines else "")
 
 
@@ -137,6 +140,13 @@ def set_logfire_api_key(key: str) -> None:
     """Persist ``key`` as the Logfire management API key, preserving other config values."""
     cfg = load_config()
     cfg.logfire_api_key = key
+    save_config(cfg)
+
+
+def set_logfire_explore_url(url: str) -> None:
+    """Persist the Logfire SQL Workbench URL, preserving other config values."""
+    cfg = load_config()
+    cfg.logfire_explore_url = url
     save_config(cfg)
 
 

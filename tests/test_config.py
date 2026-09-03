@@ -21,6 +21,7 @@ from valcore.config import (
     save_config,
     set_key,
     set_logfire_api_key,
+    set_logfire_explore_url,
     set_logfire_token,
 )
 from valcore.errors import ConfigError
@@ -63,6 +64,7 @@ def test_load_config_missing_returns_all_none(_home: Path) -> None:
     assert cfg.db_path is None
     assert cfg.logfire_token is None
     assert cfg.logfire_api_key is None
+    assert cfg.logfire_explore_url is None
 
 
 def test_save_load_round_trips_every_field() -> None:
@@ -74,6 +76,7 @@ def test_save_load_round_trips_every_field() -> None:
         db_path=Path("/tmp/custom.db"),
         logfire_token="lf-write-token",
         logfire_api_key="lf-api-key",
+        logfire_explore_url="https://logfire-us.pydantic.dev/duncan/agent-tracing/explore",
     )
     save_config(cfg)
     loaded = load_config()
@@ -105,6 +108,7 @@ def test_dump_toml_omits_unset_logfire_fields() -> None:
     content = config_path().read_text()
     assert "logfire_token" not in content
     assert "logfire_api_key" not in content
+    assert "logfire_explore_url" not in content
 
 
 def test_saved_file_mode_is_0600() -> None:
@@ -207,6 +211,16 @@ def test_set_logfire_api_key_preserves_other_fields() -> None:
     assert loaded.model == "gateway/openai:gpt-5"
     assert loaded.concurrency == 3
     assert loaded.logfire_token == "lf-existing-token"
+
+
+def test_set_logfire_explore_url_preserves_other_fields() -> None:
+    save_config(FileConfig(logfire_api_key="lf-existing-api-key"))
+    set_logfire_explore_url("https://logfire-us.pydantic.dev/duncan/agent-tracing/explore")
+    loaded = load_config()
+    assert (
+        loaded.logfire_explore_url == "https://logfire-us.pydantic.dev/duncan/agent-tracing/explore"
+    )
+    assert loaded.logfire_api_key == "lf-existing-api-key"
 
 
 def test_db_path_precedence(monkeypatch: pytest.MonkeyPatch) -> None:

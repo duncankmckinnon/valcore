@@ -6,6 +6,8 @@ import type {
   DatasetCreated,
   DatasetGenerateFromVersion,
   DatasetGeneration,
+  DatasetLogfirePull,
+  DatasetFromLogfire,
   DatasetRow,
   DatasetStats,
   DatasetUpdate,
@@ -172,6 +174,10 @@ export const datasets = {
       method: "POST",
       ...jsonBody(data),
     }),
+  fromLogfire: (data: DatasetFromLogfire) =>
+    api<DatasetCreated>("/api/datasets/from-logfire", { method: "POST", ...jsonBody(data) }),
+  logfirePull: (id: string) =>
+    api<DatasetLogfirePull | null>(`/api/datasets/${id}/logfire-pull`),
   // Null for a dataset that was uploaded or created blank rather than generated.
   generation: (id: string) =>
     api<DatasetGeneration | null>(`/api/datasets/${id}/generation`),

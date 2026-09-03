@@ -55,6 +55,7 @@ function makeStatus(overrides: Partial<Record<SetupKey["name"], boolean>> = {}):
       command: `valcore config set ${name} ...`,
       purpose: `used for ${name}`,
     })),
+    logfire_explore_url: null,
   };
 }
 

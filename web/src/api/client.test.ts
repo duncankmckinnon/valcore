@@ -593,9 +593,10 @@ describe("setup client helper", () => {
           required: false,
           label: "Logfire API key",
           command: "valcore setup logfire-api-key <key>",
-          purpose: "Pushes datasets to Logfire's hosted store.",
+          purpose: "Pushes datasets to Logfire's hosted store, and pulls datasets from Logfire queries.",
         },
       ],
+      logfire_explore_url: null,
     };
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(body));
 

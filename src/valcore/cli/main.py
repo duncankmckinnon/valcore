@@ -12,6 +12,7 @@ import re
 import sys
 import threading
 import webbrowser
+from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from pathlib import Path
@@ -19,7 +20,7 @@ from pathlib import Path
 import click
 
 from valcore import config as config_module
-from valcore import experiment, logfire_io, tracing
+from valcore import experiment, logfire_io, logfire_pull, tracing
 from valcore.cli.output import emit
 from valcore.cli.resolve import resolve_dataset, resolve_evaluator, resolve_version
 from valcore.cli.skills import skills
@@ -32,6 +33,7 @@ from valcore.models import (
     DatasetRow,
     Evaluator,
     EvaluatorVersion,
+    LabelSchema,
     Run,
     RunKind,
     RunStatus,
@@ -589,12 +591,22 @@ def config_set_logfire_key(key: str | None) -> None:
     click.echo(f"Saved Logfire API key to {config_path()}", err=True)
 
 
+@config.command("set-logfire-explore-url")
+@click.argument("url", required=False)
+def config_set_logfire_explore_url(url: str | None) -> None:
+    """Store the Logfire SQL Workbench URL (opened from the dataset form)."""
+    if url is None:
+        url = click.prompt("Logfire SQL Workbench URL")
+    config_module.set_logfire_explore_url(url)
+    click.echo(f"Saved Logfire SQL Workbench URL to {config_path()}", err=True)
+
+
 # -- logfire --------------------------------------------------------------------
 
 
 @cli.group(name="logfire")
 def logfire_group() -> None:
-    """Interact with Logfire's hosted dataset store."""
+    """Pull datasets from Logfire queries, or push them to Logfire's hosted store."""
 
 
 @logfire_group.command("push")
@@ -631,6 +643,98 @@ def logfire_push(
         )
     )
     emit(result, as_json=False, columns=["id", "name", "case_count"])
+
+
+@logfire_group.command("pull")
+@click.option("--sql", "sql_text", default=None, help="SQL to run against Logfire.")
+@click.option(
+    "--sql-file",
+    "sql_file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Read SQL from a file instead of --sql.",
+)
+@click.option("--name", required=True, help="Name for the created dataset.")
+@click.option("--description", default="", help="Description stored on the dataset.")
+@click.option(
+    "--count",
+    "sample_n",
+    required=True,
+    type=int,
+    help="Number of top-level entries to sample.",
+)
+@click.option("--seed", type=int, default=None, help="RNG seed; generated and stored when omitted.")
+@click.option("--min-timestamp", default=None, help="ISO-8601 lower bound (default: 24 hours ago).")
+@click.option("--max-timestamp", default=None, help="ISO-8601 upper bound.")
+@click.option("--label-column", default=None, help="SQL column to lift into the dataset label.")
+@click.option(
+    "--label-schema",
+    "label_schema_json",
+    default=None,
+    help="JSON label schema; required when --label-column is set.",
+)
+@click.pass_context
+def logfire_pull_cmd(
+    ctx: click.Context,
+    sql_text: str | None,
+    sql_file: Path | None,
+    name: str,
+    description: str,
+    sample_n: int,
+    seed: int | None,
+    min_timestamp: str | None,
+    max_timestamp: str | None,
+    label_column: str | None,
+    label_schema_json: str | None,
+) -> None:
+    """Create a local dataset from a Logfire SQL query."""
+    if (sql_text is None) == (sql_file is None):
+        raise click.UsageError("Provide exactly one of --sql or --sql-file.")
+    sql = (sql_file.read_text() if sql_file is not None else sql_text) or ""
+    schema = None
+    if label_schema_json is not None:
+        schema = LabelSchema.model_validate_json(label_schema_json).model_dump(mode="json")
+    if label_column is not None and schema is None:
+        raise click.UsageError("--label-column requires --label-schema.")
+
+    def parse_ts(value: str | None) -> datetime | None:
+        if value is None:
+            return None
+        parsed = datetime.fromisoformat(value)
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+    result = asyncio.run(
+        logfire_pull.pull_records(
+            sql,
+            sample_n,
+            seed=seed,
+            min_timestamp=parse_ts(min_timestamp),
+            max_timestamp=parse_ts(max_timestamp),
+            label_column=label_column,
+        )
+    )
+    store = _store(ctx)
+    dataset = store.create_dataset(
+        name=name,
+        description=description,
+        columns=result.columns,
+        label_schema=schema or {},
+    )
+    rows = store.add_prepared_rows(dataset.id, result.prepared)
+    store.set_logfire_pull(
+        dataset.id,
+        sql=result.sql,
+        sample_n=result.sample_n,
+        seed=result.seed,
+        min_timestamp=result.min_timestamp,
+        max_timestamp=result.max_timestamp,
+        label_column=result.label_column,
+    )
+    emit(
+        {"id": dataset.id, "name": dataset.name, "row_count": len(rows), "seed": result.seed},
+        as_json=False,
+        columns=["id", "name", "row_count", "seed"],
+    )
 
 
 def main() -> None:

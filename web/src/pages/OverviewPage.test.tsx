@@ -74,7 +74,7 @@ function makeSetupStatus(overrides: Partial<Record<SetupKey["name"], boolean>> =
     },
   };
   const names: SetupKey["name"][] = ["gateway_api_key", "logfire_token", "logfire_api_key"];
-  return { keys: names.map((name) => ({ ...fixed[name], set: set[name] })) };
+  return { keys: names.map((name) => ({ ...fixed[name], set: set[name] })), logfire_explore_url: null };
 }
 
 function renderPage() {

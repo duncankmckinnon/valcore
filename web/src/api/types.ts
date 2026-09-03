@@ -341,6 +341,29 @@ export interface SetupKey {
 
 export interface SetupStatus {
   keys: SetupKey[];
+  // Not a secret: the SQL Workbench page the Logfire create form opens. Null when unset.
+  logfire_explore_url: string | null;
+}
+
+export interface DatasetLogfirePull {
+  sql: string;
+  sample_n: number;
+  seed: number;
+  min_timestamp: string | null;
+  max_timestamp: string | null;
+  label_column: string | null;
+}
+
+export interface DatasetFromLogfire {
+  name: string;
+  description?: string;
+  sql: string;
+  sample_n: number;
+  seed?: number;
+  min_timestamp?: string;
+  max_timestamp?: string;
+  label_column?: string;
+  label_schema?: LabelSchema;
 }
 
 // What `POST /api/datasets/{id}/logfire/push` returns, mirroring the fields Logfire's

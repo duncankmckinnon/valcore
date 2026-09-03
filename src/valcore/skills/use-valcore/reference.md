@@ -12,6 +12,7 @@ Syntax only. Concepts, workflow, and gateway setup are in [SKILL.md](SKILL.md).
 - [`valcore export`](#valcore-export-evaluator) — standalone judge script
 - [`valcore config`](#valcore-config) — gateway key and defaults
 - [`valcore skills`](#valcore-skills) — install these skills into agent directories
+- [`valcore logfire`](#valcore-logfire) — pull a dataset from a query; push to hosted store
 - [Not in the CLI](#not-in-the-cli) — seeded generation is API and web only
 - [Configuration](#configuration) — `config.toml` keys, `VALCORE_*` environment variables
 - [Exit codes](#exit-codes)
@@ -92,6 +93,9 @@ Exports an evaluator version as a standalone Python script.
 | Subcommand | Purpose |
 |---|---|
 | `set-key [KEY]` | Store the Pydantic AI gateway key. Prompts hidden if omitted. |
+| `set-logfire-token [TOKEN]` | Store the Logfire write token. |
+| `set-logfire-key [KEY]` | Store the Logfire API key (query and hosted datasets). |
+| `set-logfire-explore-url [URL]` | Store the SQL Workbench URL. |
 | `get [--show-key] [--json]` | Show config. The key is masked unless `--show-key`. |
 | `path` | Print the config file path. |
 | `edit` | Open the config file in `$EDITOR`. |
@@ -126,6 +130,13 @@ directories and does not also touch `.agents/`.
 Copy mode skips a skill whose content is already byte-identical, and prompts before
 overwriting one you have edited. `--symlink` always replaces.
 
+### `valcore logfire`
+
+| Subcommand | Purpose |
+|---|---|
+| `pull --sql SQL --name NAME --count N` | Create a local dataset from a Logfire query. Also `--sql-file`, `--seed`, `--min-timestamp`, `--max-timestamp`, `--label-column`, `--label-schema`. |
+| `push DATASET` | Publish a dataset to Logfire's hosted store. |
+
 ## Not in the CLI
 
 Seeded generation — deriving a dataset's shape from an evaluator version, or an
@@ -144,6 +155,9 @@ CLI. There is no command or flag for it here; do not go looking for one. See
 | `port` | Default port for `serve`. |
 | `concurrency` | Default max concurrent rows. |
 | `db_path` | Default database path. |
+| `logfire_token` | Write token for tracing. |
+| `logfire_api_key` | API key for queries and hosted datasets. |
+| `logfire_explore_url` | SQL Workbench URL opened from the dataset form. |
 
 ### Environment variables
 

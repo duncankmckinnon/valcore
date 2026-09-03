@@ -31,9 +31,14 @@ class KeyStatus(BaseModel):
 
 
 class SetupOut(BaseModel):
-    """The full setup status: one entry per documented configuration key."""
+    """The full setup status: one entry per documented configuration key.
+
+    ``logfire_explore_url`` is not a secret — it is the SQL Workbench page the dataset
+    form opens — so it is returned as the URL itself (or null) rather than as a key row.
+    """
 
     keys: list[KeyStatus]
+    logfire_explore_url: str | None = None
 
 
 @router.get("", response_model=SetupOut)
@@ -64,7 +69,11 @@ async def get_setup() -> SetupOut:
                 required=False,
                 label="Logfire API key",
                 command="valcore config set-logfire-key",
-                purpose="Pushes datasets to Logfire's hosted store.",
+                purpose=(
+                    "Pushes datasets to Logfire's hosted store, and pulls datasets from "
+                    "Logfire queries."
+                ),
             ),
-        ]
+        ],
+        logfire_explore_url=cfg.logfire_explore_url,
     )

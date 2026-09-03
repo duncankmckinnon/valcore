@@ -141,7 +141,12 @@ Design guidance that matters for judge quality:
 
 ### 2. Build a dataset
 
-Upload a file, author rows by hand, or generate synthetic rows.
+Upload a file, author rows by hand, generate synthetic rows, or pull from a Logfire
+query (`valcore logfire pull`, or the Logfire tab in the Datasets UI). A Logfire pull
+runs your SQL, nests child spans that the result actually contained under their parents,
+samples top-level entries, and stores descendants as a JSON `children` column when any
+sampled tree has children. Include `{children}` in a judge's `required_columns` when the
+eval should see the subtree.
 
 To make test data for an evaluator you already have, generate a
 **dataset from an evaluator version**. It always receives that version's
