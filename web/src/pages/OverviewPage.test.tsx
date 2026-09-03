@@ -47,7 +47,8 @@ function makeSetupStatus(overrides: Partial<Record<SetupKey["name"], boolean>> =
   const defaults: Record<SetupKey["name"], boolean> = {
     gateway_api_key: true,
     logfire_token: true,
-    logfire_api_key: true,
+    logfire_read_key: true,
+    logfire_write_key: true,
   };
   const set = { ...defaults, ...overrides };
   const fixed: Record<SetupKey["name"], Omit<SetupKey, "set">> = {
@@ -55,25 +56,45 @@ function makeSetupStatus(overrides: Partial<Record<SetupKey["name"], boolean>> =
       name: "gateway_api_key",
       required: true,
       label: "Pydantic AI Gateway key",
-      command: "valcore config set gateway_api_key <key>",
+      command: "valcore config set-key",
       purpose: "Required to generate datasets and run evaluators.",
+      explanation: "Gateway explanation.",
+      from_env: false,
     },
     logfire_token: {
       name: "logfire_token",
       required: false,
-      label: "Logfire write token",
-      command: "valcore config set logfire_token <token>",
+      label: "Logfire tracing token",
+      command: "valcore config set-logfire-token",
       purpose: "Sends run and row spans to Logfire for tracing.",
+      explanation: "Tracing explanation.",
+      from_env: false,
     },
-    logfire_api_key: {
-      name: "logfire_api_key",
+    logfire_read_key: {
+      name: "logfire_read_key",
       required: false,
-      label: "Logfire API key",
-      command: "valcore config set logfire_api_key <key>",
-      purpose: "Pushes datasets to Logfire's hosted dataset store.",
+      label: "Logfire read key",
+      command: "valcore config set-logfire-read-key",
+      purpose: "Queries traces in the Logfire project you are sampling from.",
+      explanation: "Read explanation.",
+      from_env: false,
+    },
+    logfire_write_key: {
+      name: "logfire_write_key",
+      required: false,
+      label: "Logfire write key",
+      command: "valcore config set-logfire-write-key",
+      purpose: "Pushes datasets to the Logfire project you operate on.",
+      explanation: "Write explanation.",
+      from_env: false,
     },
   };
-  const names: SetupKey["name"][] = ["gateway_api_key", "logfire_token", "logfire_api_key"];
+  const names: SetupKey["name"][] = [
+    "gateway_api_key",
+    "logfire_token",
+    "logfire_read_key",
+    "logfire_write_key",
+  ];
   return { keys: names.map((name) => ({ ...fixed[name], set: set[name] })), logfire_explore_url: null };
 }
 
@@ -253,12 +274,13 @@ describe("OverviewPage", () => {
 // a resolved value so the stat-card assertions in the shared-rendering tests have something to
 // find, and drives setup state through the same api/client mock the rest of this suite uses.
 describe("OverviewPage setup card", () => {
-  it("renders expanded with all three commands, marking gateway required and Logfire optional, when the gateway key is unset", async () => {
+  it("renders expanded with all four keys, marking gateway required and Logfire optional, when the gateway key is unset", async () => {
     getMock.mockResolvedValue(makeOverview());
     const status = makeSetupStatus({
       gateway_api_key: false,
       logfire_token: false,
-      logfire_api_key: false,
+      logfire_read_key: false,
+      logfire_write_key: false,
     });
     setupGet.mockResolvedValue(status);
 
@@ -266,17 +288,20 @@ describe("OverviewPage setup card", () => {
     await screen.findByText("Overview");
 
     const rows = await screen.findAllByRole("listitem");
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(4);
 
     for (const key of status.keys) {
       const row = rows.find((candidate) => within(candidate).queryByText(key.label));
       expect(row).toBeTruthy();
-      within(row as HTMLElement).getByText(key.command);
       within(row as HTMLElement).getByText(key.required ? "Required" : "Optional");
+      expect(within(row as HTMLElement).queryByText(key.command)).toBeNull();
     }
+    expect(screen.getByRole("link", { name: "Manage keys" }).getAttribute("href")).toBe(
+      "/settings",
+    );
   });
 
-  it("collapses to a summary line and shows no commands when all keys are set", async () => {
+  it("collapses to a summary line and still links to Settings when all keys are set", async () => {
     getMock.mockResolvedValue(makeOverview());
     const status = makeSetupStatus();
     setupGet.mockResolvedValue(status);
@@ -286,43 +311,9 @@ describe("OverviewPage setup card", () => {
 
     expect(await screen.findByText(/all setup keys are configured/i)).toBeInTheDocument();
     expect(screen.queryByRole("listitem")).toBeNull();
-    for (const key of status.keys) {
-      expect(screen.queryByText(key.command)).toBeNull();
-    }
-  });
-
-  it("copies the right command for the right key when several are shown", async () => {
-    const user = userEvent.setup();
-    getMock.mockResolvedValue(makeOverview());
-    const status = makeSetupStatus({
-      gateway_api_key: false,
-      logfire_token: false,
-      logfire_api_key: true,
-    });
-    setupGet.mockResolvedValue(status);
-
-    renderPage();
-
-    // userEvent.setup() installs its own clipboard stub, so the spy must be installed after it
-    // runs, matching ExportModal.test.tsx's copy-testing convention.
-    const writeText = vi.fn(() => Promise.resolve());
-    Object.defineProperty(navigator, "clipboard", {
-      value: { writeText },
-      configurable: true,
-      writable: true,
-    });
-
-    const rows = await screen.findAllByRole("listitem");
-    const gatewayRow = rows.find((row) => within(row).queryByText("Pydantic AI Gateway key"));
-    const logfireApiKeyRow = rows.find((row) => within(row).queryByText("Logfire API key"));
-    expect(gatewayRow).toBeTruthy();
-    expect(logfireApiKeyRow).toBeTruthy();
-
-    await user.click(within(gatewayRow as HTMLElement).getByRole("button", { name: "Copy" }));
-    expect(writeText).toHaveBeenLastCalledWith(status.keys[0].command);
-
-    await user.click(within(logfireApiKeyRow as HTMLElement).getByRole("button", { name: "Copy" }));
-    expect(writeText).toHaveBeenLastCalledWith(status.keys[2].command);
+    expect(screen.getByRole("link", { name: "Manage keys" }).getAttribute("href")).toBe(
+      "/settings",
+    );
   });
 
   it("Recheck triggers a second fetch and updates the card from expanded to collapsed", async () => {

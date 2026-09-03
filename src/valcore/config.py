@@ -1,12 +1,13 @@
 """TOML config layer stored at ``~/.valcore/config.toml``.
 
-Read with the stdlib :mod:`tomllib`; written by hand (eight keys does not justify
+Read with the stdlib :mod:`tomllib`; written by hand (ten keys does not justify
 a TOML-writing dependency). ``apply_gateway_key`` and ``apply_logfire_token`` are
 the only bridges between the stored config and the environment variables that
 pydantic-ai and logfire read; nothing else in the codebase reads, stores, or
-passes ``PYDANTIC_AI_GATEWAY_API_KEY`` or ``LOGFIRE_TOKEN``. The Logfire API key
-has no env var and is never exported; it is read directly from ``FileConfig`` by
-whatever calls the datasets API.
+passes ``PYDANTIC_AI_GATEWAY_API_KEY`` or ``LOGFIRE_TOKEN``. Logfire read/write
+API keys have no env var and are never exported; they are read directly from
+``FileConfig`` by whatever calls the datasets API. A legacy ``logfire_api_key``
+still loads and fills both until the split fields are set.
 """
 
 import os
@@ -34,6 +35,8 @@ class FileConfig(BaseModel):
     db_path: Path | None = None
     logfire_token: str | None = None
     logfire_api_key: str | None = None
+    logfire_read_key: str | None = None
+    logfire_write_key: str | None = None
     logfire_explore_url: str | None = None
 
 
@@ -60,6 +63,10 @@ def _dump_toml(cfg: FileConfig) -> str:
         lines.append(f"logfire_token = {_toml_str(cfg.logfire_token)}")
     if cfg.logfire_api_key is not None:
         lines.append(f"logfire_api_key = {_toml_str(cfg.logfire_api_key)}")
+    if cfg.logfire_read_key is not None:
+        lines.append(f"logfire_read_key = {_toml_str(cfg.logfire_read_key)}")
+    if cfg.logfire_write_key is not None:
+        lines.append(f"logfire_write_key = {_toml_str(cfg.logfire_write_key)}")
     if cfg.logfire_explore_url is not None:
         lines.append(f"logfire_explore_url = {_toml_str(cfg.logfire_explore_url)}")
     return "\n".join(lines) + ("\n" if lines else "")
@@ -137,9 +144,58 @@ def set_logfire_token(token: str) -> None:
 
 
 def set_logfire_api_key(key: str) -> None:
-    """Persist ``key`` as the Logfire management API key, preserving other config values."""
+    """Persist ``key`` as both the Logfire read and write keys.
+
+    This is the combined-key path: one API key with query, read, and dataset-write
+    scopes. Older configs may still carry ``logfire_api_key``; new writes go to the
+    split fields so Settings can show each one independently.
+    """
     cfg = load_config()
-    cfg.logfire_api_key = key
+    cfg.logfire_read_key = key
+    cfg.logfire_write_key = key
+    cfg.logfire_api_key = None
+    save_config(cfg)
+
+
+def set_logfire_read_key(key: str) -> None:
+    """Persist the Logfire read key used to query traces in the operated-on project."""
+    cfg = load_config()
+    cfg.logfire_read_key = key
+    save_config(cfg)
+
+
+def set_logfire_write_key(key: str) -> None:
+    """Persist the Logfire write key used to push datasets to the operated-on project."""
+    cfg = load_config()
+    cfg.logfire_write_key = key
+    save_config(cfg)
+
+
+def clear_gateway_key() -> None:
+    """Remove the stored gateway API key, preserving other config values."""
+    cfg = load_config()
+    cfg.gateway_api_key = None
+    save_config(cfg)
+
+
+def clear_logfire_token() -> None:
+    """Remove the stored Logfire tracing token, preserving other config values."""
+    cfg = load_config()
+    cfg.logfire_token = None
+    save_config(cfg)
+
+
+def clear_logfire_read_key() -> None:
+    """Remove the stored Logfire read key, preserving other config values."""
+    cfg = load_config()
+    cfg.logfire_read_key = None
+    save_config(cfg)
+
+
+def clear_logfire_write_key() -> None:
+    """Remove the stored Logfire write key, preserving other config values."""
+    cfg = load_config()
+    cfg.logfire_write_key = None
     save_config(cfg)
 
 
@@ -175,8 +231,51 @@ def logfire_token_present(cfg: FileConfig) -> bool:
 
 
 def logfire_api_key_present(cfg: FileConfig) -> bool:
-    """Report whether the Logfire API key is present. File-only; there is no env var."""
-    return cfg.logfire_api_key is not None
+    """Report whether a combined/legacy Logfire API key can serve read and write.
+
+    True when the legacy field is set, or when both split fields are set. Callers
+    that only need to know "can we talk to Logfire's API at all" still use this.
+    """
+    if cfg.logfire_api_key is not None:
+        return True
+    return cfg.logfire_read_key is not None or cfg.logfire_write_key is not None
+
+
+def logfire_read_key_present(cfg: FileConfig) -> bool:
+    """Report whether a stored read key (or legacy combined key) is present."""
+    return cfg.logfire_read_key is not None or cfg.logfire_api_key is not None
+
+
+def logfire_write_key_present(cfg: FileConfig) -> bool:
+    """Report whether a stored write key (or legacy combined key) is present."""
+    return cfg.logfire_write_key is not None or cfg.logfire_api_key is not None
+
+
+def resolve_logfire_read_key(cfg: FileConfig) -> str | None:
+    """Key used to query traces: read, then legacy combined, then write."""
+    return cfg.logfire_read_key or cfg.logfire_api_key or cfg.logfire_write_key
+
+
+def resolve_logfire_write_key(cfg: FileConfig) -> str | None:
+    """Key used to push datasets: write, then legacy combined, then read."""
+    return cfg.logfire_write_key or cfg.logfire_api_key or cfg.logfire_read_key
+
+
+def migrate_legacy_logfire_api_key(cfg: FileConfig) -> FileConfig:
+    """Copy a combined legacy key into the split fields, then drop the legacy field.
+
+    A config that only has ``logfire_api_key`` treated that value as both read and
+    write. Settings now edits those independently, so the first mutation of either
+    field splits the legacy value and then applies the change.
+    """
+    if cfg.logfire_api_key is None:
+        return cfg
+    if cfg.logfire_read_key is None:
+        cfg.logfire_read_key = cfg.logfire_api_key
+    if cfg.logfire_write_key is None:
+        cfg.logfire_write_key = cfg.logfire_api_key
+    cfg.logfire_api_key = None
+    return cfg
 
 
 def require_gateway_key() -> None:

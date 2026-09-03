@@ -17,15 +17,10 @@ function formatAccuracy(value: number | null): string {
   return value === null ? "—" : `${Math.round(value * 100)}%`;
 }
 
-// Renders one key's row: label, required/optional badge, purpose, and its command with a Copy
-// button. The command is always shown while the card is expanded — even for a key that is
-// already set — so a user who sets the gateway key but skips Logfire still sees exactly what to
-// run for the optional keys without re-expanding anything.
+// Renders one key's row: label, required/optional badge, and set/not set. Commands used
+// to live here; keys are now entered on Settings, so this card only reports presence and
+// points there.
 function SetupKeyRow({ item }: { item: SetupKey }): JSX.Element {
-  const copy = () => {
-    void navigator.clipboard.writeText(item.command);
-  };
-
   return (
     <li className="setup-key">
       <span>{item.label}</span>
@@ -34,12 +29,6 @@ function SetupKeyRow({ item }: { item: SetupKey }): JSX.Element {
       </span>
       <span>{item.set ? "Set" : "Not set"}</span>
       <span>{item.purpose}</span>
-      <div className="setup-command">
-        <code>{item.command}</code>
-        <Button variant="secondary" onClick={copy}>
-          Copy
-        </Button>
-      </div>
     </li>
   );
 }
@@ -71,6 +60,7 @@ function SetupCard(): JSX.Element | null {
       <Button variant="secondary" onClick={refetch}>
         Recheck
       </Button>
+      <Link to="/settings">Manage keys</Link>
     </div>
   );
 }

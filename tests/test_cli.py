@@ -718,14 +718,16 @@ def test_config_set_logfire_key_persists_and_preserves_others(runner, db_path):
     assert result.exit_code == 0
 
     cfg = load_config()
-    assert cfg.logfire_api_key == "lf-key-9999"
+    assert cfg.logfire_read_key == "lf-key-9999"
+    assert cfg.logfire_write_key == "lf-key-9999"
     assert cfg.logfire_token == "lf-existing-token"
 
 
 def test_config_set_logfire_key_prompts_when_omitted(runner, db_path):
     result = _invoke(runner, db_path, "config", "set-logfire-key", input="lf-key-prompted\n")
     assert result.exit_code == 0
-    assert load_config().logfire_api_key == "lf-key-prompted"
+    assert load_config().logfire_read_key == "lf-key-prompted"
+    assert load_config().logfire_write_key == "lf-key-prompted"
     assert "lf-key-prompted" not in result.output
 
 
@@ -743,8 +745,12 @@ def test_config_get_logfire_presence_changes_when_set_and_never_leaks_values(run
     # but the raw secret is never the field's value, and never appears anywhere in output.
     assert after["logfire_token"] != before["logfire_token"]
     assert after["logfire_api_key"] != before["logfire_api_key"]
+    assert after["logfire_read_key"] != before["logfire_read_key"]
+    assert after["logfire_write_key"] != before["logfire_write_key"]
     assert after["logfire_token"] != "lf-secret-token"
     assert after["logfire_api_key"] != "lf-secret-apikey"
+    assert after["logfire_read_key"] is True
+    assert after["logfire_write_key"] is True
     assert "lf-secret-token" not in after_result.output
     assert "lf-secret-apikey" not in after_result.output
 
@@ -783,6 +789,16 @@ def test_config_get_show_key_does_not_reveal_logfire_secrets(runner, db_path):
     assert "sk-secret-1234" in result.output
     assert "lf-secret-token" not in result.output
     assert "lf-secret-apikey" not in result.output
+
+
+def test_config_set_logfire_read_and_write_keys_persist_independently(runner, db_path):
+    result = _invoke(runner, db_path, "config", "set-logfire-read-key", "lf-read-only")
+    assert result.exit_code == 0
+    result = _invoke(runner, db_path, "config", "set-logfire-write-key", "lf-write-only")
+    assert result.exit_code == 0
+    cfg = load_config()
+    assert cfg.logfire_read_key == "lf-read-only"
+    assert cfg.logfire_write_key == "lf-write-only"
 
 
 # -- logfire --------------------------------------------------------------------

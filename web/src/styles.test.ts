@@ -126,6 +126,14 @@ const CONTRACT_CLASSES = [
   "setup-key-optional",
   "setup-command",
   "setup-summary",
+  "settings-keys",
+  "settings-key",
+  "settings-key-heading",
+  "settings-key-label",
+  "settings-explanation",
+  "settings-from-env",
+  "settings-key-row",
+  "settings-same",
 ];
 
 // Every design token the contract publishes on :root. Later tasks reference these in the

@@ -151,13 +151,16 @@ Override the default model, highest precedence first: an explicit argument,
 ## Setup
 
 `valcore serve` shows a setup card on the Overview page listing each key valcore knows
-about, whether it is currently set, and what it unlocks. Keys are never entered through
-the web UI — no secret crosses HTTP — and are always set from the CLI:
+about and whether it is currently set. Open **Settings** to paste or update keys; they
+are stored in `~/.valcore/config.toml` and never shown back (a set field is masked).
+The same values can still be set from the CLI:
 
 ```bash
 valcore config set-key                  # required: runs and generation
-valcore config set-logfire-token        # optional: sends traces to Logfire
-valcore config set-logfire-key          # optional: pushes and pulls Logfire datasets
+valcore config set-logfire-token        # optional: traces to your valcore Logfire project
+valcore config set-logfire-read-key     # optional: query traces in the project you operate on
+valcore config set-logfire-write-key    # optional: push datasets to that project
+valcore config set-logfire-key          # optional: one API key stored as both read and write
 valcore config set-logfire-explore-url  # optional: SQL Workbench link in the UI
 ```
 
@@ -176,8 +179,10 @@ configured at all.
 | `valcore export <evaluator>` | Export an evaluator (and, with `--dataset`, a dataset) as a Python script or, with `--format json`, a portable eval package. |
 | `valcore import <file>` | Import a JSON eval package back into the local database. |
 | `valcore config set-key [KEY]` | Store the gateway API key in the config file. |
-| `valcore config set-logfire-token [TOKEN]` | Store the Logfire write token in the config file. |
-| `valcore config set-logfire-key [KEY]` | Store the Logfire API key in the config file. |
+| `valcore config set-logfire-token [TOKEN]` | Store the Logfire tracing token in the config file. |
+| `valcore config set-logfire-key [KEY]` | Store one Logfire API key as both the read and write keys. |
+| `valcore config set-logfire-read-key [KEY]` | Store the Logfire read key (query traces). |
+| `valcore config set-logfire-write-key [KEY]` | Store the Logfire write key (push datasets). |
 | `valcore config set-logfire-explore-url [URL]` | Store the Logfire SQL Workbench URL. |
 | `valcore config get` | Show the current config (the key is masked unless `--show-key`). |
 | `valcore config path` | Print the path to the config file. |

@@ -147,7 +147,7 @@ def _resolve_api_key(api_key: str | None) -> str:
     """Resolve the Logfire API key, naming the CLI command and ``project:read`` on miss."""
     if api_key is not None:
         return api_key
-    stored = config.load_config().logfire_api_key
+    stored = config.resolve_logfire_read_key(config.load_config())
     if stored is not None:
         return stored
     raise ConfigError(

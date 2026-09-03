@@ -10,6 +10,7 @@ import {
   OverviewIcon,
   PlusIcon,
   RunIcon,
+  SettingsIcon,
 } from "./icons";
 
 afterEach(() => {
@@ -28,6 +29,7 @@ const ICONS = [
   ["ChevronIcon", ChevronIcon],
   ["PlusIcon", PlusIcon],
   ["DocsIcon", DocsIcon],
+  ["SettingsIcon", SettingsIcon],
 ] as const;
 
 describe("icons", () => {

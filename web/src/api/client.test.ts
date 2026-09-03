@@ -564,55 +564,82 @@ describe("overview client helper", () => {
   });
 });
 
-// The setup endpoint is read-only: it reports which keys are configured (env or CLI)
-// so the UI can gate actions that need the gateway key. There is no POST — keys are
-// set only via the CLI — so this also guards against a write method sneaking in.
+// The setup endpoint reports which keys are configured and accepts POSTs that write
+// them to the local config. Responses never include key values.
 describe("setup client helper", () => {
-  it("setup.get GETs /api/setup and returns the parsed SetupStatus with all three keys", async () => {
-    const body: SetupStatus = {
-      keys: [
-        {
-          name: "gateway_api_key",
-          set: true,
-          required: true,
-          label: "Pydantic AI Gateway API key",
-          command: "valcore setup gateway-key <key>",
-          purpose: "Required to run evaluators and generate datasets.",
-        },
-        {
-          name: "logfire_token",
-          set: false,
-          required: false,
-          label: "Logfire write token",
-          command: "valcore setup logfire-token <token>",
-          purpose: "Sends run and row spans to your Logfire project.",
-        },
-        {
-          name: "logfire_api_key",
-          set: false,
-          required: false,
-          label: "Logfire API key",
-          command: "valcore setup logfire-api-key <key>",
-          purpose: "Pushes datasets to Logfire's hosted store, and pulls datasets from Logfire queries.",
-        },
-      ],
-      logfire_explore_url: null,
-    };
+  const body: SetupStatus = {
+    keys: [
+      {
+        name: "gateway_api_key",
+        set: true,
+        required: true,
+        label: "Pydantic AI Gateway key",
+        command: "valcore config set-key",
+        purpose: "Runs evaluators and generates evaluators and datasets.",
+        explanation: "Gateway explanation.",
+        from_env: false,
+      },
+      {
+        name: "logfire_token",
+        set: false,
+        required: false,
+        label: "Logfire tracing token",
+        command: "valcore config set-logfire-token",
+        purpose: "Sends valcore traces to your valcore Logfire project.",
+        explanation: "Tracing explanation.",
+        from_env: false,
+      },
+      {
+        name: "logfire_read_key",
+        set: false,
+        required: false,
+        label: "Logfire read key",
+        command: "valcore config set-logfire-read-key",
+        purpose: "Queries traces in the operated-on project.",
+        explanation: "Read explanation.",
+        from_env: false,
+      },
+      {
+        name: "logfire_write_key",
+        set: false,
+        required: false,
+        label: "Logfire write key",
+        command: "valcore config set-logfire-write-key",
+        purpose: "Pushes datasets to the operated-on project.",
+        explanation: "Write explanation.",
+        from_env: false,
+      },
+    ],
+    logfire_explore_url: null,
+  };
+
+  it("setup.get GETs /api/setup and returns the parsed SetupStatus with all four keys", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(body));
 
     const result = await setup.get();
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/setup");
-    // No method means the default GET; setup is strictly read-only.
     expect(init?.method ?? "GET").toBe("GET");
     expect(result).toEqual(body);
-    expect(result.keys).toHaveLength(3);
     expect(result.keys.map((k) => k.name)).toEqual([
       "gateway_api_key",
       "logfire_token",
-      "logfire_api_key",
+      "logfire_read_key",
+      "logfire_write_key",
     ]);
+  });
+
+  it("setup.save POSTs the payload to /api/setup", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(body));
+
+    const result = await setup.save({ logfire_read_key: "lf-read" });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/setup");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe(JSON.stringify({ logfire_read_key: "lf-read" }));
+    expect(result).toEqual(body);
   });
 
   it("setup.get surfaces a non-OK response as a rejection", async () => {
@@ -628,8 +655,8 @@ describe("setup client helper", () => {
     expect(error.message).toBe("setup unavailable");
   });
 
-  it("exposes no method that issues a POST — keys are set only via the CLI", () => {
-    expect(Object.keys(setup).sort()).toEqual(["get"]);
+  it("exposes get and save", () => {
+    expect(Object.keys(setup).sort()).toEqual(["get", "save"]);
   });
 });
 

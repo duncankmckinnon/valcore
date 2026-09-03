@@ -51,11 +51,13 @@ export default function DatasetDetail({ datasetId }: Props) {
   const [pushResult, setPushResult] = useState<LogfirePushResult | null>(null);
   const [pushError, setPushError] = useState<unknown>(null);
 
-  // Pushing needs the Logfire API key, which is a different credential from the write token
-  // that sends traces — so gate on that key specifically rather than on tracing being on.
+  // Pushing needs the Logfire write key (or a read key that can stand in via fallback).
   const { status } = useSetup();
   const logfireKeySet =
-    status?.keys.find((key) => key.name === "logfire_api_key")?.set ?? false;
+    status?.keys.some(
+      (key) =>
+        (key.name === "logfire_write_key" || key.name === "logfire_read_key") && key.set,
+    ) ?? false;
 
   const pushToLogfire = () => {
     setPushing(true);
@@ -192,7 +194,7 @@ export default function DatasetDetail({ datasetId }: Props) {
               title={
                 logfireKeySet
                   ? "Publish this dataset to Logfire's hosted dataset store"
-                  : "Set the Logfire API key first: valcore config set-logfire-key"
+                  : "Set the Logfire write key first — see Settings"
               }
             >
               {pushing ? "Pushing…" : "Push to Logfire"}

@@ -31,6 +31,7 @@ import type {
   ResultsPage,
   Run,
   RunStreamEvent,
+  SetupKeysIn,
   SetupStatus,
 } from "./types";
 
@@ -225,9 +226,10 @@ export const overview = {
   get: () => api<Overview>("/api/overview"),
 };
 
-// Read-only: keys are set only via the CLI, so there is no write method here.
 export const setup = {
   get: () => api<SetupStatus>("/api/setup"),
+  save: (body: SetupKeysIn) =>
+    api<SetupStatus>("/api/setup", { method: "POST", ...jsonBody(body) }),
 };
 
 export const runs = {

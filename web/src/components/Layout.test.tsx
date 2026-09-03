@@ -34,25 +34,27 @@ describe("Layout nav", () => {
     expect(screen.getByRole("link", { name: "Runs" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Compare" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Docs" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();
   });
 
-  it("renders exactly the six expected nav links and nothing else", () => {
+  it("renders exactly the seven expected nav links and nothing else", () => {
     renderLayout("/");
 
     // Guards against a stray link (e.g. the brand wordmark accidentally becoming
     // a link, or a footer/version badge that this task must not add).
-    expect(screen.getAllByRole("link")).toHaveLength(6);
+    expect(screen.getAllByRole("link")).toHaveLength(7);
   });
 
-  it("orders Docs directly under Overview, above the labelled groups", () => {
+  it("orders Docs and Settings directly under Overview, above the labelled groups", () => {
     renderLayout("/");
 
-    // Docs sits with Overview as the two ungrouped entries at the top: it is read
+    // Docs sits with Overview as the ungrouped entries at the top: it is read
     // before you have anything to author or measure, so it should not be buried under
-    // the working surfaces.
+    // the working surfaces. Settings follows: keys are configured before that work.
     expect(screen.getAllByRole("link").map((link) => link.textContent)).toEqual([
       "Overview",
       "Docs",
+      "Settings",
       "Evaluators",
       "Datasets",
       "Runs",
@@ -60,10 +62,11 @@ describe("Layout nav", () => {
     ]);
   });
 
-  it("points Docs at /docs", () => {
+  it("points Docs at /docs and Settings at /settings", () => {
     renderLayout("/");
 
     expect(screen.getByRole("link", { name: "Docs" }).getAttribute("href")).toBe("/docs");
+    expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("/settings");
   });
 
   it("keeps Docs active on a docs sub-route", () => {

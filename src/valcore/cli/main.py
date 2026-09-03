@@ -543,7 +543,7 @@ def config_set_key(key: str | None) -> None:
 def config_get(show_key: bool, as_json: bool) -> None:
     """Show the current config, masking the gateway key by default.
 
-    The Logfire token and API key are never revealed, even with ``--show-key``: that flag
+    The Logfire token and API keys are never revealed, even with ``--show-key``: that flag
     already governs revealing the gateway key specifically, and does not newly govern these.
     Only their presence is shown.
     """
@@ -553,6 +553,8 @@ def config_get(show_key: bool, as_json: bool) -> None:
         data["gateway_api_key"] = f"sk-…{cfg.gateway_api_key[-4:]}" if cfg.gateway_api_key else True
     data["logfire_token"] = config_module.logfire_token_present(cfg)
     data["logfire_api_key"] = config_module.logfire_api_key_present(cfg)
+    data["logfire_read_key"] = config_module.logfire_read_key_present(cfg)
+    data["logfire_write_key"] = config_module.logfire_write_key_present(cfg)
     emit(data, as_json, columns=list(data.keys()))
 
 
@@ -584,11 +586,31 @@ def config_set_logfire_token(token: str | None) -> None:
 @config.command("set-logfire-key")
 @click.argument("key", required=False)
 def config_set_logfire_key(key: str | None) -> None:
-    """Store the Logfire API key (for the hosted datasets API) in the config file."""
+    """Store one Logfire API key as both the read and write keys."""
     if key is None:
         key = click.prompt("Logfire API key", hide_input=True)
     config_module.set_logfire_api_key(key)
     click.echo(f"Saved Logfire API key to {config_path()}", err=True)
+
+
+@config.command("set-logfire-read-key")
+@click.argument("key", required=False)
+def config_set_logfire_read_key(key: str | None) -> None:
+    """Store the Logfire read key (query traces in the operated-on project)."""
+    if key is None:
+        key = click.prompt("Logfire read key", hide_input=True)
+    config_module.set_logfire_read_key(key)
+    click.echo(f"Saved Logfire read key to {config_path()}", err=True)
+
+
+@config.command("set-logfire-write-key")
+@click.argument("key", required=False)
+def config_set_logfire_write_key(key: str | None) -> None:
+    """Store the Logfire write key (push datasets to the operated-on project)."""
+    if key is None:
+        key = click.prompt("Logfire write key", hide_input=True)
+    config_module.set_logfire_write_key(key)
+    click.echo(f"Saved Logfire write key to {config_path()}", err=True)
 
 
 @config.command("set-logfire-explore-url")

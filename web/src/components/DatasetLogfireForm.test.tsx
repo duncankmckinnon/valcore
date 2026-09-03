@@ -27,15 +27,25 @@ function makeStatus(overrides: {
   logfireKey?: boolean;
   exploreUrl?: string | null;
 } = {}): SetupStatus {
-  const names: SetupKey["name"][] = ["gateway_api_key", "logfire_token", "logfire_api_key"];
+  const names: SetupKey["name"][] = [
+    "gateway_api_key",
+    "logfire_token",
+    "logfire_read_key",
+    "logfire_write_key",
+  ];
   return {
     keys: names.map((name) => ({
       name,
-      set: name === "logfire_api_key" ? (overrides.logfireKey ?? true) : true,
+      set:
+        name === "logfire_read_key" || name === "logfire_write_key"
+          ? (overrides.logfireKey ?? true)
+          : true,
       required: name === "gateway_api_key",
       label: name,
       command: `valcore config set ${name}`,
       purpose: name,
+      explanation: name,
+      from_env: false,
     })),
     logfire_explore_url: overrides.exploreUrl === undefined ? null : overrides.exploreUrl,
   };
@@ -121,6 +131,6 @@ describe("DatasetLogfireForm", () => {
     render(<DatasetLogfireForm onCreated={vi.fn()} />);
 
     expect(screen.getByRole("button", { name: "Pull dataset" })).toBeDisabled();
-    expect(screen.getByText(/valcore config set-logfire-key/)).toBeInTheDocument();
+    expect(screen.getByText(/Settings page/)).toBeInTheDocument();
   });
 });

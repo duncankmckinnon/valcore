@@ -56,8 +56,8 @@ export function Cli(): JSX.Element {
       <DocSection title="Which group to reach for">
         <p>
           <code>valcore config</code> holds credentials and defaults — the gateway key, Logfire
-          tokens, the default model, and the path to the config file. Keys are only ever set from
-          the CLI; no secret crosses HTTP into the browser.
+          tokens, the default model, and the path to the config file. Keys can also be set
+          from <DocLink to="/settings">Settings</DocLink> in the app.
         </p>
         <CodeBlock>valcore config set-key</CodeBlock>
         <p>

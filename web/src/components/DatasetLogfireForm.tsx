@@ -20,7 +20,6 @@ const DEFAULT_SCHEMA: LabelSchema = {
   maximum: null,
 };
 const DEFAULT_COUNT = 20;
-const SET_KEY = "valcore config set-logfire-key";
 const SET_URL = "valcore config set-logfire-explore-url";
 
 export default function DatasetLogfireForm({ onCreated }: Props) {
@@ -37,12 +36,15 @@ export default function DatasetLogfireForm({ onCreated }: Props) {
   const [error, setError] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const logfireKey = status?.keys.find((key) => key.name === "logfire_api_key");
-  const logfireReady = loading || setupError !== null || logfireKey?.set !== false;
+  const logfireKeySet = status?.keys.some(
+    (key) =>
+      (key.name === "logfire_read_key" || key.name === "logfire_write_key") && key.set,
+  );
+  const logfireReady = loading || setupError !== null || logfireKeySet !== false;
   const exploreUrl = status?.logfire_explore_url ?? null;
 
   const blockers: string[] = [];
-  if (!logfireReady) blockers.push(`Set the Logfire API key to pull — ${SET_KEY}`);
+  if (!logfireReady) blockers.push("Set the Logfire read key on the Settings page to pull.");
   if (name.trim() === "") blockers.push("Name the dataset.");
   if (sql.trim() === "") blockers.push("Write a SQL query, or paste one from the workbench.");
   if (count < 1) blockers.push("Sample at least one top-level entry.");

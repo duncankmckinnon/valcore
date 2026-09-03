@@ -108,6 +108,24 @@ export function PlusIcon(props: IconProps): JSX.Element {
   );
 }
 
+// A gear: Settings sits next to Docs in the ungrouped nav, so it needs a mark
+// that stays distinct from DocsIcon's open book at 16px.
+export function SettingsIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 3 L12 6" />
+      <path d="M12 18 L12 21" />
+      <path d="M3 12 L6 12" />
+      <path d="M18 12 L21 12" />
+      <path d="M5.6 5.6 L7.8 7.8" />
+      <path d="M16.2 16.2 L18.4 18.4" />
+      <path d="M18.4 5.6 L16.2 7.8" />
+      <path d="M7.8 16.2 L5.6 18.4" />
+    </Svg>
+  );
+}
+
 // An open book: two facing pages over a spine. Distinct from DatasetIcon's stacked
 // rules at 16px, which matters because both sit in the same nav column.
 export function DocsIcon(props: IconProps): JSX.Element {
