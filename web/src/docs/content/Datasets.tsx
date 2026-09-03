@@ -6,12 +6,14 @@ import { CodeBlock, DocLink, DocNote, DocPage, DocSection } from "../primitives"
 export function Datasets(): JSX.Element {
   return (
     <DocPage>
-      <DocSection title="Three ways to get rows">
+      <DocSection title="Four ways to get rows">
         <p>
-          A dataset is a table of rows with named columns, and it arrives one of three ways.
+          A dataset is a table of rows with named columns, and it arrives one of four ways.
           Upload a CSV when you already have data. Create a blank dataset and author rows by
           hand when you are working from a handful of known cases. Generate one from a
-          description when you need coverage you do not have yet.
+          description when you need coverage you do not have yet. Pull from Logfire when the
+          examples already exist as traces: write SQL, nest any child spans the query returned,
+          and sample top-level entries.
         </p>
         <p>
           Generation is a starting point, not an answer: a generated dataset is an editable draft
@@ -22,9 +24,10 @@ export function Datasets(): JSX.Element {
       <DocSection title="Generation settings and label mix">
         <p>
           A generated dataset keeps the request that produced it — the description, the columns
-          asked for, and the per-column notes — as read-only provenance. Months later that is how
-          you know what these rows were meant to represent. Uploaded and blank datasets have no
-          such record, which is normal rather than missing.
+          asked for, and the per-column notes — as read-only provenance. A Logfire pull keeps the
+          SQL, sample size, seed, and time window the same way. Months later that is how you know
+          what these rows were meant to represent. Uploaded and blank datasets have no such
+          record, which is normal rather than missing.
         </p>
         <p>
           Prescribing a label mix is opt-in. Leave it off and the distribution follows whatever

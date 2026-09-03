@@ -23,6 +23,7 @@ from valcore.errors import (
 from valcore.models import (
     Dataset,
     DatasetGeneration,
+    DatasetLogfirePull,
     DatasetRow,
     Evaluator,
     EvaluatorVersion,
@@ -434,6 +435,11 @@ class Store:
             )
             for generation in generations:
                 session.delete(generation)
+            pulls = session.exec(
+                select(DatasetLogfirePull).where(DatasetLogfirePull.dataset_id == id)
+            )
+            for pull in pulls:
+                session.delete(pull)
             session.delete(dataset)
 
     def add_rows(self, dataset_id: str, rows: list[dict]) -> list[DatasetRow]:
@@ -479,6 +485,28 @@ class Store:
             _require(session, Dataset, dataset_id)
             return session.exec(
                 select(DatasetGeneration).where(DatasetGeneration.dataset_id == dataset_id)
+            ).first()
+
+    def set_logfire_pull(self, dataset_id: str, **fields) -> DatasetLogfirePull:
+        """Record (or replace) how ``dataset_id``'s rows were pulled from Logfire."""
+        with session_scope(self.engine) as session:
+            _require(session, Dataset, dataset_id)
+            existing = session.exec(
+                select(DatasetLogfirePull).where(DatasetLogfirePull.dataset_id == dataset_id)
+            ).first()
+            if existing is not None:
+                session.delete(existing)
+                session.flush()
+            pull = DatasetLogfirePull(dataset_id=dataset_id, **fields)
+            session.add(pull)
+            return pull
+
+    def get_logfire_pull(self, dataset_id: str) -> DatasetLogfirePull | None:
+        """Return how ``dataset_id`` was pulled from Logfire, or None if it was not."""
+        with session_scope(self.engine) as session:
+            _require(session, Dataset, dataset_id)
+            return session.exec(
+                select(DatasetLogfirePull).where(DatasetLogfirePull.dataset_id == dataset_id)
             ).first()
 
     def get_row(self, id: str) -> DatasetRow:

@@ -34,7 +34,8 @@ const SOURCE_TONE: Record<LabelSource, "neutral" | "success" | "warning"> = {
 function scalar(value: unknown): string | number | null {
   if (value === null || value === undefined) return null;
   if (typeof value === "string" || typeof value === "number") return value;
-  return String(value);
+  if (typeof value === "boolean") return String(value);
+  return JSON.stringify(value, null, 2);
 }
 
 function labelValue(label: Record<string, unknown> | null): string | number | null {

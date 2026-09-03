@@ -33,7 +33,7 @@ def _resolve_api_key(api_key: str | None) -> str:
     """
     if api_key is not None:
         return api_key
-    stored = config.load_config().logfire_api_key
+    stored = config.resolve_logfire_write_key(config.load_config())
     if stored is not None:
         return stored
     scopes = " and ".join(_REQUIRED_SCOPES)

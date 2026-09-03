@@ -10,7 +10,7 @@ import { setup } from "../api/client";
 import type { SetupStatus } from "../api/types";
 
 export const GATEWAY_BLOCKER =
-  "Set the Pydantic AI Gateway key to generate or run — see Setup on the Overview page.";
+  "Set the Pydantic AI Gateway key to generate or run — see Settings.";
 
 export interface UseSetupResult {
   status: SetupStatus | null;

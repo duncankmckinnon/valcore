@@ -12,6 +12,8 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from valcore import settings
 
     monkeypatch.setenv("VALCORE_HOME", str(tmp_path / "valcore-home"))
+    monkeypatch.delenv("LOGFIRE_TOKEN", raising=False)
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
     settings.get_settings.cache_clear()
     yield
     settings.get_settings.cache_clear()

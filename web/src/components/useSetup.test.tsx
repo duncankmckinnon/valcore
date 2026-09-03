@@ -42,10 +42,16 @@ function makeStatus(overrides: Partial<Record<SetupKey["name"], boolean>> = {}):
   const defaults: Record<SetupKey["name"], boolean> = {
     gateway_api_key: true,
     logfire_token: false,
-    logfire_api_key: false,
+    logfire_read_key: false,
+    logfire_write_key: false,
   };
   const set = { ...defaults, ...overrides };
-  const names: SetupKey["name"][] = ["gateway_api_key", "logfire_token", "logfire_api_key"];
+  const names: SetupKey["name"][] = [
+    "gateway_api_key",
+    "logfire_token",
+    "logfire_read_key",
+    "logfire_write_key",
+  ];
   return {
     keys: names.map((name) => ({
       name,
@@ -54,7 +60,10 @@ function makeStatus(overrides: Partial<Record<SetupKey["name"], boolean>> = {}):
       label: name,
       command: `valcore config set ${name} ...`,
       purpose: `used for ${name}`,
+      explanation: `explanation for ${name}`,
+      from_env: false,
     })),
+    logfire_explore_url: null,
   };
 }
 
@@ -88,7 +97,7 @@ describe("useSetup", () => {
 
     expect(await screen.findByText("gateway ready")).toBeInTheDocument();
     expect(screen.queryByText("gateway blocked")).toBeNull();
-    expect(screen.getByText("keys:3")).toBeInTheDocument();
+    expect(screen.getByText("keys:4")).toBeInTheDocument();
   });
 
   it("reports gatewayReady false once loaded when the gateway key is unset", async () => {

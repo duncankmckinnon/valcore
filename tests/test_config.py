@@ -13,15 +13,26 @@ from valcore.config import (
     FileConfig,
     apply_gateway_key,
     apply_logfire_token,
+    clear_gateway_key,
+    clear_logfire_read_key,
+    clear_logfire_token,
+    clear_logfire_write_key,
     gateway_key_present,
     load_config,
     logfire_api_key_present,
+    logfire_read_key_present,
     logfire_token_present,
+    logfire_write_key_present,
     require_gateway_key,
+    resolve_logfire_read_key,
+    resolve_logfire_write_key,
     save_config,
     set_key,
     set_logfire_api_key,
+    set_logfire_explore_url,
+    set_logfire_read_key,
     set_logfire_token,
+    set_logfire_write_key,
 )
 from valcore.errors import ConfigError
 from valcore.paths import config_path, default_db_path, home_dir
@@ -63,6 +74,9 @@ def test_load_config_missing_returns_all_none(_home: Path) -> None:
     assert cfg.db_path is None
     assert cfg.logfire_token is None
     assert cfg.logfire_api_key is None
+    assert cfg.logfire_read_key is None
+    assert cfg.logfire_write_key is None
+    assert cfg.logfire_explore_url is None
 
 
 def test_save_load_round_trips_every_field() -> None:
@@ -74,6 +88,9 @@ def test_save_load_round_trips_every_field() -> None:
         db_path=Path("/tmp/custom.db"),
         logfire_token="lf-write-token",
         logfire_api_key="lf-api-key",
+        logfire_read_key="lf-read-key",
+        logfire_write_key="lf-write-key",
+        logfire_explore_url="https://logfire-us.pydantic.dev/duncan/agent-tracing/explore",
     )
     save_config(cfg)
     loaded = load_config()
@@ -105,6 +122,9 @@ def test_dump_toml_omits_unset_logfire_fields() -> None:
     content = config_path().read_text()
     assert "logfire_token" not in content
     assert "logfire_api_key" not in content
+    assert "logfire_read_key" not in content
+    assert "logfire_write_key" not in content
+    assert "logfire_explore_url" not in content
 
 
 def test_saved_file_mode_is_0600() -> None:
@@ -202,11 +222,23 @@ def test_set_logfire_api_key_preserves_other_fields() -> None:
     )
     set_logfire_api_key("lf-added-api-key")
     loaded = load_config()
-    assert loaded.logfire_api_key == "lf-added-api-key"
+    assert loaded.logfire_read_key == "lf-added-api-key"
+    assert loaded.logfire_write_key == "lf-added-api-key"
+    assert loaded.logfire_api_key is None
     assert loaded.gateway_api_key == "sk-existing"
     assert loaded.model == "gateway/openai:gpt-5"
     assert loaded.concurrency == 3
     assert loaded.logfire_token == "lf-existing-token"
+
+
+def test_set_logfire_explore_url_preserves_other_fields() -> None:
+    save_config(FileConfig(logfire_api_key="lf-existing-api-key"))
+    set_logfire_explore_url("https://logfire-us.pydantic.dev/duncan/agent-tracing/explore")
+    loaded = load_config()
+    assert (
+        loaded.logfire_explore_url == "https://logfire-us.pydantic.dev/duncan/agent-tracing/explore"
+    )
+    assert loaded.logfire_api_key == "lf-existing-api-key"
 
 
 def test_db_path_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -329,6 +361,133 @@ def test_logfire_api_key_present_ignores_env(monkeypatch: pytest.MonkeyPatch) ->
     """The API key has no env var; even a same-named env var must not count."""
     monkeypatch.setenv("LOGFIRE_API_KEY", "lf-from-env")
     assert logfire_api_key_present(FileConfig()) is False
+
+
+def test_save_load_round_trips_read_and_write_keys() -> None:
+    cfg = FileConfig(logfire_read_key="lf-read", logfire_write_key="lf-write")
+    save_config(cfg)
+    content = config_path().read_text()
+    assert 'logfire_read_key = "lf-read"' in content
+    assert 'logfire_write_key = "lf-write"' in content
+    assert load_config() == cfg
+
+
+def test_set_logfire_read_key_preserves_other_fields() -> None:
+    save_config(
+        FileConfig(
+            gateway_api_key="sk-existing",
+            logfire_token="lf-existing-token",
+            logfire_write_key="lf-existing-write",
+        )
+    )
+    set_logfire_read_key("lf-added-read")
+    loaded = load_config()
+    assert loaded.logfire_read_key == "lf-added-read"
+    assert loaded.gateway_api_key == "sk-existing"
+    assert loaded.logfire_token == "lf-existing-token"
+    assert loaded.logfire_write_key == "lf-existing-write"
+
+
+def test_set_logfire_write_key_preserves_other_fields() -> None:
+    save_config(
+        FileConfig(
+            gateway_api_key="sk-existing",
+            logfire_token="lf-existing-token",
+            logfire_read_key="lf-existing-read",
+        )
+    )
+    set_logfire_write_key("lf-added-write")
+    loaded = load_config()
+    assert loaded.logfire_write_key == "lf-added-write"
+    assert loaded.gateway_api_key == "sk-existing"
+    assert loaded.logfire_token == "lf-existing-token"
+    assert loaded.logfire_read_key == "lf-existing-read"
+
+
+def test_resolve_logfire_read_key_prefers_read_then_legacy_then_write() -> None:
+    assert resolve_logfire_read_key(FileConfig()) is None
+    assert resolve_logfire_read_key(FileConfig(logfire_write_key="lf-write")) == "lf-write"
+    assert (
+        resolve_logfire_read_key(
+            FileConfig(logfire_api_key="lf-legacy", logfire_write_key="lf-write")
+        )
+        == "lf-legacy"
+    )
+    assert (
+        resolve_logfire_read_key(
+            FileConfig(
+                logfire_read_key="lf-read",
+                logfire_api_key="lf-legacy",
+                logfire_write_key="lf-write",
+            )
+        )
+        == "lf-read"
+    )
+
+
+def test_resolve_logfire_write_key_prefers_write_then_legacy_then_read() -> None:
+    assert resolve_logfire_write_key(FileConfig()) is None
+    assert resolve_logfire_write_key(FileConfig(logfire_read_key="lf-read")) == "lf-read"
+    assert (
+        resolve_logfire_write_key(
+            FileConfig(logfire_api_key="lf-legacy", logfire_read_key="lf-read")
+        )
+        == "lf-legacy"
+    )
+    assert (
+        resolve_logfire_write_key(
+            FileConfig(
+                logfire_write_key="lf-write",
+                logfire_api_key="lf-legacy",
+                logfire_read_key="lf-read",
+            )
+        )
+        == "lf-write"
+    )
+
+
+def test_logfire_read_key_present_from_own_field_or_legacy() -> None:
+    assert logfire_read_key_present(FileConfig()) is False
+    assert logfire_read_key_present(FileConfig(logfire_read_key="lf-read")) is True
+    assert logfire_read_key_present(FileConfig(logfire_api_key="lf-legacy")) is True
+    assert logfire_read_key_present(FileConfig(logfire_write_key="lf-write")) is False
+
+
+def test_logfire_write_key_present_from_own_field_or_legacy() -> None:
+    assert logfire_write_key_present(FileConfig()) is False
+    assert logfire_write_key_present(FileConfig(logfire_write_key="lf-write")) is True
+    assert logfire_write_key_present(FileConfig(logfire_api_key="lf-legacy")) is True
+    assert logfire_write_key_present(FileConfig(logfire_read_key="lf-read")) is False
+
+
+def test_clear_helpers_unset_only_the_named_field() -> None:
+    save_config(
+        FileConfig(
+            gateway_api_key="sk-secret",
+            logfire_token="lf-token",
+            logfire_read_key="lf-read",
+            logfire_write_key="lf-write",
+        )
+    )
+    clear_gateway_key()
+    loaded = load_config()
+    assert loaded.gateway_api_key is None
+    assert loaded.logfire_token == "lf-token"
+    assert loaded.logfire_read_key == "lf-read"
+    assert loaded.logfire_write_key == "lf-write"
+
+    clear_logfire_token()
+    loaded = load_config()
+    assert loaded.logfire_token is None
+    assert loaded.logfire_read_key == "lf-read"
+
+    clear_logfire_read_key()
+    loaded = load_config()
+    assert loaded.logfire_read_key is None
+    assert loaded.logfire_write_key == "lf-write"
+
+    clear_logfire_write_key()
+    assert load_config().logfire_write_key is None
 
 
 # --- require_gateway_key ---------------------------------------------------------

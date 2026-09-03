@@ -53,6 +53,8 @@ vi.mock("../api/client", async (importOriginal) => {
       get: vi.fn(),
       stats: vi.fn(),
       remove: vi.fn(),
+      generation: vi.fn(),
+      logfirePull: vi.fn(),
       // The header's Export action opens the real ExportModal, which fetches through this.
       exportFiles: vi.fn(),
     },
@@ -71,6 +73,8 @@ vi.mock("../api/client", async (importOriginal) => {
 const getMock = vi.mocked(datasets.get);
 const statsMock = vi.mocked(datasets.stats);
 const removeMock = vi.mocked(datasets.remove);
+const generationMock = vi.mocked(datasets.generation);
+const logfirePullMock = vi.mocked(datasets.logfirePull);
 const generateMock = vi.mocked(evaluators.generate);
 const createMock = vi.mocked(evaluators.create);
 const createVersionMock = vi.mocked(evaluators.createVersion);
@@ -132,6 +136,8 @@ beforeEach(() => {
   listMock.mockResolvedValue([]);
   getMock.mockResolvedValue(madeDataset());
   statsMock.mockResolvedValue({ total: 5, labeled: 5, unlabeled: 0, label_distribution: {} });
+  generationMock.mockResolvedValue(null);
+  logfirePullMock.mockResolvedValue(null);
 });
 
 afterEach(() => {

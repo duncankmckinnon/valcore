@@ -1,20 +1,20 @@
-// The keys tab: the three credentials the Overview setup card lists, where each one comes
-// from, and what stops working without it. Deliberately the first tab — nothing that calls
-// a model runs until the gateway key exists.
+// The keys tab: the four credentials Settings lists, where each one comes from, and
+// what stops working without it. Deliberately the first tab — nothing that calls a
+// model runs until the gateway key exists.
 //
 // Key names, commands, and required/optional status here must match
-// src/valcore/api/routes/setup.py, which is what the Overview card renders from.
+// src/valcore/api/routes/setup.py, which is what Settings and the Overview card render from.
 
 import { CodeBlock, DocLink, DocNote, DocPage, DocSection, ExternalLink } from "../primitives";
 
 export function Keys(): JSX.Element {
   return (
     <DocPage>
-      <DocSection title="The three keys">
+      <DocSection title="The four keys">
         <p>
-          The setup card on <DocLink to="/">Overview</DocLink> lists every credential valcore
-          knows about and whether it is currently set. One is required; two are optional and
-          only matter if you use Logfire.
+          The <DocLink to="/settings">Settings</DocLink> page is where you set and update
+          credentials. Overview reports whether each one is currently set. One is required;
+          the Logfire keys are optional and only matter if you use Logfire.
         </p>
         <ul>
           <li>
@@ -22,17 +22,22 @@ export function Keys(): JSX.Element {
             evaluators and datasets.
           </li>
           <li>
-            <strong>Logfire write token</strong> — optional. Sends run traces to Logfire.
+            <strong>Logfire tracing token</strong> — optional. Sends valcore&apos;s own FastAPI,
+            gateway, and run traces to your valcore Logfire project.
           </li>
           <li>
-            <strong>Logfire API key</strong> — optional. Pushes datasets to Logfire&apos;s hosted
-            store.
+            <strong>Logfire read key</strong> — optional. Queries traces in the Logfire project
+            you are sampling from.
+          </li>
+          <li>
+            <strong>Logfire write key</strong> — optional. Pushes datasets to the Logfire
+            project you operate on.
           </li>
         </ul>
         <DocNote>
-          Keys are never entered through the web UI — no secret crosses HTTP — so every one of
-          them is set from the command line. The card reports presence only; it never shows a
-          key back to you.
+          Settings never shows a stored key back to you — a set field is masked, an unset
+          field is empty. Saving writes to <code>~/.valcore/config.toml</code>. The CLI
+          commands below write the same file.
         </DocNote>
       </DocSection>
 
@@ -49,14 +54,14 @@ export function Keys(): JSX.Element {
         <CodeBlock>valcore config set-key</CodeBlock>
         <p>
           Run it with no argument to be prompted without the key echoing to your terminal or
-          landing in shell history.
+          landing in shell history. Or paste it on <DocLink to="/settings">Settings</DocLink>.
         </p>
       </DocSection>
 
       <DocSection title="Getting a gateway key">
         <p>
-          Create the key in the Pydantic AI Gateway and paste it into the command above. The
-          gateway documentation covers account setup and where keys are issued:
+          Create the key in the Pydantic AI Gateway and paste it into Settings or the command
+          above. The gateway documentation covers account setup and where keys are issued:
         </p>
         <p>
           <ExternalLink href="https://ai.pydantic.dev/gateway/">
@@ -73,12 +78,14 @@ export function Keys(): JSX.Element {
         </p>
       </DocSection>
 
-      <DocSection title="Logfire write token: traces">
+      <DocSection title="Logfire tracing token: valcore's own project">
         <p>
-          With a write token configured, each run opens a <code>valcore.run</code> span carrying
-          the evaluator version, dataset, and concurrency, with one child span per scored row.
-          On close, the run span records its status and each agreement metric as attributes, so
-          a Logfire query can filter runs by accuracy directly.
+          With a tracing token configured, FastAPI requests, pydantic-ai agent activity, and
+          each run&apos;s <code>valcore.run</code> / <code>valcore.score_row</code> spans go to
+          the Logfire project that token belongs to — the project that should receive
+          valcore&apos;s own telemetry. On close, the run span records its status and each
+          agreement metric as attributes, so a Logfire query can filter runs by accuracy
+          directly.
         </p>
         <CodeBlock>valcore config set-logfire-token</CodeBlock>
         <p>
@@ -98,23 +105,32 @@ export function Keys(): JSX.Element {
         </DocNote>
       </DocSection>
 
-      <DocSection title="Logfire API key: hosted datasets">
+      <DocSection title="Read and write keys: the project you operate on">
         <p>
-          The API key is a separate credential from the write token, and it is only needed for
-          one thing: pushing a dataset to Logfire&apos;s hosted dataset store.
+          The read and write keys target the Logfire project you are sampling from or publishing
+          datasets to. That project may be separate from the one that receives valcore&apos;s
+          traces. If one API key has <code>project:read</code>, query access, and{" "}
+          <code>project:write_datasets</code>, paste it once on Settings with “Use the same key
+          for read and write”. Otherwise set them separately.
         </p>
-        <CodeBlock>valcore config set-logfire-key</CodeBlock>
+        <CodeBlock>valcore config set-logfire-read-key</CodeBlock>
+        <CodeBlock>valcore config set-logfire-write-key</CodeBlock>
         <p>
-          It must carry the <code>project:read_datasets</code> and{" "}
-          <code>project:write_datasets</code> scopes. A key without them will authenticate and
-          then fail on the push. API keys are issued from your Logfire account settings:
+          <code>valcore config set-logfire-key</code> still stores one value as both. API keys
+          are issued from your Logfire account settings:
         </p>
         <p>
           <ExternalLink href="https://logfire.pydantic.dev/docs/reference/api/">
             Logfire API reference
           </ExternalLink>
         </p>
+        <CodeBlock>valcore logfire pull --sql &quot;SELECT span_id FROM records LIMIT 100&quot; --name traces --count 20</CodeBlock>
         <CodeBlock>valcore logfire push my-dataset</CodeBlock>
+        <p>
+          To open Logfire&apos;s SQL Workbench from the dataset form, store the Explore URL
+          (it is not a secret):
+        </p>
+        <CodeBlock>valcore config set-logfire-explore-url https://logfire-us.pydantic.dev/org/project/explore</CodeBlock>
       </DocSection>
 
       <DocSection title="Where keys are stored">
@@ -127,7 +143,7 @@ export function Keys(): JSX.Element {
         <p>To check what is currently configured without revealing anything:</p>
         <CodeBlock>valcore config get</CodeBlock>
         <p>
-          The stored key is masked unless you pass <code>--show-key</code>. See{" "}
+          The stored gateway key is masked unless you pass <code>--show-key</code>. See{" "}
           <DocLink to="/docs/cli">CLI</DocLink> for the rest of the config group, or{" "}
           <DocLink to="/docs/evals">Evals</DocLink> to start authoring now that setup is done.
         </p>

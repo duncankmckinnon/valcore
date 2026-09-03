@@ -6,7 +6,7 @@ import DatasetsPage from "./DatasetsPage";
 import { datasets } from "../api/client";
 import type { Dataset } from "../api/types";
 
-// The three creation paths are owned by other tasks; stub each so it reports a
+// The four creation paths are owned by other tasks; stub each so it reports a
 // distinct id back through its `onCreated` prop. Blank and Generate hand back a
 // dataset id string; Upload hands back a `DatasetCreated` envelope.
 vi.mock("../components/DatasetBlankForm", () => ({
@@ -22,6 +22,11 @@ vi.mock("../components/DatasetGenerateForm", () => ({
 vi.mock("../components/DatasetUpload", () => ({
   default: ({ onCreated }: { onCreated: (created: { dataset: { id: string } }) => void }) => (
     <button onClick={() => onCreated({ dataset: { id: "upload-1" } } as never)}>upload creates</button>
+  ),
+}));
+vi.mock("../components/DatasetLogfireForm", () => ({
+  default: ({ onCreated }: { onCreated: (id: string) => void }) => (
+    <button onClick={() => onCreated("logfire-1")}>logfire creates</button>
   ),
 }));
 
@@ -114,12 +119,17 @@ describe("DatasetsPage", () => {
     await userEvent.click(screen.getByRole("tab", { name: "Generate" }));
     expect(screen.getByRole("button", { name: "generate creates" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "upload creates" })).toBeNull();
+
+    await userEvent.click(screen.getByRole("tab", { name: "Logfire" }));
+    expect(screen.getByRole("button", { name: "logfire creates" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "generate creates" })).toBeNull();
   });
 
   it.each([
     { tab: "Blank", trigger: "blank creates", path: "/datasets/blank-1" },
     { tab: "Upload", trigger: "upload creates", path: "/datasets/upload-1" },
     { tab: "Generate", trigger: "generate creates", path: "/datasets/gen-1" },
+    { tab: "Logfire", trigger: "logfire creates", path: "/datasets/logfire-1" },
   ])("navigates to the new dataset when the $tab tab reports creation", async ({
     tab,
     trigger,

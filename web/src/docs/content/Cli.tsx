@@ -56,15 +56,16 @@ export function Cli(): JSX.Element {
       <DocSection title="Which group to reach for">
         <p>
           <code>valcore config</code> holds credentials and defaults — the gateway key, Logfire
-          tokens, the default model, and the path to the config file. Keys are only ever set from
-          the CLI; no secret crosses HTTP into the browser.
+          tokens, the default model, and the path to the config file. Keys can also be set
+          from <DocLink to="/settings">Settings</DocLink> in the app.
         </p>
         <CodeBlock>valcore config set-key</CodeBlock>
         <p>
           <code>valcore list</code> shows what the workspace holds, as a table or with{" "}
           <code>--json</code>. <code>valcore export</code> and <code>valcore import</code> move
-          evaluators and datasets between machines. <code>valcore logfire push</code> sends a
-          dataset to Logfire&apos;s hosted store. <code>valcore skills</code> installs the bundled
+          evaluators and datasets between machines. <code>valcore logfire pull</code> builds a
+          dataset from a Logfire SQL query; <code>valcore logfire push</code> sends a dataset
+          to Logfire&apos;s hosted store. <code>valcore skills</code> installs the bundled
           agent skills so a coding agent can drive valcore for you.
         </p>
       </DocSection>

@@ -7,6 +7,7 @@ import {
   EvaluatorIcon,
   OverviewIcon,
   RunIcon,
+  SettingsIcon,
 } from "./icons";
 
 type NavItem = { to: string; label: string; Icon: ComponentType<{ className?: string }> };
@@ -18,6 +19,7 @@ type NavSection = { label: string; items: NavItem[] };
 // author or measure — a new user needs it first, not last.
 const OVERVIEW: NavItem = { to: "/", label: "Overview", Icon: OverviewIcon };
 const DOCS: NavItem = { to: "/docs", label: "Docs", Icon: DocsIcon };
+const SETTINGS: NavItem = { to: "/settings", label: "Settings", Icon: SettingsIcon };
 const SECTIONS: NavSection[] = [
   {
     label: "Author",
@@ -62,6 +64,7 @@ export default function Layout() {
         <NavItemLink {...OVERVIEW} end />
         {/* No `end`: every /docs/:slug tab keeps the nav item lit. */}
         <NavItemLink {...DOCS} />
+        <NavItemLink {...SETTINGS} />
         {SECTIONS.map((section) => (
           <div key={section.label}>
             <div className="nav-section-label">{section.label}</div>

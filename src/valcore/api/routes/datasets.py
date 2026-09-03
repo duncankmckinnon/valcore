@@ -17,6 +17,7 @@ from valcore.datagen import generate_rows
 from valcore.errors import ContractError
 from valcore.export import render_dataset_module, render_judge_module
 from valcore.logfire_io import push_dataset
+from valcore.logfire_pull import pull_records
 from valcore.models import LabelSchema, LabelSource
 from valcore.schema_migration import label_matches_schema
 from valcore.seeding import dataset_shape_from_version
@@ -99,6 +100,33 @@ class RowsAppend(BaseModel):
     """Request body to append plain data rows to a dataset."""
 
     rows: list[dict]
+
+
+class LogfirePullRequest(BaseModel):
+    """Request body to create a dataset from a Logfire SQL query."""
+
+    name: str
+    description: str = ""
+    sql: str
+    sample_n: int
+    seed: int | None = None
+    min_timestamp: datetime | None = None
+    max_timestamp: datetime | None = None
+    label_column: str | None = None
+    label_schema: LabelSchema | None = None
+
+
+class LogfirePullOut(BaseModel):
+    """The stored Logfire-pull settings for a dataset, as returned to the client."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    sql: str
+    sample_n: int
+    seed: int
+    min_timestamp: datetime | None
+    max_timestamp: datetime | None
+    label_column: str | None
 
 
 class LogfirePushRequest(BaseModel):
@@ -539,6 +567,53 @@ async def generate_dataset_from_version(
         source_version_id=body.version_id,
     )
     return DatasetCreatedOut(dataset=DatasetOut.model_validate(dataset), row_count=len(rows))
+
+
+@router.post("/from-logfire")
+async def create_dataset_from_logfire(
+    body: LogfirePullRequest, store: StoreDep
+) -> DatasetCreatedOut:
+    """Create a dataset by querying Logfire, nesting child spans, and sampling top-level trees."""
+    if body.sample_n < 1:
+        raise ContractError(f"sample_n must be at least 1, got {body.sample_n}.")
+    if not body.sql.strip():
+        raise ContractError("sql must not be empty.")
+    if body.label_column is not None and body.label_schema is None:
+        raise ContractError("label_column requires a label_schema.")
+
+    result = await pull_records(
+        body.sql,
+        body.sample_n,
+        seed=body.seed,
+        min_timestamp=body.min_timestamp,
+        max_timestamp=body.max_timestamp,
+        label_column=body.label_column,
+    )
+    schema = body.label_schema.model_dump(mode="json") if body.label_schema is not None else {}
+    dataset = store.create_dataset(
+        name=body.name,
+        description=body.description,
+        columns=result.columns,
+        label_schema=schema,
+    )
+    rows = store.add_prepared_rows(dataset.id, result.prepared)
+    store.set_logfire_pull(
+        dataset.id,
+        sql=result.sql,
+        sample_n=result.sample_n,
+        seed=result.seed,
+        min_timestamp=result.min_timestamp,
+        max_timestamp=result.max_timestamp,
+        label_column=result.label_column,
+    )
+    return DatasetCreatedOut(dataset=DatasetOut.model_validate(dataset), row_count=len(rows))
+
+
+@router.get("/{id}/logfire-pull")
+async def get_dataset_logfire_pull(id: str, store: StoreDep) -> LogfirePullOut | None:
+    """Return how a dataset's rows were pulled from Logfire, or null if they were not."""
+    pull = store.get_logfire_pull(id)
+    return None if pull is None else LogfirePullOut.model_validate(pull)
 
 
 @router.get("/{id}/generation")

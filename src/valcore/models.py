@@ -220,6 +220,24 @@ class DatasetGeneration(SQLModel, table=True):
     source_version_id: str | None = None
 
 
+class DatasetLogfirePull(SQLModel, table=True):
+    """How a dataset's rows were pulled from Logfire, kept so the query can be inspected.
+
+    A separate table rather than columns on ``Dataset``, for the same ``create_all``
+    reason as ``DatasetGeneration``. An uploaded, blank, or generated dataset has no row.
+    """
+
+    id: str = Field(default_factory=lambda: uuid4().hex, primary_key=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    dataset_id: str = Field(index=True)
+    sql: str
+    sample_n: int
+    seed: int
+    min_timestamp: datetime | None = None
+    max_timestamp: datetime | None = None
+    label_column: str | None = None
+
+
 class DatasetRow(SQLModel, table=True):
     """A single row of a dataset with its (optional) hand-assigned label."""
 

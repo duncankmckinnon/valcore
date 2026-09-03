@@ -7,6 +7,7 @@ import { datasets } from "../api/client";
 import type {
   Dataset,
   DatasetGeneration,
+  DatasetLogfirePull,
   DatasetStats,
   GeneratedConfig,
   LabelSchema,
@@ -20,6 +21,7 @@ import { ExportModal } from "../components/ExportModal";
 import EvaluatorFromDataset from "../components/EvaluatorFromDataset";
 import GenerateMoreRows from "../components/GenerateMoreRows";
 import GenerationSettings from "../components/GenerationSettings";
+import { LogfirePullSettings } from "../components/LogfirePullSettings";
 import LabelingGrid from "../components/LabelingGrid";
 
 // Mirrors the server's generation cap so an over-large ask is refused before it costs a
@@ -36,6 +38,7 @@ export default function DatasetDetail({ datasetId }: Props) {
   const [stats, setStats] = useState<DatasetStats | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [generation, setGeneration] = useState<DatasetGeneration | null>(null);
+  const [logfirePull, setLogfirePull] = useState<DatasetLogfirePull | null>(null);
   const [editing, setEditing] = useState(false);
   const [generatingRows, setGeneratingRows] = useState(false);
   const [gridEpoch, setGridEpoch] = useState(0);
@@ -48,11 +51,13 @@ export default function DatasetDetail({ datasetId }: Props) {
   const [pushResult, setPushResult] = useState<LogfirePushResult | null>(null);
   const [pushError, setPushError] = useState<unknown>(null);
 
-  // Pushing needs the Logfire API key, which is a different credential from the write token
-  // that sends traces — so gate on that key specifically rather than on tracing being on.
+  // Pushing needs the Logfire write key (or a read key that can stand in via fallback).
   const { status } = useSetup();
   const logfireKeySet =
-    status?.keys.find((key) => key.name === "logfire_api_key")?.set ?? false;
+    status?.keys.some(
+      (key) =>
+        (key.name === "logfire_write_key" || key.name === "logfire_read_key") && key.set,
+    ) ?? false;
 
   const pushToLogfire = () => {
     setPushing(true);
@@ -93,6 +98,15 @@ export default function DatasetDetail({ datasetId }: Props) {
   useEffect(() => {
     refreshGeneration();
   }, [refreshGeneration]);
+
+  useEffect(() => {
+    datasets
+      .logfirePull(datasetId)
+      .then(setLogfirePull)
+      .catch(() => {
+        // Provenance is non-critical: a failure just leaves the panel empty.
+      });
+  }, [datasetId]);
 
   const refreshStats = useCallback(() => {
     datasets
@@ -180,7 +194,7 @@ export default function DatasetDetail({ datasetId }: Props) {
               title={
                 logfireKeySet
                   ? "Publish this dataset to Logfire's hosted dataset store"
-                  : "Set the Logfire API key first: valcore config set-logfire-key"
+                  : "Set the Logfire write key first — see Settings"
               }
             >
               {pushing ? "Pushing…" : "Push to Logfire"}
@@ -226,6 +240,7 @@ export default function DatasetDetail({ datasetId }: Props) {
       )}
 
       <GenerationSettings generation={generation} />
+      <LogfirePullSettings pull={logfirePull} />
 
       <LabelingGrid
         key={gridKey}

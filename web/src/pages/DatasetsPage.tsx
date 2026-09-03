@@ -1,5 +1,5 @@
-// Datasets index: a progress list plus one creation modal spanning the three
-// authoring paths (blank, upload, generate). When the route carries an :id, the
+// Datasets index: a progress list plus one creation modal spanning the four
+// authoring paths (blank, upload, generate, logfire). When the route carries an :id, the
 // single-dataset detail view is shown instead.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -13,15 +13,17 @@ import { DatasetIcon } from "../components/icons";
 import DatasetBlankForm from "../components/DatasetBlankForm";
 import DatasetGenerateForm from "../components/DatasetGenerateForm";
 import type { GenerateFormInitial } from "../components/DatasetGenerateForm";
+import DatasetLogfireForm from "../components/DatasetLogfireForm";
 import DatasetUpload from "../components/DatasetUpload";
 import DatasetDetail from "./DatasetDetail";
 
-type CreateMode = "blank" | "upload" | "generate";
+type CreateMode = "blank" | "upload" | "generate" | "logfire";
 
 const MODES: { id: CreateMode; label: string }[] = [
   { id: "blank", label: "Blank" },
   { id: "upload", label: "Upload" },
   { id: "generate", label: "Generate" },
+  { id: "logfire", label: "Logfire" },
 ];
 
 export default function DatasetsPage() {
@@ -100,7 +102,7 @@ function DatasetsList() {
     <section>
       <PageHeader
         title="Datasets"
-        description="Labeled examples an evaluator is scored against — generated, imported from CSV, or derived from an existing evaluator."
+        description="Labeled examples an evaluator is scored against — generated, imported from CSV, pulled from Logfire, or derived from an existing evaluator."
         action={
           <div className="form-actions">
             <Button onClick={openCreate}>New dataset</Button>
@@ -201,6 +203,7 @@ function DatasetsList() {
         {mode === "generate" && (
           <DatasetGenerateForm key={seedEpoch} onCreated={onCreated} initial={seed} />
         )}
+        {mode === "logfire" && <DatasetLogfireForm onCreated={onCreated} />}
       </Modal>
     </section>
   );

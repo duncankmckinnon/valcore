@@ -1654,6 +1654,68 @@ kbd {
   font-size: var(--text-sm);
 }
 
+/* -- Settings keys ------------------------------------------------------------ */
+
+.settings-keys {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.settings-key {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-key-heading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.settings-key-label {
+  font-weight: 600;
+}
+
+.settings-explanation,
+.settings-from-env {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  margin: 0;
+  max-width: 42rem;
+}
+
+.settings-from-env {
+  color: var(--accent);
+}
+
+.settings-key-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.settings-key-row .input {
+  flex: 1;
+  max-width: 28rem;
+}
+
+.settings-same {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+  font-size: var(--text-sm);
+  max-width: 42rem;
+}
+
 /* -- Docs ------------------------------------------------------------------- */
 
 /* Secondary navigation under the page header. Underline-on-active rather than a filled

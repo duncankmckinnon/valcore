@@ -5,6 +5,7 @@ import EvaluatorsPage from "./pages/EvaluatorsPage";
 import DatasetsPage from "./pages/DatasetsPage";
 import RunsPage from "./pages/RunsPage";
 import DocsPage from "./pages/DocsPage";
+import SettingsPage from "./pages/SettingsPage";
 
 // All routes are declared here up front. The route table is maintained alongside the
 // pages, so adding or moving a route means editing this file.
@@ -24,6 +25,7 @@ export default function App() {
             always has content and a stale slug degrades instead of blanking. */}
         <Route path="/docs" element={<DocsPage />} />
         <Route path="/docs/:slug" element={<DocsPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
       </Route>
     </Routes>
   );

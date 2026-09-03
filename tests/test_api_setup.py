@@ -1,10 +1,10 @@
-"""Tests for the read-only setup endpoint: key presence, envelope shape, and secret hygiene.
+"""Tests for the setup endpoint: key presence, envelope shape, writes, and secret hygiene.
 
-``GET /api/setup`` is the only surface for reporting configuration status; keys are written
-only via the CLI, so there is no POST here. Presence must reflect the *effective* value (an
-exported env var counts, matching ``apply_gateway_key``'s env-wins precedence), and the response
-must never carry a key's actual value -- only booleans -- so a future field addition that leaked
-one would be caught here rather than in production.
+``GET /api/setup`` reports configuration status. ``POST /api/setup`` writes keys to the local
+config file. Presence must reflect the *effective* value (an exported env var counts, matching
+``apply_gateway_key``'s env-wins precedence), and no response may carry a key's actual value --
+only booleans -- so a future field addition that leaked one would be caught here rather than in
+production.
 """
 
 from collections.abc import AsyncIterator
@@ -51,13 +51,14 @@ def _by_name(body: dict) -> dict[str, dict]:
 
 
 @pytest.mark.anyio
-async def test_setup_lists_exactly_the_three_documented_keys() -> None:
+async def test_setup_lists_exactly_the_four_documented_keys() -> None:
     body = await _get_setup(create_app())
-    assert {entry["name"] for entry in body["keys"]} == {
+    assert [entry["name"] for entry in body["keys"]] == [
         "gateway_api_key",
         "logfire_token",
-        "logfire_api_key",
-    }
+        "logfire_read_key",
+        "logfire_write_key",
+    ]
 
 
 @pytest.mark.anyio
@@ -68,6 +69,9 @@ async def test_gateway_key_metadata_matches_the_documented_contract() -> None:
     assert entry["label"] == "Pydantic AI Gateway key"
     assert entry["command"] == "valcore config set-key"
     assert entry["purpose"] == "Runs evaluators and generates evaluators and datasets."
+    assert entry["from_env"] is False
+    assert "Pydantic AI Gateway" in entry["explanation"]
+    assert "Logfire" in entry["explanation"]
 
 
 @pytest.mark.anyio
@@ -75,19 +79,40 @@ async def test_logfire_token_metadata_matches_the_documented_contract() -> None:
     body = await _get_setup(create_app())
     entry = _by_name(body)["logfire_token"]
     assert entry["required"] is False
-    assert entry["label"] == "Logfire write token"
+    assert entry["label"] == "Logfire tracing token"
     assert entry["command"] == "valcore config set-logfire-token"
-    assert entry["purpose"] == "Sends run traces to Logfire."
+    assert entry["purpose"] == (
+        "Sends valcore's FastAPI, gateway, and run traces to your valcore Logfire project."
+    )
+    assert entry["from_env"] is False
+    assert "write token" in entry["explanation"].lower()
+    assert "different project" in entry["explanation"]
 
 
 @pytest.mark.anyio
-async def test_logfire_api_key_metadata_matches_the_documented_contract() -> None:
+async def test_logfire_read_key_metadata_matches_the_documented_contract() -> None:
     body = await _get_setup(create_app())
-    entry = _by_name(body)["logfire_api_key"]
+    entry = _by_name(body)["logfire_read_key"]
     assert entry["required"] is False
-    assert entry["label"] == "Logfire API key"
-    assert entry["command"] == "valcore config set-logfire-key"
-    assert entry["purpose"] == "Pushes datasets to Logfire's hosted store."
+    assert entry["label"] == "Logfire read key"
+    assert entry["command"] == "valcore config set-logfire-read-key"
+    assert entry["purpose"] == "Queries traces in the Logfire project you are sampling from."
+    assert entry["from_env"] is False
+    assert "project:read" in entry["explanation"]
+    assert "operate on" in entry["explanation"]
+
+
+@pytest.mark.anyio
+async def test_logfire_write_key_metadata_matches_the_documented_contract() -> None:
+    body = await _get_setup(create_app())
+    entry = _by_name(body)["logfire_write_key"]
+    assert entry["required"] is False
+    assert entry["label"] == "Logfire write key"
+    assert entry["command"] == "valcore config set-logfire-write-key"
+    assert entry["purpose"] == "Pushes datasets to the Logfire project you operate on."
+    assert entry["from_env"] is False
+    assert "project:write_datasets" in entry["explanation"]
+    assert "same value" in entry["explanation"]
 
 
 # -- Effective presence: gateway_api_key (env + file, four cases) --------------
@@ -103,7 +128,9 @@ async def test_gateway_key_absent_from_neither() -> None:
 async def test_gateway_key_present_from_env_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(GATEWAY_ENV, "sk-from-env")
     body = await _get_setup(create_app())
-    assert _by_name(body)["gateway_api_key"]["set"] is True
+    entry = _by_name(body)["gateway_api_key"]
+    assert entry["set"] is True
+    assert entry["from_env"] is True
 
 
 @pytest.mark.anyio
@@ -134,7 +161,9 @@ async def test_logfire_token_absent_from_neither() -> None:
 async def test_logfire_token_present_from_env_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(LOGFIRE_TOKEN_ENV, "lf-from-env")
     body = await _get_setup(create_app())
-    assert _by_name(body)["logfire_token"]["set"] is True
+    entry = _by_name(body)["logfire_token"]
+    assert entry["set"] is True
+    assert entry["from_env"] is True
 
 
 @pytest.mark.anyio
@@ -152,40 +181,74 @@ async def test_logfire_token_present_from_both(monkeypatch: pytest.MonkeyPatch) 
     assert _by_name(body)["logfire_token"]["set"] is True
 
 
-# -- Effective presence: logfire_api_key (file-only; env never counts) --------
+# -- Effective presence: logfire_read_key / logfire_write_key (file-only) ------
 
 
 @pytest.mark.anyio
-async def test_logfire_api_key_absent_by_default() -> None:
+async def test_logfire_read_and_write_keys_absent_by_default() -> None:
     body = await _get_setup(create_app())
-    assert _by_name(body)["logfire_api_key"]["set"] is False
+    names = _by_name(body)
+    assert names["logfire_read_key"]["set"] is False
+    assert names["logfire_write_key"]["set"] is False
 
 
 @pytest.mark.anyio
-async def test_logfire_api_key_present_from_file() -> None:
+async def test_logfire_read_key_present_from_file() -> None:
+    save_config(FileConfig(logfire_read_key="lf-read-from-file"))
+    body = await _get_setup(create_app())
+    names = _by_name(body)
+    assert names["logfire_read_key"]["set"] is True
+    assert names["logfire_write_key"]["set"] is False
+
+
+@pytest.mark.anyio
+async def test_logfire_write_key_present_from_file() -> None:
+    save_config(FileConfig(logfire_write_key="lf-write-from-file"))
+    body = await _get_setup(create_app())
+    names = _by_name(body)
+    assert names["logfire_write_key"]["set"] is True
+    assert names["logfire_read_key"]["set"] is False
+
+
+@pytest.mark.anyio
+async def test_legacy_logfire_api_key_marks_both_read_and_write_set() -> None:
     save_config(FileConfig(logfire_api_key="lf-api-key-from-file"))
     body = await _get_setup(create_app())
-    assert _by_name(body)["logfire_api_key"]["set"] is True
+    names = _by_name(body)
+    assert names["logfire_read_key"]["set"] is True
+    assert names["logfire_write_key"]["set"] is True
 
 
 @pytest.mark.anyio
-async def test_logfire_api_key_ignores_a_same_named_env_var(
+async def test_logfire_read_key_ignores_a_same_named_env_var(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """There is no env var for this key; even one with a plausible name must not count."""
     monkeypatch.setenv("LOGFIRE_API_KEY", "lf-from-env")
     body = await _get_setup(create_app())
-    assert _by_name(body)["logfire_api_key"]["set"] is False
+    assert _by_name(body)["logfire_read_key"]["set"] is False
+    assert _by_name(body)["logfire_write_key"]["set"] is False
+
+
+# -- SQL Workbench URL (not a secret; returned as the value) -------------------
 
 
 @pytest.mark.anyio
-async def test_logfire_api_key_present_from_both_file_and_env_lookalike(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("LOGFIRE_API_KEY", "lf-from-env")
-    save_config(FileConfig(logfire_api_key="lf-api-key-from-file"))
+async def test_setup_returns_explore_url_when_configured() -> None:
+    save_config(
+        FileConfig(
+            logfire_explore_url="https://logfire-us.pydantic.dev/duncan/agent-tracing/explore"
+        )
+    )
     body = await _get_setup(create_app())
-    assert _by_name(body)["logfire_api_key"]["set"] is True
+    assert body["logfire_explore_url"] == (
+        "https://logfire-us.pydantic.dev/duncan/agent-tracing/explore"
+    )
+
+
+@pytest.mark.anyio
+async def test_setup_explore_url_is_null_by_default() -> None:
+    body = await _get_setup(create_app())
+    assert body["logfire_explore_url"] is None
 
 
 # -- No key value ever appears in the response ---------------------------------
@@ -198,7 +261,8 @@ async def test_no_secret_value_leaks_into_the_response(monkeypatch: pytest.Monke
     save_config(
         FileConfig(
             logfire_token="lf-super-secret-token-value",
-            logfire_api_key="lf-super-secret-apikey-value",
+            logfire_read_key="lf-super-secret-read-value",
+            logfire_write_key="lf-super-secret-write-value",
         )
     )
     async with _client(create_app()) as client:
@@ -208,19 +272,116 @@ async def test_no_secret_value_leaks_into_the_response(monkeypatch: pytest.Monke
     for secret in (
         "sk-super-secret-gateway-value",
         "lf-super-secret-token-value",
-        "lf-super-secret-apikey-value",
+        "lf-super-secret-read-value",
+        "lf-super-secret-write-value",
     ):
         assert secret not in raw
 
 
-# -- No POST route --------------------------------------------------------------
+# -- POST writes keys to the local config ---------------------------------------
+
+
+async def _post_setup(app, payload: dict) -> httpx.Response:
+    async with _client(app) as client:
+        return await client.post("/api/setup", json=payload)
 
 
 @pytest.mark.anyio
-async def test_post_setup_is_not_allowed() -> None:
-    async with _client(create_app()) as client:
-        resp = await client.post("/api/setup", json={})
-    assert resp.status_code == 405
+async def test_post_setup_persists_keys_and_returns_updated_presence() -> None:
+    from valcore.config import load_config
+
+    resp = await _post_setup(
+        create_app(),
+        {
+            "gateway_api_key": "sk-posted-gateway",
+            "logfire_token": "lf-posted-token",
+            "logfire_read_key": "lf-posted-read",
+            "logfire_write_key": "lf-posted-write",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    names = _by_name(resp.json())
+    assert names["gateway_api_key"]["set"] is True
+    assert names["logfire_token"]["set"] is True
+    assert names["logfire_read_key"]["set"] is True
+    assert names["logfire_write_key"]["set"] is True
+    raw = resp.text
+    for secret in (
+        "sk-posted-gateway",
+        "lf-posted-token",
+        "lf-posted-read",
+        "lf-posted-write",
+    ):
+        assert secret not in raw
+
+    cfg = load_config()
+    assert cfg.gateway_api_key == "sk-posted-gateway"
+    assert cfg.logfire_token == "lf-posted-token"
+    assert cfg.logfire_read_key == "lf-posted-read"
+    assert cfg.logfire_write_key == "lf-posted-write"
+
+
+@pytest.mark.anyio
+async def test_post_setup_omitted_fields_leave_existing_values() -> None:
+    from valcore.config import load_config
+
+    save_config(
+        FileConfig(
+            gateway_api_key="sk-keep",
+            logfire_read_key="lf-keep-read",
+        )
+    )
+    resp = await _post_setup(create_app(), {"logfire_write_key": "lf-new-write"})
+    assert resp.status_code == 200, resp.text
+    cfg = load_config()
+    assert cfg.gateway_api_key == "sk-keep"
+    assert cfg.logfire_read_key == "lf-keep-read"
+    assert cfg.logfire_write_key == "lf-new-write"
+
+
+@pytest.mark.anyio
+async def test_post_setup_clear_unsets_only_named_keys() -> None:
+    from valcore.config import load_config
+
+    save_config(
+        FileConfig(
+            gateway_api_key="sk-keep",
+            logfire_read_key="lf-read",
+            logfire_write_key="lf-write",
+        )
+    )
+    resp = await _post_setup(create_app(), {"clear": ["logfire_read_key"]})
+    assert resp.status_code == 200, resp.text
+    names = _by_name(resp.json())
+    assert names["logfire_read_key"]["set"] is False
+    assert names["logfire_write_key"]["set"] is True
+    assert names["gateway_api_key"]["set"] is True
+    cfg = load_config()
+    assert cfg.logfire_read_key is None
+    assert cfg.logfire_write_key == "lf-write"
+    assert cfg.gateway_api_key == "sk-keep"
+
+
+@pytest.mark.anyio
+async def test_post_setup_blank_value_is_rejected() -> None:
+    resp = await _post_setup(create_app(), {"gateway_api_key": "   "})
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.anyio
+async def test_post_setup_clearing_read_on_legacy_key_keeps_write() -> None:
+    from valcore.config import load_config
+
+    save_config(FileConfig(logfire_api_key="lf-legacy-combined"))
+    resp = await _post_setup(create_app(), {"clear": ["logfire_read_key"]})
+    assert resp.status_code == 200, resp.text
+    names = _by_name(resp.json())
+    assert names["logfire_read_key"]["set"] is False
+    assert names["logfire_write_key"]["set"] is True
+    cfg = load_config()
+    assert cfg.logfire_read_key is None
+    assert cfg.logfire_write_key == "lf-legacy-combined"
+    assert cfg.logfire_api_key is None
 
 
 # -- App starts and serves health with no Logfire token configured -------------

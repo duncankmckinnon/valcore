@@ -15,6 +15,7 @@ from valcore.errors import (
 )
 from valcore.models import (
     DatasetGeneration,
+    DatasetLogfirePull,
     DatasetRow,
     EvaluatorVersion,
     ExperimentRun,
@@ -991,3 +992,37 @@ def test_request_cancel_raises_for_an_experiment_run(store: Store) -> None:
     assert "cannot be cancelled" in message
     # Cancellation must not have been flagged despite the raised error.
     assert store.get_run(run.id).cancel_requested is False
+
+
+def test_logfire_pull_round_trips_and_is_removed_with_dataset(store: Store) -> None:
+    dataset = store.create_dataset(
+        name="pulled", description="", columns=["span_id"], label_schema={}
+    )
+    stored = store.set_logfire_pull(
+        dataset.id,
+        sql="SELECT span_id FROM records",
+        sample_n=5,
+        seed=7,
+        min_timestamp=None,
+        max_timestamp=None,
+        label_column=None,
+    )
+    assert stored.sql == "SELECT span_id FROM records"
+    assert store.get_logfire_pull(dataset.id).seed == 7
+
+    store.delete_dataset(dataset.id)
+    with pytest.raises(NotFoundError):
+        store.get_logfire_pull(dataset.id)
+
+
+def test_init_db_adds_the_logfire_pull_table_to_an_existing_database(tmp_path) -> None:
+    engine = create_engine(tmp_path / "existing.db")
+    init_db(engine)
+    store = Store(engine)
+    dataset = store.create_dataset(
+        name="from-before", description="", columns=["a"], label_schema={}
+    )
+    DatasetLogfirePull.__table__.drop(engine)
+    init_db(engine)
+    store.set_logfire_pull(dataset.id, sql="SELECT 1", sample_n=1, seed=1)
+    assert store.get_logfire_pull(dataset.id).sql == "SELECT 1"

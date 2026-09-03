@@ -325,11 +325,16 @@ export interface RowsGenerate {
   label_guidance?: string;
 }
 
-export type SetupKeyName = "gateway_api_key" | "logfire_token" | "logfire_api_key";
+export type SetupKeyName =
+  | "gateway_api_key"
+  | "logfire_token"
+  | "logfire_read_key"
+  | "logfire_write_key";
 
 // One credential the setup walkthrough checks for. `set` reflects effective
 // presence (env or CLI-written config); `command` is the CLI invocation shown
-// to the user when it is missing.
+// to the user when it is missing. `explanation` is the longer Settings copy.
+// Never carries the key value.
 export interface SetupKey {
   name: SetupKeyName;
   set: boolean;
@@ -337,10 +342,49 @@ export interface SetupKey {
   label: string;
   command: string;
   purpose: string;
+  explanation: string;
+  from_env: boolean;
 }
 
 export interface SetupStatus {
   keys: SetupKey[];
+  // Not a secret: the SQL Workbench page the Logfire create form opens. Null when unset.
+  logfire_explore_url: string | null;
+}
+
+export interface SetupKeysIn {
+  gateway_api_key?: string;
+  logfire_token?: string;
+  logfire_read_key?: string;
+  logfire_write_key?: string;
+  clear?: SetupKeyName[];
+}
+
+export interface SetupStatus {
+  keys: SetupKey[];
+  // Not a secret: the SQL Workbench page the Logfire create form opens. Null when unset.
+  logfire_explore_url: string | null;
+}
+
+export interface DatasetLogfirePull {
+  sql: string;
+  sample_n: number;
+  seed: number;
+  min_timestamp: string | null;
+  max_timestamp: string | null;
+  label_column: string | null;
+}
+
+export interface DatasetFromLogfire {
+  name: string;
+  description?: string;
+  sql: string;
+  sample_n: number;
+  seed?: number;
+  min_timestamp?: string;
+  max_timestamp?: string;
+  label_column?: string;
+  label_schema?: LabelSchema;
 }
 
 // What `POST /api/datasets/{id}/logfire/push` returns, mirroring the fields Logfire's

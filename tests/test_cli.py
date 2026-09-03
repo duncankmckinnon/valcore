@@ -718,14 +718,16 @@ def test_config_set_logfire_key_persists_and_preserves_others(runner, db_path):
     assert result.exit_code == 0
 
     cfg = load_config()
-    assert cfg.logfire_api_key == "lf-key-9999"
+    assert cfg.logfire_read_key == "lf-key-9999"
+    assert cfg.logfire_write_key == "lf-key-9999"
     assert cfg.logfire_token == "lf-existing-token"
 
 
 def test_config_set_logfire_key_prompts_when_omitted(runner, db_path):
     result = _invoke(runner, db_path, "config", "set-logfire-key", input="lf-key-prompted\n")
     assert result.exit_code == 0
-    assert load_config().logfire_api_key == "lf-key-prompted"
+    assert load_config().logfire_read_key == "lf-key-prompted"
+    assert load_config().logfire_write_key == "lf-key-prompted"
     assert "lf-key-prompted" not in result.output
 
 
@@ -743,8 +745,12 @@ def test_config_get_logfire_presence_changes_when_set_and_never_leaks_values(run
     # but the raw secret is never the field's value, and never appears anywhere in output.
     assert after["logfire_token"] != before["logfire_token"]
     assert after["logfire_api_key"] != before["logfire_api_key"]
+    assert after["logfire_read_key"] != before["logfire_read_key"]
+    assert after["logfire_write_key"] != before["logfire_write_key"]
     assert after["logfire_token"] != "lf-secret-token"
     assert after["logfire_api_key"] != "lf-secret-apikey"
+    assert after["logfire_read_key"] is True
+    assert after["logfire_write_key"] is True
     assert "lf-secret-token" not in after_result.output
     assert "lf-secret-apikey" not in after_result.output
 
@@ -783,6 +789,16 @@ def test_config_get_show_key_does_not_reveal_logfire_secrets(runner, db_path):
     assert "sk-secret-1234" in result.output
     assert "lf-secret-token" not in result.output
     assert "lf-secret-apikey" not in result.output
+
+
+def test_config_set_logfire_read_and_write_keys_persist_independently(runner, db_path):
+    result = _invoke(runner, db_path, "config", "set-logfire-read-key", "lf-read-only")
+    assert result.exit_code == 0
+    result = _invoke(runner, db_path, "config", "set-logfire-write-key", "lf-write-only")
+    assert result.exit_code == 0
+    cfg = load_config()
+    assert cfg.logfire_read_key == "lf-read-only"
+    assert cfg.logfire_write_key == "lf-write-only"
 
 
 # -- logfire --------------------------------------------------------------------
@@ -892,6 +908,61 @@ def test_logfire_push_no_api_key_exits_nonzero_naming_set_logfire_key(runner, st
     result = _invoke(runner, db_path, "logfire", "push", "cases")
     assert result.exit_code != 0
     assert "valcore config set-logfire-key" in result.stderr
+
+
+def test_config_set_logfire_explore_url_persists(runner, db_path):
+    result = _invoke(
+        runner,
+        db_path,
+        "config",
+        "set-logfire-explore-url",
+        "https://logfire-us.pydantic.dev/duncan/agent-tracing/explore",
+    )
+    assert result.exit_code == 0
+    assert load_config().logfire_explore_url == (
+        "https://logfire-us.pydantic.dev/duncan/agent-tracing/explore"
+    )
+
+
+def test_logfire_pull_creates_dataset_from_stubbed_query(runner, db_path, monkeypatch):
+    from datetime import UTC, datetime
+
+    from valcore.logfire_pull import PullResult
+
+    async def fake_pull_records(sql: str, sample_n: int, **kwargs: object) -> PullResult:
+        return PullResult(
+            columns=["span_id", "message"],
+            prepared=[{"data": {"span_id": "a", "message": "m"}}],
+            sql=sql,
+            sample_n=sample_n,
+            seed=kwargs.get("seed") or 3,
+            min_timestamp=datetime(2026, 9, 2, tzinfo=UTC),
+            max_timestamp=None,
+            label_column=None,
+        )
+
+    monkeypatch.setattr("valcore.logfire_pull.pull_records", fake_pull_records)
+    result = _invoke(
+        runner,
+        db_path,
+        "logfire",
+        "pull",
+        "--sql",
+        "SELECT span_id FROM records",
+        "--name",
+        "pulled",
+        "--count",
+        "4",
+        "--seed",
+        "3",
+    )
+    assert result.exit_code == 0, result.stderr
+    assert "pulled" in result.output
+
+
+def test_logfire_pull_requires_sql_or_sql_file(runner, db_path):
+    result = _invoke(runner, db_path, "logfire", "pull", "--name", "x", "--count", "1")
+    assert result.exit_code != 0
 
 
 # -- ./valcore.db startup notice --------------------------------------------

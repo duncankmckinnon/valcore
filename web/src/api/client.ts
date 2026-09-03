@@ -6,6 +6,8 @@ import type {
   DatasetCreated,
   DatasetGenerateFromVersion,
   DatasetGeneration,
+  DatasetLogfirePull,
+  DatasetFromLogfire,
   DatasetRow,
   DatasetStats,
   DatasetUpdate,
@@ -29,6 +31,7 @@ import type {
   ResultsPage,
   Run,
   RunStreamEvent,
+  SetupKeysIn,
   SetupStatus,
 } from "./types";
 
@@ -172,6 +175,10 @@ export const datasets = {
       method: "POST",
       ...jsonBody(data),
     }),
+  fromLogfire: (data: DatasetFromLogfire) =>
+    api<DatasetCreated>("/api/datasets/from-logfire", { method: "POST", ...jsonBody(data) }),
+  logfirePull: (id: string) =>
+    api<DatasetLogfirePull | null>(`/api/datasets/${id}/logfire-pull`),
   // Null for a dataset that was uploaded or created blank rather than generated.
   generation: (id: string) =>
     api<DatasetGeneration | null>(`/api/datasets/${id}/generation`),
@@ -219,9 +226,10 @@ export const overview = {
   get: () => api<Overview>("/api/overview"),
 };
 
-// Read-only: keys are set only via the CLI, so there is no write method here.
 export const setup = {
   get: () => api<SetupStatus>("/api/setup"),
+  save: (body: SetupKeysIn) =>
+    api<SetupStatus>("/api/setup", { method: "POST", ...jsonBody(body) }),
 };
 
 export const runs = {
