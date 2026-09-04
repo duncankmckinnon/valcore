@@ -902,9 +902,7 @@ def test_logfire_push_unresolvable_dataset_exits_1(runner, store, db_path):
     assert "error:" in result.stderr
 
 
-def test_logfire_push_no_api_key_exits_nonzero_naming_set_logfire_write_key(
-    runner, store, db_path
-):
+def test_logfire_push_no_api_key_exits_nonzero_naming_set_logfire_write_key(runner, store, db_path):
     # No stub installed: with no key configured, `push_dataset` must fail before any
     # network-facing import or call, exactly as `test_logfire_io.py` pins directly.
     result = _invoke(runner, db_path, "logfire", "push", "cases")
