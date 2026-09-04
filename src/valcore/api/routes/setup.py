@@ -95,8 +95,8 @@ _TOKEN_EXPLANATION = (
 _READ_EXPLANATION = (
     "An API key for the Logfire project you are sampling from — which may be separate "
     "from the valcore project that receives traces, experiments, and hosted datasets. "
-    "It runs SQL queries and pulls traces into a local dataset. It needs the "
-    "project:read scope."
+    "It runs SQL queries, pulls traces, and fetches hosted datasets into a local dataset. "
+    "It needs the project:read and project:read_datasets scopes."
 )
 _WRITE_EXPLANATION = (
     "An API key for the same valcore Logfire project as the tracing token. It pushes "
@@ -150,7 +150,10 @@ async def _status() -> SetupOut:
                 required=False,
                 label="Logfire read key",
                 command="valcore config set-logfire-read-key",
-                purpose="Queries traces in the Logfire project you are sampling from.",
+                purpose=(
+                    "Queries traces and hosted datasets in the Logfire project you are "
+                    "sampling from."
+                ),
                 explanation=_READ_EXPLANATION,
                 from_env=False,
             ),

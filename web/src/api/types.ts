@@ -384,6 +384,19 @@ export interface DatasetFromLogfire {
   label_schema?: LabelSchema;
 }
 
+export interface HostedDatasetSummary {
+  id: string;
+  name: string;
+  description: string | null;
+  case_count: number | null;
+}
+
+export interface DatasetFromLogfireHosted {
+  source_name: string;
+  name?: string;
+  description?: string;
+}
+
 // What `POST /api/datasets/{id}/logfire/push` returns, mirroring the fields Logfire's
 // DatasetDetail carries. Every field but `id` and `name` is NotRequired upstream, so the
 // endpoint normalises absent ones to null rather than omitting them. There is no URL:

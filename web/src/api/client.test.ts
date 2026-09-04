@@ -442,6 +442,25 @@ describe("seeded generation client helpers", () => {
     expect(JSON.parse(init?.body as string).instructions).toBe("vary the tone");
   });
 
+  it("datasets.listLogfireHosted GETs /api/datasets/logfire-hosted", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse([{ id: "1", name: "qa-set", description: "Q&A", case_count: 12 }]),
+    );
+    await datasets.listLogfireHosted();
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/datasets/logfire-hosted");
+  });
+
+  it("datasets.fromLogfireHosted POSTs to /api/datasets/from-logfire-hosted", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ dataset: { id: "d1" }, row_count: 2 }));
+    await datasets.fromLogfireHosted({ source_name: "qa-set", name: "local-copy" });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/datasets/from-logfire-hosted");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe(JSON.stringify({ source_name: "qa-set", name: "local-copy" }));
+  });
+
   it("evaluators.generate forwards dataset_id and column_notes to /api/evaluators/generate", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")

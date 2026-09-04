@@ -965,6 +965,64 @@ def test_logfire_pull_requires_sql_or_sql_file(runner, db_path):
     assert result.exit_code != 0
 
 
+def test_logfire_list_prints_hosted_dataset_names(runner, db_path, monkeypatch):
+    async def fake_list(*, api_key=None):
+        return [
+            {
+                "id": "11111111-1111-1111-1111-111111111111",
+                "name": "qa-set",
+                "description": "Q&A",
+                "case_count": 12,
+            }
+        ]
+
+    monkeypatch.setattr("valcore.logfire_io.list_hosted_datasets", fake_list)
+    result = _invoke(runner, db_path, "logfire", "list")
+    assert result.exit_code == 0, result.stderr
+    assert "qa-set" in result.output
+    assert "12" in result.output
+
+
+def test_logfire_fetch_creates_local_dataset(runner, db_path, monkeypatch):
+    from valcore.logfire_io import HostedFetch
+
+    async def fake_fetch(id_or_name, *, api_key=None):
+        return HostedFetch(
+            source_name=id_or_name,
+            name="qa-set",
+            columns=["question"],
+            label_schema={"kind": "categorical", "labels": ["yes"]},
+            prepared=[{"data": {"question": "Q1"}, "label": {"value": "yes"}}],
+        )
+
+    monkeypatch.setattr("valcore.logfire_io.fetch_hosted_dataset", fake_fetch)
+    result = _invoke(runner, db_path, "logfire", "fetch", "qa-set")
+    assert result.exit_code == 0, result.stderr
+    assert "qa-set" in result.output
+
+
+def test_logfire_fetch_name_override(runner, db_path, store, monkeypatch):
+    from valcore.logfire_io import HostedFetch
+
+    async def fake_fetch(id_or_name, *, api_key=None):
+        return HostedFetch(
+            source_name=id_or_name,
+            name="qa-set",
+            columns=["question"],
+            label_schema={},
+            prepared=[{"data": {"question": "Q1"}}],
+        )
+
+    monkeypatch.setattr("valcore.logfire_io.fetch_hosted_dataset", fake_fetch)
+    result = _invoke(
+        runner, db_path, "logfire", "fetch", "qa-set", "--name", "local-copy", "--description", "d"
+    )
+    assert result.exit_code == 0, result.stderr
+    created = [ds for ds in store.list_datasets() if ds.name == "local-copy"]
+    assert len(created) == 1
+    assert created[0].description == "d"
+
+
 # -- ./valcore.db startup notice --------------------------------------------
 
 

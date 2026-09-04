@@ -158,7 +158,7 @@ def set_logfire_api_key(key: str) -> None:
 
 
 def set_logfire_read_key(key: str) -> None:
-    """Persist the Logfire read key used to query traces in the source project."""
+    """Persist the Logfire read key used to query traces and hosted datasets in the source project."""
     cfg = load_config()
     cfg.logfire_read_key = key
     save_config(cfg)

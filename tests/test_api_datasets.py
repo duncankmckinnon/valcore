@@ -2157,3 +2157,99 @@ async def test_logfire_pull_provenance_is_null_for_an_uploaded_dataset(
     resp = await client.get(f"/api/datasets/{dataset.id}/logfire-pull")
     assert resp.status_code == 200
     assert resp.json() is None
+
+
+@pytest.mark.anyio
+async def test_list_logfire_hosted_returns_summaries(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_list(*, api_key: str | None = None) -> list[dict]:
+        return [
+            {
+                "id": "11111111-1111-1111-1111-111111111111",
+                "name": "qa-set",
+                "description": "Q&A",
+                "case_count": 12,
+            }
+        ]
+
+    monkeypatch.setattr("valcore.api.routes.datasets.list_hosted_datasets", fake_list)
+    resp = await client.get("/api/datasets/logfire-hosted")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == [
+        {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "name": "qa-set",
+            "description": "Q&A",
+            "case_count": 12,
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_from_logfire_hosted_creates_dataset(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from valcore.logfire_io import HostedFetch
+
+    async def fake_fetch(id_or_name: str, *, api_key: str | None = None) -> HostedFetch:
+        assert id_or_name == "qa-set"
+        return HostedFetch(
+            source_name=id_or_name,
+            name="qa-set",
+            columns=["question"],
+            label_schema={"kind": "categorical", "labels": ["yes"]},
+            prepared=[
+                {"data": {"question": "Q1"}, "label": {"value": "yes"}},
+                {"data": {"question": "Q2"}},
+            ],
+        )
+
+    monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_fetch)
+    resp = await client.post(
+        "/api/datasets/from-logfire-hosted",
+        json={"source_name": "qa-set", "description": "from hosted"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["row_count"] == 2
+    assert body["dataset"]["name"] == "qa-set"
+    assert body["dataset"]["description"] == "from hosted"
+    assert body["dataset"]["columns"] == ["question"]
+    ds_id = body["dataset"]["id"]
+    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
+    assert rows[0]["data"]["question"] == "Q1"
+    assert rows[0]["label"] == {"value": "yes"}
+
+
+@pytest.mark.anyio
+async def test_from_logfire_hosted_name_override(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from valcore.logfire_io import HostedFetch
+
+    async def fake_fetch(id_or_name: str, *, api_key: str | None = None) -> HostedFetch:
+        return HostedFetch(
+            source_name=id_or_name,
+            name="qa-set",
+            columns=["question"],
+            label_schema={},
+            prepared=[{"data": {"question": "Q1"}}],
+        )
+
+    monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_fetch)
+    resp = await client.post(
+        "/api/datasets/from-logfire-hosted",
+        json={"source_name": "qa-set", "name": "local-copy"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["dataset"]["name"] == "local-copy"
+
+
+@pytest.mark.anyio
+async def test_from_logfire_hosted_empty_source_name_is_422(client: httpx.AsyncClient) -> None:
+    resp = await client.post(
+        "/api/datasets/from-logfire-hosted",
+        json={"source_name": "  "},
+    )
+    assert resp.status_code == 422

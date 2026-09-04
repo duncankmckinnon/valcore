@@ -52,10 +52,14 @@ def make_dataset() -> VDataset:
 
 @dataclass
 class _Recorder:
-    """Captures what ``push_dataset`` does to the stubbed ``AsyncLogfireAPIClient``."""
+    """Captures what the datasets client does to the stubbed ``AsyncLogfireAPIClient``."""
 
     calls: list[dict] = field(default_factory=list)
+    list_calls: list[dict] = field(default_factory=list)
+    get_calls: list[dict] = field(default_factory=list)
     detail: dict = field(default_factory=lambda: {"id": uuid.uuid4(), "name": "pushed"})
+    summaries: list[dict] = field(default_factory=list)
+    exported: dict = field(default_factory=lambda: {"name": "stub", "cases": []})
     error: Exception | None = None
     sync_client_constructed: bool = False
     entered: bool = False
@@ -104,6 +108,35 @@ def _install_stub_client(monkeypatch: pytest.MonkeyPatch, recorder: _Recorder) -
             if recorder.error is not None:
                 raise recorder.error
             return recorder.detail
+
+        async def list_datasets(self) -> list[dict]:
+            recorder.list_calls.append({"api_key": self.api_key})
+            if recorder.error is not None:
+                raise recorder.error
+            return recorder.summaries
+
+        async def get_dataset(
+            self,
+            id_or_name: str,
+            input_type: object = None,
+            output_type: object = None,
+            metadata_type: object = None,
+            *,
+            include_cases: bool = True,
+        ) -> dict:
+            recorder.get_calls.append(
+                {
+                    "id_or_name": id_or_name,
+                    "include_cases": include_cases,
+                    "api_key": self.api_key,
+                    "input_type": input_type,
+                }
+            )
+            if recorder.error is not None:
+                raise recorder.error
+            if not include_cases:
+                return recorder.detail
+            return recorder.exported
 
     class StubSyncClient:
         """Stands in for the blocking ``LogfireAPIClient``; must never be constructed."""
@@ -384,3 +417,178 @@ async def test_uses_the_async_client_and_awaits_it(recorder: _Recorder) -> None:
     stub_module = sys.modules["logfire.experimental.api_client"]
     assert inspect.iscoroutinefunction(stub_module.AsyncLogfireAPIClient.push_dataset)
     assert not inspect.iscoroutinefunction(stub_module.LogfireAPIClient.__init__)
+
+
+# --- list / fetch hosted datasets (read key) ------------------------------------
+
+
+def _qa_export() -> dict:
+    """A hosted export whose labels are wrapped the way Logfire's API requires on push."""
+    return {
+        "name": "qa-set",
+        "cases": [
+            {
+                "name": "c1",
+                "inputs": {"question": "Q1"},
+                "expected_output": {"value": "yes"},
+            },
+            {
+                "name": "c2",
+                "inputs": {"question": "Q2"},
+            },
+        ],
+    }
+
+
+@pytest.mark.anyio
+async def test_list_hosted_datasets_missing_read_key_names_command_and_read_datasets_scope(
+    recorder: _Recorder,
+) -> None:
+    from valcore.logfire_io import list_hosted_datasets
+
+    save_config(FileConfig(logfire_write_key="lf-write"))
+    with pytest.raises(ConfigError) as exc:
+        await list_hosted_datasets()
+    message = str(exc.value)
+    assert "valcore config set-logfire-read-key" in message
+    assert "project:read_datasets" in message
+    assert recorder.list_calls == []
+
+
+@pytest.mark.anyio
+async def test_list_hosted_datasets_uses_the_read_key_not_the_write_key(
+    recorder: _Recorder,
+) -> None:
+    from valcore.logfire_io import list_hosted_datasets
+
+    save_config(FileConfig(logfire_read_key="lf-read", logfire_write_key="lf-write"))
+    recorder.summaries = [{"id": uuid.uuid4(), "name": "qa-set"}]
+    await list_hosted_datasets()
+    assert recorder.list_calls[0]["api_key"] == "lf-read"
+
+
+@pytest.mark.anyio
+async def test_list_hosted_datasets_stringifies_ids_and_fills_absent_optional_fields(
+    recorder: _Recorder,
+) -> None:
+    from valcore.logfire_io import list_hosted_datasets
+
+    save_config(FileConfig(logfire_read_key="lf-read"))
+    first_id = uuid.uuid4()
+    recorder.summaries = [
+        {"id": first_id, "name": "qa-set", "description": "Q&A", "case_count": 12},
+        {"id": uuid.uuid4(), "name": "empty"},
+    ]
+
+    result = await list_hosted_datasets()
+
+    assert result[0] == {
+        "id": str(first_id),
+        "name": "qa-set",
+        "description": "Q&A",
+        "case_count": 12,
+    }
+    assert result[1]["name"] == "empty"
+    assert result[1]["description"] is None
+    assert result[1]["case_count"] is None
+
+
+@pytest.mark.anyio
+async def test_fetch_hosted_dataset_missing_read_key_names_command_and_read_datasets_scope(
+    recorder: _Recorder,
+) -> None:
+    from valcore.logfire_io import fetch_hosted_dataset
+
+    with pytest.raises(ConfigError) as exc:
+        await fetch_hosted_dataset("qa-set")
+    message = str(exc.value)
+    assert "valcore config set-logfire-read-key" in message
+    assert "project:read_datasets" in message
+    assert recorder.get_calls == []
+
+
+@pytest.mark.anyio
+async def test_fetch_hosted_dataset_uses_the_read_key_and_requests_cases(
+    recorder: _Recorder,
+) -> None:
+    from valcore.logfire_io import fetch_hosted_dataset
+
+    save_config(FileConfig(logfire_read_key="lf-read", logfire_write_key="lf-write"))
+    recorder.exported = _qa_export()
+    await fetch_hosted_dataset("qa-set")
+    assert recorder.get_calls[0]["api_key"] == "lf-read"
+    assert recorder.get_calls[0]["id_or_name"] == "qa-set"
+    assert recorder.get_calls[0]["include_cases"] is True
+    assert recorder.get_calls[0]["input_type"] is None
+    assert recorder.sync_client_constructed is False
+
+
+@pytest.mark.anyio
+async def test_fetch_hosted_dataset_maps_cases_and_unwraps_hosted_labels(
+    recorder: _Recorder,
+) -> None:
+    from valcore.logfire_io import fetch_hosted_dataset
+
+    save_config(FileConfig(logfire_read_key="lf-read"))
+    recorder.exported = _qa_export()
+
+    result = await fetch_hosted_dataset("qa-set")
+
+    assert result.source_name == "qa-set"
+    assert result.name == "qa-set"
+    assert result.columns == ["question"]
+    assert result.label_schema == {"kind": "categorical", "labels": ["yes"]}
+    assert result.prepared[0]["data"] == {"question": "Q1"}
+    assert result.prepared[0]["label"] == {"value": "yes"}
+    assert result.prepared[1]["data"] == {"question": "Q2"}
+    assert "label" not in result.prepared[1]
+
+
+@pytest.mark.anyio
+async def test_fetch_hosted_dataset_falls_back_to_the_requested_name_when_export_omits_it(
+    recorder: _Recorder,
+) -> None:
+    from valcore.logfire_io import fetch_hosted_dataset
+
+    save_config(FileConfig(logfire_read_key="lf-read"))
+    recorder.exported = {"cases": [{"inputs": {"prompt": "hi"}}]}
+
+    result = await fetch_hosted_dataset("source-name")
+
+    assert result.name == "source-name"
+    assert result.columns == ["prompt"]
+
+
+@pytest.mark.anyio
+async def test_fetch_hosted_dataset_client_exception_surfaces_as_contract_error(
+    recorder: _Recorder,
+) -> None:
+    from valcore.logfire_io import fetch_hosted_dataset
+
+    save_config(FileConfig(logfire_read_key="lf-read"))
+    recorder.error = RuntimeError("dataset not found")
+
+    with pytest.raises(ContractError, match="dataset not found"):
+        await fetch_hosted_dataset("missing")
+
+
+@pytest.mark.anyio
+async def test_list_and_fetch_exit_the_client_on_success_and_failure(
+    recorder: _Recorder,
+) -> None:
+    from valcore.logfire_io import fetch_hosted_dataset, list_hosted_datasets
+
+    save_config(FileConfig(logfire_read_key="lf-read"))
+    recorder.summaries = [{"id": uuid.uuid4(), "name": "qa-set"}]
+    await list_hosted_datasets()
+    assert recorder.entered is True
+    assert recorder.exited is True
+
+    recorder.entered = False
+    recorder.exited = False
+    recorder.error = RuntimeError("boom")
+    with pytest.raises(ContractError):
+        await fetch_hosted_dataset("qa-set")
+    assert recorder.entered is True
+    assert recorder.exited is True
+    assert recorder.exited_with_exc is True

@@ -12,7 +12,7 @@ Syntax only. Concepts, workflow, and gateway setup are in [SKILL.md](SKILL.md).
 - [`valcore export`](#valcore-export-evaluator) — standalone judge script
 - [`valcore config`](#valcore-config) — gateway key and defaults
 - [`valcore skills`](#valcore-skills) — install these skills into agent directories
-- [`valcore logfire`](#valcore-logfire) — pull a dataset from a query; push to hosted store
+- [`valcore logfire`](#valcore-logfire) — pull from a query or hosted dataset; push to hosted store
 - [Not in the CLI](#not-in-the-cli) — seeded generation is API and web only
 - [Configuration](#configuration) — `config.toml` keys, `VALCORE_*` environment variables
 - [Exit codes](#exit-codes)
@@ -95,7 +95,7 @@ Exports an evaluator version as a standalone Python script.
 | `set-key [KEY]` | Store the Pydantic AI gateway key. Prompts hidden if omitted. |
 | `set-logfire-token [TOKEN]` | Store the Logfire tracing token. |
 | `set-logfire-key [KEY]` | Store one Logfire API key as both read and write. |
-| `set-logfire-read-key [KEY]` | Store the Logfire read key (query traces in the source project). |
+| `set-logfire-read-key [KEY]` | Store the Logfire read key (query traces and hosted datasets in the source project). |
 | `set-logfire-write-key [KEY]` | Store the Logfire write key (push datasets to the valcore project). |
 | `set-logfire-explore-url [URL]` | Optional fallback SQL Workbench URL if the read key cannot resolve the project. |
 | `get [--show-key] [--json]` | Show config. The key is masked unless `--show-key`. |
@@ -137,6 +137,8 @@ overwriting one you have edited. `--symlink` always replaces.
 | Subcommand | Purpose |
 |---|---|
 | `pull --sql SQL --name NAME --count N` | Create a local dataset from a Logfire query. Also `--sql-file`, `--seed`, `--min-timestamp`, `--max-timestamp`, `--label-column`, `--label-schema`. |
+| `list` | List hosted datasets in the source project. |
+| `fetch NAME` | Create a local dataset from a hosted dataset. `--name` and `--description` override the local copy. |
 | `push DATASET` | Publish a dataset to Logfire's hosted store. |
 
 ## Not in the CLI
@@ -158,7 +160,7 @@ CLI. There is no command or flag for it here; do not go looking for one. See
 | `concurrency` | Default max concurrent rows. |
 | `db_path` | Default database path. |
 | `logfire_token` | Write token for tracing valcore's own project. |
-| `logfire_read_key` | API key for querying traces in the source-trace project. |
+| `logfire_read_key` | API key for querying traces and hosted datasets in the source-trace project. |
 | `logfire_write_key` | API key for pushing datasets to the valcore project. |
 | `logfire_api_key` | Legacy combined API key; still loaded as both read and write. |
 | `logfire_explore_url` | Fallback SQL Workbench URL if the read key cannot resolve the project. |

@@ -1,18 +1,19 @@
-// Logfire create flow: SQL in, sampled top-level trees out. The workbench and traces
-// view open in a new tab from the read key's project; copy-back is paste into the
-// textarea. Pull needs the Logfire read key, which is set on Settings — this form never
-// asks for a secret.
+// Logfire create flow: SQL in, sampled top-level trees out — or a hosted dataset
+// fetched by name. The workbench and traces view open in a new tab from the read
+// key's project; copy-back is paste into the textarea. Pull and fetch need the
+// Logfire read key, which is set on Settings — this form never asks for a secret.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { datasets } from "../api/client";
-import type { LabelSchema } from "../api/types";
-import { Button, ErrorBanner, Spinner } from "./ui";
+import type { HostedDatasetSummary, LabelSchema } from "../api/types";
+import { Button, ErrorBanner, Select, Spinner } from "./ui";
 import { Tooltip } from "./Tooltip";
 import { FormFooter } from "./FormFooter";
 import { useSetup } from "./useSetup";
 import LabelSchemaEditor from "./LabelSchemaEditor";
 
 type Props = { onCreated: (datasetId: string) => void };
+type Source = "sql" | "hosted";
 
 const DEFAULT_SCHEMA: LabelSchema = {
   kind: "categorical",
@@ -25,6 +26,7 @@ const SET_KEY = "Set the Logfire read key on the Settings page to pull.";
 
 export default function DatasetLogfireForm({ onCreated }: Props) {
   const { status, loading, error: setupError } = useSetup();
+  const [source, setSource] = useState<Source>("sql");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [sql, setSql] = useState("");
@@ -34,6 +36,9 @@ export default function DatasetLogfireForm({ onCreated }: Props) {
   const [maxTimestamp, setMaxTimestamp] = useState("");
   const [labelColumn, setLabelColumn] = useState("");
   const [schema, setSchema] = useState<LabelSchema>(DEFAULT_SCHEMA);
+  const [hosted, setHosted] = useState<HostedDatasetSummary[]>([]);
+  const [hostedName, setHostedName] = useState("");
+  const [hostedLoading, setHostedLoading] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -42,13 +47,55 @@ export default function DatasetLogfireForm({ onCreated }: Props) {
   const exploreUrl = status?.logfire_explore_url ?? null;
   const tracesUrl = status?.logfire_traces_url ?? null;
 
+  useEffect(() => {
+    if (source !== "hosted" || logfireKeySet !== true) return;
+    let cancelled = false;
+    setHostedLoading(true);
+    setError(null);
+    void datasets
+      .listLogfireHosted()
+      .then((items) => {
+        if (!cancelled) setHosted(items);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err);
+      })
+      .finally(() => {
+        if (!cancelled) setHostedLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [source, logfireKeySet]);
+
   const blockers: string[] = [];
   if (!logfireReady) blockers.push("Set the Logfire read key on the Settings page to pull.");
-  if (name.trim() === "") blockers.push("Name the dataset.");
-  if (sql.trim() === "") blockers.push("Write a SQL query, or paste one from the workbench.");
-  if (count < 1) blockers.push("Sample at least one top-level entry.");
-  if (labelColumn.trim() !== "" && (schema.labels?.length ?? 0) === 0 && schema.kind === "categorical") {
-    blockers.push("A label column needs a label schema.");
+  if (source === "sql") {
+    if (name.trim() === "") blockers.push("Name the dataset.");
+    if (sql.trim() === "") blockers.push("Write a SQL query, or paste one from the workbench.");
+    if (count < 1) blockers.push("Sample at least one top-level entry.");
+    if (
+      labelColumn.trim() !== "" &&
+      (schema.labels?.length ?? 0) === 0 &&
+      schema.kind === "categorical"
+    ) {
+      blockers.push("A label column needs a label schema.");
+    }
+  } else {
+    if (hostedName.trim() === "") blockers.push("Choose a hosted dataset.");
+    if (name.trim() === "") blockers.push("Name the dataset.");
+  }
+
+  function selectHosted(next: string) {
+    const previous = hosted.find((item) => item.name === hostedName);
+    const chosen = hosted.find((item) => item.name === next);
+    setHostedName(next);
+    if (chosen === undefined) return;
+    if (name.trim() === "" || name === previous?.name) setName(chosen.name);
+    const previousDescription = previous?.description ?? "";
+    if (description.trim() === "" || description === previousDescription) {
+      setDescription(chosen.description ?? "");
+    }
   }
 
   async function pasteSql() {
@@ -65,6 +112,15 @@ export default function DatasetLogfireForm({ onCreated }: Props) {
     setSubmitting(true);
     setError(null);
     try {
+      if (source === "hosted") {
+        const created = await datasets.fromLogfireHosted({
+          source_name: hostedName,
+          name: name.trim(),
+          description: description.trim(),
+        });
+        onCreated(created.dataset.id);
+        return;
+      }
       const seedValue = seed.trim() === "" ? undefined : Number(seed);
       const created = await datasets.fromLogfire({
         name: name.trim(),
@@ -89,9 +145,31 @@ export default function DatasetLogfireForm({ onCreated }: Props) {
   return (
     <div className="generate-form">
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      <fieldset className="export-format">
+        <legend>Source</legend>
+        <label>
+          <input
+            type="radio"
+            name="logfire-source"
+            checked={source === "sql"}
+            onChange={() => setSource("sql")}
+          />{" "}
+          SQL query
+        </label>
+        <label>
+          <input
+            type="radio"
+            name="logfire-source"
+            checked={source === "hosted"}
+            onChange={() => setSource("hosted")}
+          />{" "}
+          Hosted dataset
+        </label>
+      </fieldset>
       <p className="field-hint">
-        SQL decides which records are pulled. Child spans in the result nest under their
-        parents; then we sample top-level entries at random.
+        {source === "sql"
+          ? "SQL decides which records are pulled. Child spans in the result nest under their parents; then we sample top-level entries at random."
+          : "Fetch an existing hosted dataset from the Logfire project the read key is scoped to."}
       </p>
       <label className="field">
         <span className="field-label">Name</span>
@@ -105,101 +183,134 @@ export default function DatasetLogfireForm({ onCreated }: Props) {
           onChange={(e) => setDescription(e.target.value)}
         />
       </label>
-      <div className="field">
-        <span className="field-label">
-          SQL
-          <Tooltip
-            text="Write the query in Logfire’s SQL Workbench for schema hints, then paste it back here."
-            label="About SQL"
-          />
-        </span>
-        <div className="form-actions" style={{ marginBottom: "0.5rem" }}>
-          {exploreUrl ? (
-            <a
-              className="btn btn-secondary"
-              href={exploreUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Open SQL Workbench
-            </a>
+      {source === "hosted" ? (
+        <label className="field">
+          <span className="field-label">Hosted dataset</span>
+          {hostedLoading ? (
+            <Spinner />
           ) : (
-            <Button variant="secondary" disabled title={SET_KEY}>
-              Open SQL Workbench
-            </Button>
+            <Select
+              aria-label="Hosted dataset name"
+              value={hostedName}
+              onChange={(event) => selectHosted(event.target.value)}
+              options={[
+                {
+                  value: "",
+                  label:
+                    hosted.length === 0 && logfireKeySet
+                      ? "No hosted datasets"
+                      : "Choose…",
+                },
+                ...hosted.map((item) => ({
+                  value: item.name,
+                  label:
+                    item.case_count == null
+                      ? item.name
+                      : `${item.name} (${item.case_count} cases)`,
+                })),
+              ]}
+            />
           )}
-          {tracesUrl ? (
-            <a
-              className="btn btn-secondary"
-              href={tracesUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Open traces
-            </a>
-          ) : null}
-          <Button variant="secondary" onClick={() => void pasteSql()}>
-            Paste
-          </Button>
-        </div>
-        <textarea
-          className="textarea"
-          aria-label="SQL"
-          value={sql}
-          onChange={(e) => setSql(e.target.value)}
-          rows={8}
-          spellCheck={false}
-        />
-      </div>
-      <label className="field">
-        <span className="field-label">Sample size</span>
-        <input
-          className="input"
-          type="number"
-          min={1}
-          value={count}
-          onChange={(e) => setCount(Number(e.target.value))}
-        />
-      </label>
-      <label className="field">
-        <span className="field-label">Seed (optional)</span>
-        <input
-          className="input"
-          value={seed}
-          onChange={(e) => setSeed(e.target.value)}
-          placeholder="generated if omitted"
-        />
-      </label>
-      <label className="field">
-        <span className="field-label">Min timestamp (optional, ISO-8601)</span>
-        <input
-          className="input"
-          value={minTimestamp}
-          onChange={(e) => setMinTimestamp(e.target.value)}
-          placeholder="defaults to 24 hours ago"
-        />
-      </label>
-      <label className="field">
-        <span className="field-label">Max timestamp (optional, ISO-8601)</span>
-        <input
-          className="input"
-          value={maxTimestamp}
-          onChange={(e) => setMaxTimestamp(e.target.value)}
-        />
-      </label>
-      <label className="field">
-        <span className="field-label">Label column (optional)</span>
-        <input
-          className="input"
-          value={labelColumn}
-          onChange={(e) => setLabelColumn(e.target.value)}
-          placeholder="SQL column to use as the label"
-        />
-      </label>
-      {labelColumn.trim() !== "" && <LabelSchemaEditor value={schema} onChange={setSchema} />}
+        </label>
+      ) : (
+        <>
+          <div className="field">
+            <span className="field-label">
+              SQL
+              <Tooltip
+                text="Write the query in Logfire’s SQL Workbench for schema hints, then paste it back here."
+                label="About SQL"
+              />
+            </span>
+            <div className="form-actions" style={{ marginBottom: "0.5rem" }}>
+              {exploreUrl ? (
+                <a
+                  className="btn btn-secondary"
+                  href={exploreUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open SQL Workbench
+                </a>
+              ) : (
+                <Button variant="secondary" disabled title={SET_KEY}>
+                  Open SQL Workbench
+                </Button>
+              )}
+              {tracesUrl ? (
+                <a
+                  className="btn btn-secondary"
+                  href={tracesUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open traces
+                </a>
+              ) : null}
+              <Button variant="secondary" onClick={() => void pasteSql()}>
+                Paste
+              </Button>
+            </div>
+            <textarea
+              className="textarea"
+              aria-label="SQL"
+              value={sql}
+              onChange={(e) => setSql(e.target.value)}
+              rows={8}
+              spellCheck={false}
+            />
+          </div>
+          <label className="field">
+            <span className="field-label">Sample size</span>
+            <input
+              className="input"
+              type="number"
+              min={1}
+              value={count}
+              onChange={(e) => setCount(Number(e.target.value))}
+            />
+          </label>
+          <label className="field">
+            <span className="field-label">Seed (optional)</span>
+            <input
+              className="input"
+              value={seed}
+              onChange={(e) => setSeed(e.target.value)}
+              placeholder="generated if omitted"
+            />
+          </label>
+          <label className="field">
+            <span className="field-label">Min timestamp (optional, ISO-8601)</span>
+            <input
+              className="input"
+              value={minTimestamp}
+              onChange={(e) => setMinTimestamp(e.target.value)}
+              placeholder="defaults to 24 hours ago"
+            />
+          </label>
+          <label className="field">
+            <span className="field-label">Max timestamp (optional, ISO-8601)</span>
+            <input
+              className="input"
+              value={maxTimestamp}
+              onChange={(e) => setMaxTimestamp(e.target.value)}
+            />
+          </label>
+          <label className="field">
+            <span className="field-label">Label column (optional)</span>
+            <input
+              className="input"
+              value={labelColumn}
+              onChange={(e) => setLabelColumn(e.target.value)}
+              placeholder="SQL column to use as the label"
+            />
+          </label>
+          {labelColumn.trim() !== "" && <LabelSchemaEditor value={schema} onChange={setSchema} />}
+        </>
+      )}
       <FormFooter blockers={blockers}>
         <Button onClick={() => void submit()} disabled={submitting || blockers.length > 0}>
-          {submitting ? <Spinner /> : "Pull dataset"}
+          {submitting ? <Spinner /> : source === "hosted" ? "Fetch dataset" : "Pull dataset"}
         </Button>
       </FormFooter>
     </div>

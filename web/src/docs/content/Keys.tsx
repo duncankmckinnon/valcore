@@ -26,8 +26,8 @@ export function Keys(): JSX.Element {
             gateway, and run traces to your valcore Logfire project.
           </li>
           <li>
-            <strong>Logfire read key</strong> — optional. Queries traces in the Logfire project
-            you are sampling from.
+            <strong>Logfire read key</strong> — optional. Queries traces and hosted datasets in
+            the Logfire project you are sampling from.
           </li>
           <li>
             <strong>Logfire write key</strong> — optional. Pushes datasets to your valcore
@@ -107,13 +107,14 @@ export function Keys(): JSX.Element {
 
       <DocSection title="Read key: the project you sample from">
         <p>
-          The read key queries traces in the Logfire project those traces already live in —
-          often a different project from valcore&apos;s own. It needs the{" "}
-          <code>project:read</code> scope. Pull, SQL Workbench, and the live traces link all
-          use this key.
+          The read key queries traces and hosted datasets in the Logfire project they already
+          live in — often a different project from valcore&apos;s own. It needs{" "}
+          <code>project:read</code> (SQL, Workbench, live traces) and{" "}
+          <code>project:read_datasets</code> (list and fetch hosted datasets).
         </p>
         <CodeBlock>valcore config set-logfire-read-key</CodeBlock>
         <CodeBlock>valcore logfire pull --sql &quot;SELECT span_id FROM records LIMIT 100&quot; --name traces --count 20</CodeBlock>
+        <CodeBlock>valcore logfire fetch qa-set</CodeBlock>
         <p>
           valcore looks the project up from the read key and uses it to open SQL Workbench and
           the live traces view. A stored Explore URL is only needed if that lookup fails:

@@ -16,7 +16,7 @@ from valcore.config_io import EvalPackage
 from valcore.datagen import generate_rows
 from valcore.errors import ContractError
 from valcore.export import render_dataset_module, render_judge_module
-from valcore.logfire_io import push_dataset
+from valcore.logfire_io import fetch_hosted_dataset, list_hosted_datasets, push_dataset
 from valcore.logfire_pull import pull_records
 from valcore.models import LabelSchema, LabelSource
 from valcore.schema_migration import label_matches_schema
@@ -114,6 +114,23 @@ class LogfirePullRequest(BaseModel):
     max_timestamp: datetime | None = None
     label_column: str | None = None
     label_schema: LabelSchema | None = None
+
+
+class LogfireHostedFetchRequest(BaseModel):
+    """Request body to import a hosted Logfire dataset into the local store."""
+
+    source_name: str
+    name: str | None = None
+    description: str = ""
+
+
+class HostedDatasetSummaryOut(BaseModel):
+    """One hosted dataset as listed from the source Logfire project."""
+
+    id: str
+    name: str
+    description: str | None = None
+    case_count: int | None = None
 
 
 class LogfirePullOut(BaseModel):
@@ -306,6 +323,13 @@ async def create_dataset(body: DatasetCreate, store: StoreDep) -> DatasetOut:
         label_schema=body.label_schema.model_dump(mode="json"),
     )
     return DatasetOut.model_validate(dataset)
+
+
+@router.get("/logfire-hosted")
+async def list_logfire_hosted() -> list[HostedDatasetSummaryOut]:
+    """List hosted datasets in the Logfire project the read key is scoped to."""
+    summaries = await list_hosted_datasets()
+    return [HostedDatasetSummaryOut.model_validate(item) for item in summaries]
 
 
 @router.get("/{id}")
@@ -606,6 +630,27 @@ async def create_dataset_from_logfire(
         max_timestamp=result.max_timestamp,
         label_column=result.label_column,
     )
+    return DatasetCreatedOut(dataset=DatasetOut.model_validate(dataset), row_count=len(rows))
+
+
+@router.post("/from-logfire-hosted")
+async def create_dataset_from_logfire_hosted(
+    body: LogfireHostedFetchRequest, store: StoreDep
+) -> DatasetCreatedOut:
+    """Create a local dataset by fetching a hosted dataset from the source Logfire project."""
+    source_name = body.source_name.strip()
+    if not source_name:
+        raise ContractError("source_name must not be empty.")
+
+    result = await fetch_hosted_dataset(source_name)
+    local_name = (body.name or "").strip() or result.name
+    dataset = store.create_dataset(
+        name=local_name,
+        description=body.description,
+        columns=result.columns,
+        label_schema=result.label_schema,
+    )
+    rows = store.add_prepared_rows(dataset.id, result.prepared)
     return DatasetCreatedOut(dataset=DatasetOut.model_validate(dataset), row_count=len(rows))
 
 

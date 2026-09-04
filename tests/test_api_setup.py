@@ -107,9 +107,12 @@ async def test_logfire_read_key_metadata_matches_the_documented_contract() -> No
     assert entry["required"] is False
     assert entry["label"] == "Logfire read key"
     assert entry["command"] == "valcore config set-logfire-read-key"
-    assert entry["purpose"] == "Queries traces in the Logfire project you are sampling from."
+    assert entry["purpose"] == (
+        "Queries traces and hosted datasets in the Logfire project you are sampling from."
+    )
     assert entry["from_env"] is False
     assert "project:read" in entry["explanation"]
+    assert "project:read_datasets" in entry["explanation"]
     assert "sampling from" in entry["explanation"]
     assert "valcore" in entry["explanation"].lower()
 

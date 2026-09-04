@@ -12,8 +12,8 @@ export function Datasets(): JSX.Element {
           Upload a CSV when you already have data. Create a blank dataset and author rows by
           hand when you are working from a handful of known cases. Generate one from a
           description when you need coverage you do not have yet. Pull from Logfire when the
-          examples already exist as traces: write SQL, nest any child spans the query returned,
-          and sample top-level entries.
+          examples already exist as traces or as a hosted dataset: write SQL and sample
+          top-level trees, or fetch a named hosted dataset from the source project.
         </p>
         <p>
           Generation is a starting point, not an answer: a generated dataset is an editable draft
