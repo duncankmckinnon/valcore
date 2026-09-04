@@ -268,7 +268,7 @@ async def test_query_records_missing_api_key_names_command_and_project_read(
 ) -> None:
     with pytest.raises(ConfigError) as exc:
         await query_records("SELECT 1")
-    assert "valcore config set-logfire-key" in str(exc.value)
+    assert "valcore config set-logfire-read-key" in str(exc.value)
     assert "project:read" in str(exc.value)
     assert query_recorder.calls == []
 

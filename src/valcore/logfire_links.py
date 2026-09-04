@@ -1,9 +1,10 @@
-"""Logfire UI URLs for the project a read key is scoped to.
+"""Logfire UI URLs for the project an API key is scoped to.
 
-A project-scoped read token (or API key used as one) identifies a single organization and
+A project-scoped token (or API key used as one) identifies a single organization and
 project via ``GET /v1/read-token-info``. Combined with the region encoded in the token, that
 is enough to open SQL Workbench, the live traces view, the datasets list, and one dataset's
-cases page. Lookup failures are silent: callers treat ``None`` as "no link".
+cases page. Callers pass the read key for Workbench/traces and the write key for hosted
+datasets. Lookup failures are silent: callers treat ``None`` as "no link".
 """
 
 from __future__ import annotations

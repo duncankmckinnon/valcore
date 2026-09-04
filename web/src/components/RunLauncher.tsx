@@ -187,8 +187,9 @@ export default function RunLauncher({ onStarted }: Props) {
       </label>
       {experiment && (
         <span className="muted">
-          Runs through pydantic-evals so it appears in Logfire&apos;s experiments view. Cannot
-          be cancelled once started, and re-running single rows is unavailable.
+          Runs through pydantic-evals so it appears in Logfire&apos;s experiments view on
+          the valcore project. Cannot be cancelled once started, and re-running single rows
+          is unavailable.
         </span>
       )}
 

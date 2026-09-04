@@ -37,10 +37,7 @@ export default function DatasetLogfireForm({ onCreated }: Props) {
   const [error, setError] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const logfireKeySet = status?.keys.some(
-    (key) =>
-      (key.name === "logfire_read_key" || key.name === "logfire_write_key") && key.set,
-  );
+  const logfireKeySet = status?.keys.some((key) => key.name === "logfire_read_key" && key.set);
   const logfireReady = loading || setupError !== null || logfireKeySet !== false;
   const exploreUrl = status?.logfire_explore_url ?? null;
   const tracesUrl = status?.logfire_traces_url ?? null;

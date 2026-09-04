@@ -25,6 +25,7 @@ from valcore.config import (
     logfire_write_key_present,
     migrate_legacy_logfire_api_key,
     resolve_logfire_read_key,
+    resolve_logfire_write_key,
     save_config,
     set_key,
     set_logfire_read_key,
@@ -56,8 +57,9 @@ class SetupOut(BaseModel):
     """The full setup status: one entry per documented configuration key.
 
     ``logfire_explore_url``, ``logfire_traces_url``, and ``logfire_datasets_url`` are not
-    secrets. They default to pages derived from the read key's project; a stored Explore
-    URL is only used when lookup fails.
+    secrets. Workbench and traces URLs come from the read key's project; hosted-dataset
+    URLs come from the write key's (valcore) project. A stored Explore URL is only used
+    when read-key lookup fails.
     """
 
     keys: list[KeyStatus]
@@ -84,29 +86,39 @@ _GATEWAY_EXPLANATION = (
 )
 _TOKEN_EXPLANATION = (
     "A project write token for the Logfire project that should receive valcore's own "
-    "telemetry. With it configured, FastAPI requests, pydantic-ai agent activity, and "
-    "each valcore.run / valcore.score_row span are sent there. It cannot query traces "
-    "or push datasets — those use the read and write keys, which may target a "
-    "different project. Create it from that project's settings."
+    "telemetry, including experiment runs. With it configured, FastAPI requests, "
+    "pydantic-ai agent activity, and each valcore.run / valcore.score_row span are "
+    "sent there. It cannot query traces or push datasets. Query uses the read key "
+    "(a different project you sample from). Dataset push uses the write key — an API "
+    "key for this same valcore project. Create the token from that project's settings."
 )
 _READ_EXPLANATION = (
-    "An API key for the Logfire project you operate on — which may be separate from "
-    "the project that receives valcore's traces. It runs SQL queries and pulls traces "
-    "into a local dataset. It needs the project:read scope. If the same key also has "
-    "project:write_datasets, you can use it as the write key too."
+    "An API key for the Logfire project you are sampling from — which may be separate "
+    "from the valcore project that receives traces, experiments, and hosted datasets. "
+    "It runs SQL queries and pulls traces into a local dataset. It needs the "
+    "project:read scope."
 )
 _WRITE_EXPLANATION = (
-    "An API key for pushing datasets to Logfire's hosted store in the project you "
-    "operate on. It needs the project:read_datasets and project:write_datasets scopes. "
-    "Paste the same value as the read key when one API key carries query, read, and "
-    "dataset-write permissions."
+    "An API key for the same valcore Logfire project as the tracing token. It pushes "
+    "datasets to that project's hosted store so they sit next to experiment runs. It "
+    "needs the project:read_datasets and project:write_datasets scopes. Issue it from "
+    "the valcore project's settings. Paste the same value as the read key only when "
+    "you sample traces from this same project."
 )
 
 
 async def _status() -> SetupOut:
     """Build the current setup payload from the on-disk config and environment."""
     cfg = load_config()
-    derived = await logfire_links.resolve_logfire_links(resolve_logfire_read_key(cfg))
+    read_key = resolve_logfire_read_key(cfg)
+    write_key = resolve_logfire_write_key(cfg)
+    read_links = await logfire_links.resolve_logfire_links(read_key)
+    if write_key is None:
+        write_links = None
+    elif write_key == read_key:
+        write_links = read_links
+    else:
+        write_links = await logfire_links.resolve_logfire_links(write_key)
     return SetupOut(
         keys=[
             KeyStatus(
@@ -148,14 +160,15 @@ async def _status() -> SetupOut:
                 required=False,
                 label="Logfire write key",
                 command="valcore config set-logfire-write-key",
-                purpose="Pushes datasets to the Logfire project you operate on.",
+                purpose="Pushes datasets to your valcore Logfire project.",
                 explanation=_WRITE_EXPLANATION,
                 from_env=False,
             ),
         ],
-        logfire_explore_url=(derived.explore_url if derived else None) or cfg.logfire_explore_url,
-        logfire_traces_url=derived.traces_url if derived else None,
-        logfire_datasets_url=derived.datasets_url if derived else None,
+        logfire_explore_url=(read_links.explore_url if read_links else None)
+        or cfg.logfire_explore_url,
+        logfire_traces_url=read_links.traces_url if read_links else None,
+        logfire_datasets_url=write_links.datasets_url if write_links else None,
     )
 
 

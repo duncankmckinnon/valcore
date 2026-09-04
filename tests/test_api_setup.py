@@ -110,7 +110,8 @@ async def test_logfire_read_key_metadata_matches_the_documented_contract() -> No
     assert entry["purpose"] == "Queries traces in the Logfire project you are sampling from."
     assert entry["from_env"] is False
     assert "project:read" in entry["explanation"]
-    assert "operate on" in entry["explanation"]
+    assert "sampling from" in entry["explanation"]
+    assert "valcore" in entry["explanation"].lower()
 
 
 @pytest.mark.anyio
@@ -120,10 +121,10 @@ async def test_logfire_write_key_metadata_matches_the_documented_contract() -> N
     assert entry["required"] is False
     assert entry["label"] == "Logfire write key"
     assert entry["command"] == "valcore config set-logfire-write-key"
-    assert entry["purpose"] == "Pushes datasets to the Logfire project you operate on."
+    assert entry["purpose"] == "Pushes datasets to your valcore Logfire project."
     assert entry["from_env"] is False
     assert "project:write_datasets" in entry["explanation"]
-    assert "same value" in entry["explanation"]
+    assert "valcore" in entry["explanation"].lower()
 
 
 # -- Effective presence: gateway_api_key (env + file, four cases) --------------
@@ -243,10 +244,15 @@ async def test_logfire_read_key_ignores_a_same_named_env_var(
 # -- SQL Workbench URL (not a secret; returned as the value) -------------------
 
 
-_DERIVED = LogfireLinks(
+_DERIVED_SOURCE = LogfireLinks(
     explore_url="https://logfire-us.pydantic.dev/duncan/agent-tracing/explore",
     traces_url="https://logfire-us.pydantic.dev/duncan/agent-tracing?last=%2230m%22",
     datasets_url="https://logfire-us.pydantic.dev/duncan/agent-tracing/evals",
+)
+_DERIVED_VALCORE = LogfireLinks(
+    explore_url="https://logfire-us.pydantic.dev/duncan/valcore/explore",
+    traces_url="https://logfire-us.pydantic.dev/duncan/valcore?last=%2230m%22",
+    datasets_url="https://logfire-us.pydantic.dev/duncan/valcore/evals",
 )
 
 
@@ -278,19 +284,41 @@ async def test_setup_prefers_derived_project_links_over_a_stored_explore_url(
     save_config(
         FileConfig(
             logfire_read_key="lf-read",
+            logfire_write_key="lf-write",
             logfire_explore_url="https://logfire-us.pydantic.dev/other/project/explore",
         )
     )
 
-    async def _derived(_key: str | None = None) -> LogfireLinks:
-        assert _key == "lf-read"
-        return _DERIVED
+    async def _derived(key: str | None = None) -> LogfireLinks:
+        if key == "lf-read":
+            return _DERIVED_SOURCE
+        if key == "lf-write":
+            return _DERIVED_VALCORE
+        raise AssertionError(f"unexpected key {key!r}")
 
     monkeypatch.setattr("valcore.logfire_links.resolve_logfire_links", _derived)
     body = await _get_setup(create_app())
-    assert body["logfire_explore_url"] == _DERIVED.explore_url
-    assert body["logfire_traces_url"] == _DERIVED.traces_url
-    assert body["logfire_datasets_url"] == _DERIVED.datasets_url
+    assert body["logfire_explore_url"] == _DERIVED_SOURCE.explore_url
+    assert body["logfire_traces_url"] == _DERIVED_SOURCE.traces_url
+    assert body["logfire_datasets_url"] == _DERIVED_VALCORE.datasets_url
+
+
+@pytest.mark.anyio
+async def test_setup_does_not_take_datasets_url_from_the_read_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hosted datasets live on the valcore project; a read-only config must not link there."""
+    save_config(FileConfig(logfire_read_key="lf-read"))
+
+    async def _derived(key: str | None = None) -> LogfireLinks:
+        assert key == "lf-read"
+        return _DERIVED_SOURCE
+
+    monkeypatch.setattr("valcore.logfire_links.resolve_logfire_links", _derived)
+    body = await _get_setup(create_app())
+    assert body["logfire_explore_url"] == _DERIVED_SOURCE.explore_url
+    assert body["logfire_traces_url"] == _DERIVED_SOURCE.traces_url
+    assert body["logfire_datasets_url"] is None
 
 
 @pytest.mark.anyio

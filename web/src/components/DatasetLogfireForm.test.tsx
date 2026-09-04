@@ -165,4 +165,25 @@ describe("DatasetLogfireForm", () => {
     expect(screen.getByRole("button", { name: "Pull dataset" })).toBeDisabled();
     expect(screen.getByText(/Settings page/)).toBeInTheDocument();
   });
+
+  it("does not treat a write key as enough to pull", async () => {
+    mockSetup({ logfireKey: false });
+    const status = makeStatus({ logfireKey: false });
+    const write = status.keys.find((key) => key.name === "logfire_write_key");
+    if (write) write.set = true;
+    useSetupMock.mockReturnValue({
+      status,
+      gatewayReady: true,
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    const user = userEvent.setup();
+    render(<DatasetLogfireForm onCreated={vi.fn()} />);
+    await user.type(screen.getByLabelText("Name"), "traces");
+    await user.type(screen.getByLabelText("SQL"), "SELECT span_id FROM records");
+
+    expect(screen.getByRole("button", { name: "Pull dataset" })).toBeDisabled();
+    expect(screen.getByText(/Settings page/)).toBeInTheDocument();
+  });
 });

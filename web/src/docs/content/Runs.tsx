@@ -61,7 +61,8 @@ export function Runs(): JSX.Element {
         <p>
           <code>valcore run</code> uses valcore&apos;s own runner. <code>valcore experiment</code>{" "}
           scores the same pairing through <code>pydantic_evals.Dataset.evaluate</code> instead,
-          which is the path to take when you want results inside the pydantic-evals ecosystem.
+          so the run appears in Logfire&apos;s experiments view on the valcore project. Hosted
+          datasets pushed with the write key land in that same project.
         </p>
         <CodeBlock>valcore experiment my-evaluator my-dataset</CodeBlock>
       </DocSection>

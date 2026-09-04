@@ -138,7 +138,7 @@ async def test_missing_api_key_raises_config_error_naming_command_and_scopes(
     with pytest.raises(ConfigError) as exc:
         await push_dataset(make_dataset(), make_rows())
     message = str(exc.value)
-    assert "valcore config set-logfire-key" in message
+    assert "valcore config set-logfire-write-key" in message
     assert "project:read_datasets" in message
     assert "project:write_datasets" in message
     assert recorder.calls == []

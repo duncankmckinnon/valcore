@@ -84,7 +84,7 @@ function makeSetupStatus(overrides: Partial<Record<SetupKey["name"], boolean>> =
       required: false,
       label: "Logfire write key",
       command: "valcore config set-logfire-write-key",
-      purpose: "Pushes datasets to the Logfire project you operate on.",
+      purpose: "Pushes datasets to your valcore Logfire project.",
       explanation: "Write explanation.",
       from_env: false,
     },

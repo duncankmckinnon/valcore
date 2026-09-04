@@ -7,9 +7,9 @@ module scope — importing this module must not require the ``logfire`` extra.
 
 The upload runs inside an async FastAPI handler, so it uses ``AsyncLogfireAPIClient``: the sync
 client would block the event loop for the whole upload. This module never reads or requires the
-Logfire write token (``LOGFIRE_TOKEN``) — that credential belongs to tracing, not the datasets
-API, which authenticates with a separate API key scoped to ``project:read_datasets`` /
-``project:write_datasets``.
+Logfire write token (``LOGFIRE_TOKEN``) — that credential belongs to tracing. Dataset push
+authenticates with a separate API key for the same valcore project, scoped to
+``project:read_datasets`` / ``project:write_datasets``.
 """
 
 from typing import Literal
@@ -20,7 +20,7 @@ from valcore.models import Dataset as VDataset
 from valcore.models import DatasetRow
 from valcore.spec import dataset_to_evals
 
-_SET_KEY_COMMAND = "valcore config set-logfire-key"
+_SET_KEY_COMMAND = "valcore config set-logfire-write-key"
 _REQUIRED_SCOPES = ("project:read_datasets", "project:write_datasets")
 
 

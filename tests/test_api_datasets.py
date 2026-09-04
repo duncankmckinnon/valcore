@@ -2079,7 +2079,7 @@ async def test_push_dataset_missing_logfire_api_key_is_client_error(
     assert resp.status_code == 422, resp.text
     error = resp.json()["error"]
     assert error["type"] == "ConfigError"
-    assert "valcore config set-logfire-key" in error["message"]
+    assert "valcore config set-logfire-write-key" in error["message"]
 
 
 @pytest.mark.anyio

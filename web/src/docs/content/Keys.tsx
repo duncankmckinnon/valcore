@@ -30,8 +30,8 @@ export function Keys(): JSX.Element {
             you are sampling from.
           </li>
           <li>
-            <strong>Logfire write key</strong> — optional. Pushes datasets to the Logfire
-            project you operate on.
+            <strong>Logfire write key</strong> — optional. Pushes datasets to your valcore
+            Logfire project, next to experiment runs.
           </li>
         </ul>
         <DocNote>
@@ -80,12 +80,12 @@ export function Keys(): JSX.Element {
 
       <DocSection title="Logfire tracing token: valcore's own project">
         <p>
-          With a tracing token configured, FastAPI requests, pydantic-ai agent activity, and
-          each run&apos;s <code>valcore.run</code> / <code>valcore.score_row</code> spans go to
-          the Logfire project that token belongs to — the project that should receive
-          valcore&apos;s own telemetry. On close, the run span records its status and each
-          agreement metric as attributes, so a Logfire query can filter runs by accuracy
-          directly.
+          With a tracing token configured, FastAPI requests, pydantic-ai agent activity,
+          experiment runs, and each run&apos;s <code>valcore.run</code> /{" "}
+          <code>valcore.score_row</code> spans go to the Logfire project that token belongs to —
+          the project that should receive valcore&apos;s own telemetry. On close, the run span
+          records its status and each agreement metric as attributes, so a Logfire query can
+          filter runs by accuracy directly.
         </p>
         <CodeBlock>valcore config set-logfire-token</CodeBlock>
         <p>
@@ -105,34 +105,42 @@ export function Keys(): JSX.Element {
         </DocNote>
       </DocSection>
 
-      <DocSection title="Read and write keys: the project you operate on">
+      <DocSection title="Read key: the project you sample from">
         <p>
-          The read and write keys target the Logfire project you are sampling from or publishing
-          datasets to. That project may be separate from the one that receives valcore&apos;s
-          traces. If one API key has <code>project:read</code>, query access, and{" "}
-          <code>project:write_datasets</code>, paste it once on Settings with “Use the same key
-          for read and write”. Otherwise set them separately.
+          The read key queries traces in the Logfire project those traces already live in —
+          often a different project from valcore&apos;s own. It needs the{" "}
+          <code>project:read</code> scope. Pull, SQL Workbench, and the live traces link all
+          use this key.
         </p>
         <CodeBlock>valcore config set-logfire-read-key</CodeBlock>
-        <CodeBlock>valcore config set-logfire-write-key</CodeBlock>
+        <CodeBlock>valcore logfire pull --sql &quot;SELECT span_id FROM records LIMIT 100&quot; --name traces --count 20</CodeBlock>
         <p>
-          <code>valcore config set-logfire-key</code> still stores one value as both. API keys
-          are issued from your Logfire account settings:
+          valcore looks the project up from the read key and uses it to open SQL Workbench and
+          the live traces view. A stored Explore URL is only needed if that lookup fails:
+        </p>
+        <CodeBlock>valcore config set-logfire-explore-url https://logfire-us.pydantic.dev/org/project/explore</CodeBlock>
+      </DocSection>
+
+      <DocSection title="Write key: hosted datasets on the valcore project">
+        <p>
+          The write key is an API key for the <em>same</em> valcore Logfire project as the
+          tracing token. Dataset push uses it so hosted datasets sit next to experiment runs.
+          It needs <code>project:read_datasets</code> and <code>project:write_datasets</code>.
+          Issue it from that project&apos;s settings — a write token cannot push datasets.
+        </p>
+        <CodeBlock>valcore config set-logfire-write-key</CodeBlock>
+        <CodeBlock>valcore logfire push my-dataset</CodeBlock>
+        <p>
+          “Open in Logfire” on the Datasets page opens this project&apos;s evals list. Paste
+          the same value as the read key only when you sample traces from the valcore project
+          itself; <code>valcore config set-logfire-key</code> still stores one value as both.
+          API keys are issued from your Logfire account settings:
         </p>
         <p>
           <ExternalLink href="https://logfire.pydantic.dev/docs/reference/api/">
             Logfire API reference
           </ExternalLink>
         </p>
-        <CodeBlock>valcore logfire pull --sql &quot;SELECT span_id FROM records LIMIT 100&quot; --name traces --count 20</CodeBlock>
-        <CodeBlock>valcore logfire push my-dataset</CodeBlock>
-        <p>
-          The read key also identifies the Logfire project those operations target. valcore
-          looks that project up from the key and uses it to open SQL Workbench, the live
-          traces view, and the hosted datasets list from the app. A stored Explore URL is
-          only needed if lookup fails:
-        </p>
-        <CodeBlock>valcore config set-logfire-explore-url https://logfire-us.pydantic.dev/org/project/explore</CodeBlock>
       </DocSection>
 
       <DocSection title="Where keys are stored">

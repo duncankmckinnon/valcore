@@ -95,8 +95,8 @@ Exports an evaluator version as a standalone Python script.
 | `set-key [KEY]` | Store the Pydantic AI gateway key. Prompts hidden if omitted. |
 | `set-logfire-token [TOKEN]` | Store the Logfire tracing token. |
 | `set-logfire-key [KEY]` | Store one Logfire API key as both read and write. |
-| `set-logfire-read-key [KEY]` | Store the Logfire read key (query traces). |
-| `set-logfire-write-key [KEY]` | Store the Logfire write key (push datasets). |
+| `set-logfire-read-key [KEY]` | Store the Logfire read key (query traces in the source project). |
+| `set-logfire-write-key [KEY]` | Store the Logfire write key (push datasets to the valcore project). |
 | `set-logfire-explore-url [URL]` | Optional fallback SQL Workbench URL if the read key cannot resolve the project. |
 | `get [--show-key] [--json]` | Show config. The key is masked unless `--show-key`. |
 | `path` | Print the config file path. |
@@ -158,8 +158,8 @@ CLI. There is no command or flag for it here; do not go looking for one. See
 | `concurrency` | Default max concurrent rows. |
 | `db_path` | Default database path. |
 | `logfire_token` | Write token for tracing valcore's own project. |
-| `logfire_read_key` | API key for querying traces in the operated-on project. |
-| `logfire_write_key` | API key for pushing datasets to the operated-on project. |
+| `logfire_read_key` | API key for querying traces in the source-trace project. |
+| `logfire_write_key` | API key for pushing datasets to the valcore project. |
 | `logfire_api_key` | Legacy combined API key; still loaded as both read and write. |
 | `logfire_explore_url` | Fallback SQL Workbench URL if the read key cannot resolve the project. |
 

@@ -596,7 +596,7 @@ def config_set_logfire_key(key: str | None) -> None:
 @config.command("set-logfire-read-key")
 @click.argument("key", required=False)
 def config_set_logfire_read_key(key: str | None) -> None:
-    """Store the Logfire read key (query traces in the operated-on project)."""
+    """Store the Logfire read key (query traces in the source project)."""
     if key is None:
         key = click.prompt("Logfire read key", hide_input=True)
     config_module.set_logfire_read_key(key)
@@ -606,7 +606,7 @@ def config_set_logfire_read_key(key: str | None) -> None:
 @config.command("set-logfire-write-key")
 @click.argument("key", required=False)
 def config_set_logfire_write_key(key: str | None) -> None:
-    """Store the Logfire write key (push datasets to the operated-on project)."""
+    """Store the Logfire write key (push datasets to the valcore project)."""
     if key is None:
         key = click.prompt("Logfire write key", hide_input=True)
     config_module.set_logfire_write_key(key)
