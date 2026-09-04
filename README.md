@@ -2,7 +2,7 @@
   <img
     src="https://raw.githubusercontent.com/duncankmckinnon/valcore/main/docs/img/logo.png"
     alt="valcore"
-    width="420"
+    width="260"
   >
 </p>
 

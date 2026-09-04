@@ -1,23 +1,41 @@
 /* -- Design tokens ---------------------------------------------------------- */
 
-/* Dark-only palette. The accent is a *light* cyan, so anything filled with it takes
-   near-black text (`--accent-text`) — white on cyan fails contrast. There is no light
-   theme and no `prefers-color-scheme` branch by design. */
+/* Dark-only palette, derived from the logo (`docs/img/logo-small.png`). The logo is three
+   saturated brand hues on a navy plate — cyan 184, blue 224, violet 263, plate hsl(222 65% 9%)
+   — so the neutrals below sit on hue ~220 rather than the slate 207 they used to, at a
+   moderated 20-35% saturation: the plate's own 65% is far too loud behind dense tables.
+
+   The accent is a *light* cyan, so anything filled with it takes near-black text
+   (`--accent-text`) — white on cyan fails contrast. There is no light theme and no
+   `prefers-color-scheme` branch by design.
+
+   Contrast floors this palette holds (WCAG, 4.5 body / 3.0 large+UI). Keep them if you
+   retune a value:
+     text on bg 16.2    text on panel 14.6    text-dim on panel 9.7   muted on panel 5.6
+     accent on panel 9.7    danger 5.4    success 8.8    warning 8.8
+     accent-text on accent 11.1 (filled buttons)
+
+   `--accent-2` (violet) and `--accent-3` (blue) complete the logo's triad. Violet reaches
+   only 4.35 on `--panel` — large text and non-text UI only, never body copy. Both are used
+   sparingly: the gradient on the active nav rail and on `.mix-bar-fill`. */
 :root {
-  --bg: #1a2128;
-  --panel: #222c34;
-  --panel-sunk: #1c242b;
-  --border: #35434f;
-  --border-strong: #3f4f5c;
-  --text: #e7edf2;
-  --text-dim: #b9c6d0;
-  --muted: #8c9aa6;
-  --accent: #4dd0e1;
-  --accent-text: #0f171d;
+  --bg: #0d121b;
+  --panel: #181d2a;
+  --panel-sunk: #111622;
+  --border: #30394b;
+  --border-strong: #3f4a5f;
+  --text: #ebeff4;
+  --text-dim: #bcc5d2;
+  --muted: #8b96a7;
+  --accent: #38d7f0;
+  --accent-text: #090e1b;
   --accent-wash: color-mix(in srgb, var(--accent) 13%, transparent);
-  --danger: #e5574d;
-  --success: #4cc38a;
-  --warning: #e0a83c;
+  /* Logo's other two brand hues. Non-text and large-text use only — see the note above. */
+  --accent-2: #9166f5;
+  --accent-3: #3d74f5;
+  --danger: #f0645a;
+  --success: #3fd39b;
+  --warning: #eeb03f;
 
   --text-xs: 11px;
   --text-sm: 12px;
@@ -146,10 +164,33 @@ summary:focus-visible,
   background: var(--panel-sunk);
 }
 
+/* `position: relative` is here, not on `.active`, so the rail's containing block does not
+   change when a link becomes active — otherwise the 2px pseudo-element would be laid out
+   against a different box on the very frame it appears. */
+.nav-link {
+  position: relative;
+}
+
+/* The rail is a pseudo-element rather than the `inset 2px 0 0` box-shadow it replaces:
+   a box-shadow takes a single colour and cannot carry the cyan-to-violet gradient. */
 .nav-link.active {
   color: var(--accent);
   background: var(--accent-wash);
-  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.nav-link.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  /* Only the left corners are rounded. The `inset` box-shadow this replaces followed the
+     link's border-radius for free; a positioned box does not, and squaring all four corners
+     would push the rail past the rounded background it sits on. */
+  border-top-left-radius: var(--radius);
+  border-bottom-left-radius: var(--radius);
+  background: linear-gradient(180deg, var(--accent), var(--accent-2));
 }
 
 .content {
@@ -1054,7 +1095,7 @@ kbd {
 
 .mix-bar-fill {
   height: 100%;
-  background: var(--accent);
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
 }
 
 /* -- Runs ------------------------------------------------------------------- */
