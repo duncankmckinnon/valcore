@@ -2,6 +2,7 @@
 // description, required flag, and — depending on type — enum values or numeric bounds.
 // Fields can be added, removed, and reordered.
 
+import { useEffect, useState } from "react";
 import type { FieldType, OutputField } from "../api/types";
 import { Button, Select } from "./ui";
 
@@ -18,6 +19,53 @@ type OutputFieldsEditorProps = {
   readOnly?: boolean;
   onChange: (fields: OutputField[]) => void;
 };
+
+function parseEnumValues(text: string): string[] {
+  return text
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+}
+
+// The enum-values input keeps the user's raw text so separators typed between values
+// survive; the parsed list is what gets emitted. Reconstructing the value from the parsed
+// list would swallow a trailing comma or space mid-word ("pass, fail" -> "passfail").
+function EnumValuesInput({
+  index,
+  values,
+  readOnly,
+  onChange,
+}: {
+  index: number;
+  values: string[];
+  readOnly: boolean;
+  onChange: (values: string[]) => void;
+}) {
+  const [text, setText] = useState(() => values.join(", "));
+
+  useEffect(() => {
+    if (parseEnumValues(text).join(",") !== values.join(",")) {
+      setText(values.join(", "));
+    }
+    // Resync only when the external value diverges from the current text (a version swap or
+    // an applied refine), never on the round trip of our own edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [values.join(",")]);
+
+  return (
+    <input
+      className="input"
+      aria-label={`Field ${index} enum values`}
+      placeholder="comma,separated,values"
+      value={text}
+      readOnly={readOnly}
+      onChange={(event) => {
+        setText(event.target.value);
+        onChange(parseEnumValues(event.target.value));
+      }}
+    />
+  );
+}
 
 function emptyField(): OutputField {
   return {
@@ -99,20 +147,11 @@ export function OutputFieldsEditor({ fields, readOnly = false, onChange }: Outpu
             required
           </label>
           {field.type === "enum" && (
-            <input
-              className="input"
-              aria-label={`Field ${index} enum values`}
-              placeholder="comma,separated,values"
-              value={(field.enum_values ?? []).join(", ")}
+            <EnumValuesInput
+              index={index}
+              values={field.enum_values ?? []}
               readOnly={readOnly}
-              onChange={(event) =>
-                patch(index, {
-                  enum_values: event.target.value
-                    .split(",")
-                    .map((value) => value.trim())
-                    .filter((value) => value.length > 0),
-                })
-              }
+              onChange={(enum_values) => patch(index, { enum_values })}
             />
           )}
           {(field.type === "int" || field.type === "float") && (
