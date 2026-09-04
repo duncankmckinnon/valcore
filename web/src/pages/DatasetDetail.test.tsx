@@ -350,4 +350,49 @@ describe("DatasetDetail", () => {
     await screen.findByText("header:question");
     expect(screen.queryByRole("link", { name: "Open in Logfire" })).toBeNull();
   });
+
+  it("enables Push to Logfire when the write key is set", async () => {
+    setupGet.mockResolvedValue({
+      ...EMPTY_SETUP,
+      keys: [
+        {
+          name: "logfire_write_key",
+          set: true,
+          required: false,
+          label: "Logfire write key",
+          command: "valcore config set-logfire-write-key",
+          purpose: "push",
+          explanation: "push",
+          from_env: false,
+        },
+      ],
+    });
+    renderDetail();
+
+    const button = await screen.findByRole("button", { name: "Push to Logfire" });
+    expect(button).not.toBeDisabled();
+  });
+
+  it("does not treat a read key as enough to push", async () => {
+    setupGet.mockResolvedValue({
+      ...EMPTY_SETUP,
+      keys: [
+        {
+          name: "logfire_read_key",
+          set: true,
+          required: false,
+          label: "Logfire read key",
+          command: "valcore config set-logfire-read-key",
+          purpose: "pull",
+          explanation: "pull",
+          from_env: false,
+        },
+      ],
+    });
+    renderDetail();
+
+    const button = await screen.findByRole("button", { name: "Push to Logfire" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", "Set the Logfire write key first — see Settings");
+  });
 });

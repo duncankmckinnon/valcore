@@ -20,7 +20,7 @@ from valcore import config
 from valcore.errors import ConfigError, ContractError
 from valcore.models import LabelSource
 
-_SET_KEY_COMMAND = "valcore config set-logfire-key"
+_SET_KEY_COMMAND = "valcore config set-logfire-read-key"
 _CHILDREN = "children"
 _SPAN_ID = "span_id"
 _PARENT_SPAN_ID = "parent_span_id"

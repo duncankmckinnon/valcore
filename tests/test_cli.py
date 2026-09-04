@@ -902,12 +902,12 @@ def test_logfire_push_unresolvable_dataset_exits_1(runner, store, db_path):
     assert "error:" in result.stderr
 
 
-def test_logfire_push_no_api_key_exits_nonzero_naming_set_logfire_key(runner, store, db_path):
+def test_logfire_push_no_api_key_exits_nonzero_naming_set_logfire_write_key(runner, store, db_path):
     # No stub installed: with no key configured, `push_dataset` must fail before any
     # network-facing import or call, exactly as `test_logfire_io.py` pins directly.
     result = _invoke(runner, db_path, "logfire", "push", "cases")
     assert result.exit_code != 0
-    assert "valcore config set-logfire-key" in result.stderr
+    assert "valcore config set-logfire-write-key" in result.stderr
 
 
 def test_config_set_logfire_explore_url_persists(runner, db_path):
@@ -963,6 +963,64 @@ def test_logfire_pull_creates_dataset_from_stubbed_query(runner, db_path, monkey
 def test_logfire_pull_requires_sql_or_sql_file(runner, db_path):
     result = _invoke(runner, db_path, "logfire", "pull", "--name", "x", "--count", "1")
     assert result.exit_code != 0
+
+
+def test_logfire_list_prints_hosted_dataset_names(runner, db_path, monkeypatch):
+    async def fake_list(*, api_key=None):
+        return [
+            {
+                "id": "11111111-1111-1111-1111-111111111111",
+                "name": "qa-set",
+                "description": "Q&A",
+                "case_count": 12,
+            }
+        ]
+
+    monkeypatch.setattr("valcore.logfire_io.list_hosted_datasets", fake_list)
+    result = _invoke(runner, db_path, "logfire", "list")
+    assert result.exit_code == 0, result.stderr
+    assert "qa-set" in result.output
+    assert "12" in result.output
+
+
+def test_logfire_fetch_creates_local_dataset(runner, db_path, monkeypatch):
+    from valcore.logfire_io import HostedFetch
+
+    async def fake_fetch(id_or_name, *, api_key=None):
+        return HostedFetch(
+            source_name=id_or_name,
+            name="qa-set",
+            columns=["question"],
+            label_schema={"kind": "categorical", "labels": ["yes"]},
+            prepared=[{"data": {"question": "Q1"}, "label": {"value": "yes"}}],
+        )
+
+    monkeypatch.setattr("valcore.logfire_io.fetch_hosted_dataset", fake_fetch)
+    result = _invoke(runner, db_path, "logfire", "fetch", "qa-set")
+    assert result.exit_code == 0, result.stderr
+    assert "qa-set" in result.output
+
+
+def test_logfire_fetch_name_override(runner, db_path, store, monkeypatch):
+    from valcore.logfire_io import HostedFetch
+
+    async def fake_fetch(id_or_name, *, api_key=None):
+        return HostedFetch(
+            source_name=id_or_name,
+            name="qa-set",
+            columns=["question"],
+            label_schema={},
+            prepared=[{"data": {"question": "Q1"}}],
+        )
+
+    monkeypatch.setattr("valcore.logfire_io.fetch_hosted_dataset", fake_fetch)
+    result = _invoke(
+        runner, db_path, "logfire", "fetch", "qa-set", "--name", "local-copy", "--description", "d"
+    )
+    assert result.exit_code == 0, result.stderr
+    created = [ds for ds in store.list_datasets() if ds.name == "local-copy"]
+    assert len(created) == 1
+    assert created[0].description == "d"
 
 
 # -- ./valcore.db startup notice --------------------------------------------

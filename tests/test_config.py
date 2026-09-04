@@ -404,9 +404,10 @@ def test_set_logfire_write_key_preserves_other_fields() -> None:
     assert loaded.logfire_read_key == "lf-existing-read"
 
 
-def test_resolve_logfire_read_key_prefers_read_then_legacy_then_write() -> None:
+def test_resolve_logfire_read_key_prefers_read_then_legacy_and_ignores_write() -> None:
+    """The write key targets the valcore project; it must not stand in for query/pull."""
     assert resolve_logfire_read_key(FileConfig()) is None
-    assert resolve_logfire_read_key(FileConfig(logfire_write_key="lf-write")) == "lf-write"
+    assert resolve_logfire_read_key(FileConfig(logfire_write_key="lf-write")) is None
     assert (
         resolve_logfire_read_key(
             FileConfig(logfire_api_key="lf-legacy", logfire_write_key="lf-write")
@@ -425,9 +426,10 @@ def test_resolve_logfire_read_key_prefers_read_then_legacy_then_write() -> None:
     )
 
 
-def test_resolve_logfire_write_key_prefers_write_then_legacy_then_read() -> None:
+def test_resolve_logfire_write_key_prefers_write_then_legacy_and_ignores_read() -> None:
+    """The read key targets the source-trace project; it must not stand in for dataset push."""
     assert resolve_logfire_write_key(FileConfig()) is None
-    assert resolve_logfire_write_key(FileConfig(logfire_read_key="lf-read")) == "lf-read"
+    assert resolve_logfire_write_key(FileConfig(logfire_read_key="lf-read")) is None
     assert (
         resolve_logfire_write_key(
             FileConfig(logfire_api_key="lf-legacy", logfire_read_key="lf-read")

@@ -596,7 +596,7 @@ def config_set_logfire_key(key: str | None) -> None:
 @config.command("set-logfire-read-key")
 @click.argument("key", required=False)
 def config_set_logfire_read_key(key: str | None) -> None:
-    """Store the Logfire read key (query traces in the operated-on project)."""
+    """Store the Logfire read key (query traces and hosted datasets in the source project)."""
     if key is None:
         key = click.prompt("Logfire read key", hide_input=True)
     config_module.set_logfire_read_key(key)
@@ -606,7 +606,7 @@ def config_set_logfire_read_key(key: str | None) -> None:
 @config.command("set-logfire-write-key")
 @click.argument("key", required=False)
 def config_set_logfire_write_key(key: str | None) -> None:
-    """Store the Logfire write key (push datasets to the operated-on project)."""
+    """Store the Logfire write key (push datasets to the valcore project)."""
     if key is None:
         key = click.prompt("Logfire write key", hide_input=True)
     config_module.set_logfire_write_key(key)
@@ -628,7 +628,7 @@ def config_set_logfire_explore_url(url: str | None) -> None:
 
 @cli.group(name="logfire")
 def logfire_group() -> None:
-    """Pull datasets from Logfire queries, or push them to Logfire's hosted store."""
+    """Pull datasets from Logfire queries or hosted datasets, or push them to the hosted store."""
 
 
 @logfire_group.command("push")
@@ -756,6 +756,41 @@ def logfire_pull_cmd(
         {"id": dataset.id, "name": dataset.name, "row_count": len(rows), "seed": result.seed},
         as_json=False,
         columns=["id", "name", "row_count", "seed"],
+    )
+
+
+@logfire_group.command("list")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of a table.")
+def logfire_list(as_json: bool) -> None:
+    """List hosted datasets in the Logfire project the read key is scoped to."""
+    rows = asyncio.run(logfire_io.list_hosted_datasets())
+    emit(rows, as_json, columns=["name", "case_count", "description"])
+
+
+@logfire_group.command("fetch")
+@click.argument("source_name")
+@click.option(
+    "--name",
+    default=None,
+    help="Name for the local dataset (default: the hosted dataset's name).",
+)
+@click.option("--description", default="", help="Description stored on the local dataset.")
+@click.pass_context
+def logfire_fetch(ctx: click.Context, source_name: str, name: str | None, description: str) -> None:
+    """Create a local dataset from a hosted Logfire dataset."""
+    result = asyncio.run(logfire_io.fetch_hosted_dataset(source_name))
+    store = _store(ctx)
+    dataset = store.create_dataset(
+        name=(name or "").strip() or result.name,
+        description=description,
+        columns=result.columns,
+        label_schema=result.label_schema,
+    )
+    rows = store.add_prepared_rows(dataset.id, result.prepared)
+    emit(
+        {"id": dataset.id, "name": dataset.name, "row_count": len(rows)},
+        as_json=False,
+        columns=["id", "name", "row_count"],
     )
 
 

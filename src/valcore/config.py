@@ -158,14 +158,14 @@ def set_logfire_api_key(key: str) -> None:
 
 
 def set_logfire_read_key(key: str) -> None:
-    """Persist the Logfire read key used to query traces in the operated-on project."""
+    """Persist the Logfire read key used to query traces and hosted datasets in the source project."""
     cfg = load_config()
     cfg.logfire_read_key = key
     save_config(cfg)
 
 
 def set_logfire_write_key(key: str) -> None:
-    """Persist the Logfire write key used to push datasets to the operated-on project."""
+    """Persist the Logfire write key used to push datasets to the valcore project."""
     cfg = load_config()
     cfg.logfire_write_key = key
     save_config(cfg)
@@ -252,13 +252,21 @@ def logfire_write_key_present(cfg: FileConfig) -> bool:
 
 
 def resolve_logfire_read_key(cfg: FileConfig) -> str | None:
-    """Key used to query traces: read, then legacy combined, then write."""
-    return cfg.logfire_read_key or cfg.logfire_api_key or cfg.logfire_write_key
+    """Key used to query traces in the source project: read, then legacy combined.
+
+    Does not fall back to the write key: that key is for the valcore project, which
+    is not where sampled traces live.
+    """
+    return cfg.logfire_read_key or cfg.logfire_api_key
 
 
 def resolve_logfire_write_key(cfg: FileConfig) -> str | None:
-    """Key used to push datasets: write, then legacy combined, then read."""
-    return cfg.logfire_write_key or cfg.logfire_api_key or cfg.logfire_read_key
+    """Key used to push datasets to the valcore project: write, then legacy combined.
+
+    Does not fall back to the read key: that key is for the source-trace project, which
+    is not where hosted datasets and experiment runs live.
+    """
+    return cfg.logfire_write_key or cfg.logfire_api_key
 
 
 def migrate_legacy_logfire_api_key(cfg: FileConfig) -> FileConfig:

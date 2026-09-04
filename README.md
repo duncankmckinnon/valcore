@@ -158,9 +158,9 @@ The same values can still be set from the CLI:
 ```bash
 valcore config set-key                  # required: runs and generation
 valcore config set-logfire-token        # optional: traces to your valcore Logfire project
-valcore config set-logfire-read-key     # optional: query traces in the project you operate on
-valcore config set-logfire-write-key    # optional: push datasets to that project
-valcore config set-logfire-key          # optional: one API key stored as both read and write
+valcore config set-logfire-read-key     # optional: query traces and hosted datasets in the project you sample from
+valcore config set-logfire-write-key    # optional: push datasets to your valcore Logfire project
+valcore config set-logfire-key          # optional: one API key stored as both (same project only)
 valcore config set-logfire-explore-url  # optional fallback if the read key cannot resolve the project
 ```
 
@@ -181,13 +181,15 @@ configured at all.
 | `valcore config set-key [KEY]` | Store the gateway API key in the config file. |
 | `valcore config set-logfire-token [TOKEN]` | Store the Logfire tracing token in the config file. |
 | `valcore config set-logfire-key [KEY]` | Store one Logfire API key as both the read and write keys. |
-| `valcore config set-logfire-read-key [KEY]` | Store the Logfire read key (query traces). |
-| `valcore config set-logfire-write-key [KEY]` | Store the Logfire write key (push datasets). |
+| `valcore config set-logfire-read-key [KEY]` | Store the Logfire read key (query traces and hosted datasets in the source project). |
+| `valcore config set-logfire-write-key [KEY]` | Store the Logfire write key (push datasets to the valcore project). |
 | `valcore config set-logfire-explore-url [URL]` | Optional fallback SQL Workbench URL if the read key cannot resolve the project. |
 | `valcore config get` | Show the current config (the key is masked unless `--show-key`). |
 | `valcore config path` | Print the path to the config file. |
 | `valcore config edit` | Open the config file in `$EDITOR`. |
 | `valcore logfire pull` | Create a dataset from a Logfire SQL query (`--sql` or `--sql-file`, `--name`, `--count`). |
+| `valcore logfire list` | List hosted datasets in the source Logfire project. |
+| `valcore logfire fetch <name>` | Create a local dataset from a hosted Logfire dataset. |
 | `valcore logfire push <dataset>` | Push a dataset to Logfire's hosted dataset store. |
 | `valcore skills install` | Install the bundled agent skills (`--claude`, `--copilot`, …). |
 | `valcore skills list` | Show the bundled skills and where each is installed. |
@@ -336,25 +338,30 @@ deliberately does not re-report the calls, which would double-count tokens and c
 
 `valcore experiment <evaluator> <dataset>` runs the same evaluation through
 `pydantic_evals.Dataset.evaluate` instead of `run`'s own engine, so it also appears in
-Logfire's experiments view. It persists a run the same way `run` does, so it shows up on
-the Runs page too. Unlike `run`, it cannot be cancelled, because `Dataset.evaluate` has no
-cancellation.
+Logfire's experiments view on the valcore tracing project. It persists a run the same way
+`run` does, so it shows up on the Runs page too. Unlike `run`, it cannot be cancelled,
+because `Dataset.evaluate` has no cancellation.
 
 `valcore logfire pull --sql '…' --name traces --count 20` runs that SQL against Logfire,
 nests child spans that the query actually returned, samples top-level entries, and stores
 them as a local dataset. Child spans become a JSON `children` column on the parent row.
-The API key needs `project:read` for the query (and the existing dataset scopes to push).
-The Datasets page, a dataset's detail view, and the Logfire create form open the matching
-pages in that project from the read key (SQL Workbench, live traces, hosted datasets).
-A stored Explore URL is only used if that lookup fails:
+The read key needs `project:read` for the query and `project:read_datasets` to list or
+fetch hosted datasets. SQL Workbench and live traces open from that key's project. A
+stored Explore URL is only used if that lookup fails:
 
 ```bash
 valcore config set-logfire-explore-url https://logfire-us.pydantic.dev/org/project/explore
 ```
 
-`valcore logfire push <dataset>` publishes a dataset to Logfire's hosted dataset store.
-It needs a Logfire API key (see [Setup](#setup)) with the `project:read`,
-`project:read_datasets`, and `project:write_datasets` scopes.
+`valcore logfire list` shows hosted datasets in the source project.
+`valcore logfire fetch qa-set` copies one into the local store (optionally `--name` /
+`--description` for the local copy). The Logfire tab in the Datasets UI offers the same
+SQL and hosted sources.
+
+`valcore logfire push <dataset>` publishes a dataset to Logfire's hosted dataset store on
+the valcore project (the same project experiment runs appear in). The Datasets page and a
+dataset's detail view open that project's evals pages from the write key. The write key
+needs `project:read_datasets` and `project:write_datasets`.
 
 ## `~/.valcore`
 

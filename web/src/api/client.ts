@@ -8,6 +8,8 @@ import type {
   DatasetGeneration,
   DatasetLogfirePull,
   DatasetFromLogfire,
+  DatasetFromLogfireHosted,
+  HostedDatasetSummary,
   DatasetRow,
   DatasetStats,
   DatasetUpdate,
@@ -177,6 +179,12 @@ export const datasets = {
     }),
   fromLogfire: (data: DatasetFromLogfire) =>
     api<DatasetCreated>("/api/datasets/from-logfire", { method: "POST", ...jsonBody(data) }),
+  listLogfireHosted: () => api<HostedDatasetSummary[]>("/api/datasets/logfire-hosted"),
+  fromLogfireHosted: (data: DatasetFromLogfireHosted) =>
+    api<DatasetCreated>("/api/datasets/from-logfire-hosted", {
+      method: "POST",
+      ...jsonBody(data),
+    }),
   logfirePull: (id: string) =>
     api<DatasetLogfirePull | null>(`/api/datasets/${id}/logfire-pull`),
   // Null for a dataset that was uploaded or created blank rather than generated.

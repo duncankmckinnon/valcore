@@ -11,7 +11,12 @@ vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
   return {
     ...actual,
-    datasets: { ...actual.datasets, fromLogfire: vi.fn() },
+    datasets: {
+      ...actual.datasets,
+      fromLogfire: vi.fn(),
+      listLogfireHosted: vi.fn(),
+      fromLogfireHosted: vi.fn(),
+    },
   };
 });
 
@@ -21,6 +26,8 @@ vi.mock("./useSetup", async (importOriginal) => {
 });
 
 const fromLogfire = vi.mocked(datasets.fromLogfire);
+const listLogfireHosted = vi.mocked(datasets.listLogfireHosted);
+const fromLogfireHosted = vi.mocked(datasets.fromLogfireHosted);
 const useSetupMock = vi.mocked(useSetup);
 
 function makeStatus(overrides: {
@@ -164,5 +171,62 @@ describe("DatasetLogfireForm", () => {
 
     expect(screen.getByRole("button", { name: "Pull dataset" })).toBeDisabled();
     expect(screen.getByText(/Settings page/)).toBeInTheDocument();
+  });
+
+  it("does not treat a write key as enough to pull", async () => {
+    mockSetup({ logfireKey: false });
+    const status = makeStatus({ logfireKey: false });
+    const write = status.keys.find((key) => key.name === "logfire_write_key");
+    if (write) write.set = true;
+    useSetupMock.mockReturnValue({
+      status,
+      gatewayReady: true,
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    const user = userEvent.setup();
+    render(<DatasetLogfireForm onCreated={vi.fn()} />);
+    await user.type(screen.getByLabelText("Name"), "traces");
+    await user.type(screen.getByLabelText("SQL"), "SELECT span_id FROM records");
+
+    expect(screen.getByRole("button", { name: "Pull dataset" })).toBeDisabled();
+    expect(screen.getByText(/Settings page/)).toBeInTheDocument();
+  });
+
+  it("fetches a hosted dataset without requiring SQL", async () => {
+    mockSetup();
+    listLogfireHosted.mockResolvedValue([
+      { id: "1", name: "qa-set", description: "Q&A", case_count: 12 },
+    ]);
+    fromLogfireHosted.mockResolvedValue(madeCreated());
+    const onCreated = vi.fn();
+    const user = userEvent.setup();
+    render(<DatasetLogfireForm onCreated={onCreated} />);
+
+    await user.click(screen.getByRole("radio", { name: "Hosted dataset" }));
+    await waitFor(() => expect(listLogfireHosted).toHaveBeenCalledOnce());
+    await user.selectOptions(screen.getByLabelText("Hosted dataset name"), "qa-set");
+    await user.click(screen.getByRole("button", { name: "Fetch dataset" }));
+
+    await waitFor(() => expect(fromLogfireHosted).toHaveBeenCalledOnce());
+    expect(fromLogfireHosted).toHaveBeenCalledWith(
+      expect.objectContaining({ source_name: "qa-set", name: "qa-set" }),
+    );
+    expect(fromLogfire).not.toHaveBeenCalled();
+    expect(onCreated).toHaveBeenCalledWith("ds-1");
+  });
+
+  it("blocks hosted fetch until a hosted dataset is selected", async () => {
+    mockSetup();
+    listLogfireHosted.mockResolvedValue([
+      { id: "1", name: "qa-set", description: null, case_count: 12 },
+    ]);
+    const user = userEvent.setup();
+    render(<DatasetLogfireForm onCreated={vi.fn()} />);
+
+    await user.click(screen.getByRole("radio", { name: "Hosted dataset" }));
+    await waitFor(() => expect(listLogfireHosted).toHaveBeenCalledOnce());
+    expect(screen.getByRole("button", { name: "Fetch dataset" })).toBeDisabled();
   });
 });

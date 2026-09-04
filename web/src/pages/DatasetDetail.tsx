@@ -52,13 +52,11 @@ export default function DatasetDetail({ datasetId }: Props) {
   const [pushResult, setPushResult] = useState<LogfirePushResult | null>(null);
   const [pushError, setPushError] = useState<unknown>(null);
 
-  // Pushing needs the Logfire write key (or a read key that can stand in via fallback).
+  // Pushing needs the Logfire write key for the valcore project. The read key
+  // queries a different project and cannot stand in.
   const { status } = useSetup();
   const logfireKeySet =
-    status?.keys.some(
-      (key) =>
-        (key.name === "logfire_write_key" || key.name === "logfire_read_key") && key.set,
-    ) ?? false;
+    status?.keys.some((key) => key.name === "logfire_write_key" && key.set) ?? false;
   const logfireDatasetUrl =
     status?.logfire_datasets_url && dataset
       ? datasetCasesUrl(status.logfire_datasets_url, dataset.name)

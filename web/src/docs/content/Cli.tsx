@@ -64,9 +64,11 @@ export function Cli(): JSX.Element {
           <code>valcore list</code> shows what the workspace holds, as a table or with{" "}
           <code>--json</code>. <code>valcore export</code> and <code>valcore import</code> move
           evaluators and datasets between machines. <code>valcore logfire pull</code> builds a
-          dataset from a Logfire SQL query; <code>valcore logfire push</code> sends a dataset
-          to Logfire&apos;s hosted store. <code>valcore skills</code> installs the bundled
-          agent skills so a coding agent can drive valcore for you.
+          dataset from a Logfire SQL query against the project you sample from;{" "}
+          <code>valcore logfire fetch</code> imports a hosted dataset from that same project;{" "}
+          <code>valcore logfire push</code> sends a dataset to the valcore project&apos;s hosted
+          store. <code>valcore skills</code> installs the bundled agent skills so a coding agent
+          can drive valcore for you.
         </p>
       </DocSection>
 

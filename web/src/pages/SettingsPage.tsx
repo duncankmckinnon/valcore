@@ -191,8 +191,8 @@ export default function SettingsPage(): JSX.Element {
             checked={sameReadWrite}
             onChange={(event) => setSameReadWrite(event.target.checked)}
           />
-          Use the same key for read and write — paste once when one API key has query, read,
-          and dataset-write permissions.
+          Use the same key for read and write — paste once only when you sample traces
+          from the valcore project itself.
         </label>
       )}
       <div className="form-footer">
