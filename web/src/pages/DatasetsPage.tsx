@@ -10,6 +10,7 @@ import { Badge, Button, ErrorBanner, Modal, Spinner, Table } from "../components
 import { PageHeader } from "../components/PageHeader";
 import { EmptyState } from "../components/EmptyState";
 import { DatasetIcon } from "../components/icons";
+import { useSetup } from "../components/useSetup";
 import DatasetBlankForm from "../components/DatasetBlankForm";
 import DatasetGenerateForm from "../components/DatasetGenerateForm";
 import type { GenerateFormInitial } from "../components/DatasetGenerateForm";
@@ -34,6 +35,8 @@ export default function DatasetsPage() {
 
 function DatasetsList() {
   const navigate = useNavigate();
+  const { status } = useSetup();
+  const datasetsUrl = status?.logfire_datasets_url ?? null;
   const [listings, setListings] = useState<Dataset[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [creating, setCreating] = useState(false);
@@ -105,6 +108,16 @@ function DatasetsList() {
         description="Labeled examples an evaluator is scored against — generated, imported from CSV, pulled from Logfire, or derived from an existing evaluator."
         action={
           <div className="form-actions">
+            {datasetsUrl ? (
+              <a
+                className="btn btn-secondary"
+                href={datasetsUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open in Logfire
+              </a>
+            ) : null}
             <Button onClick={openCreate}>New dataset</Button>
           </div>
         }

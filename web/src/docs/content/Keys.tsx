@@ -127,8 +127,10 @@ export function Keys(): JSX.Element {
         <CodeBlock>valcore logfire pull --sql &quot;SELECT span_id FROM records LIMIT 100&quot; --name traces --count 20</CodeBlock>
         <CodeBlock>valcore logfire push my-dataset</CodeBlock>
         <p>
-          To open Logfire&apos;s SQL Workbench from the dataset form, store the Explore URL
-          (it is not a secret):
+          The read key also identifies the Logfire project those operations target. valcore
+          looks that project up from the key and uses it to open SQL Workbench, the live
+          traces view, and the hosted datasets list from the app. A stored Explore URL is
+          only needed if lookup fails:
         </p>
         <CodeBlock>valcore config set-logfire-explore-url https://logfire-us.pydantic.dev/org/project/explore</CodeBlock>
       </DocSection>

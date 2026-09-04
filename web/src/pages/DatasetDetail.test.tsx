@@ -4,8 +4,8 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import DatasetDetail from "./DatasetDetail";
 import EvaluatorsPage from "./EvaluatorsPage";
-import { api, ApiError, datasets, evaluators } from "../api/client";
-import type { Dataset, GeneratedConfig } from "../api/types";
+import { api, ApiError, datasets, evaluators, setup } from "../api/client";
+import type { Dataset, GeneratedConfig, SetupStatus } from "../api/types";
 
 // The settings modal is owned by another task; stub it to report a shape change
 // (a new column list) back through `onSaved` when the user saves.
@@ -67,6 +67,7 @@ vi.mock("../api/client", async (importOriginal) => {
       create: vi.fn(),
       createVersion: vi.fn(),
     },
+    setup: { ...actual.setup, get: vi.fn() },
   };
 });
 
@@ -81,6 +82,14 @@ const createVersionMock = vi.mocked(evaluators.createVersion);
 const apiMock = vi.mocked(api);
 const listMock = vi.mocked(evaluators.list);
 const exportFilesMock = vi.mocked(datasets.exportFiles);
+const setupGet = vi.mocked(setup.get);
+
+const EMPTY_SETUP: SetupStatus = {
+  keys: [],
+  logfire_explore_url: null,
+  logfire_traces_url: null,
+  logfire_datasets_url: null,
+};
 
 function madeDraft(): GeneratedConfig {
   return {
@@ -138,6 +147,7 @@ beforeEach(() => {
   statsMock.mockResolvedValue({ total: 5, labeled: 5, unlabeled: 0, label_distribution: {} });
   generationMock.mockResolvedValue(null);
   logfirePullMock.mockResolvedValue(null);
+  setupGet.mockResolvedValue(EMPTY_SETUP);
 });
 
 afterEach(() => {
@@ -316,5 +326,28 @@ describe("DatasetDetail", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: "Export dataset" })).toBeNull(),
     );
+  });
+
+  it("links Open in Logfire to the hosted dataset's cases page", async () => {
+    getMock.mockResolvedValue({ ...madeDataset(), name: "agent_responses" });
+    setupGet.mockResolvedValue({
+      ...EMPTY_SETUP,
+      logfire_datasets_url: "https://logfire-us.pydantic.dev/duncan/agent-tracing/evals",
+    });
+    renderDetail();
+
+    const link = await screen.findByRole("link", { name: "Open in Logfire" });
+    expect(link).toHaveAttribute(
+      "href",
+      "https://logfire-us.pydantic.dev/duncan/agent-tracing/evals/agent_responses/cases",
+    );
+    expect(link).toHaveAttribute("target", "_blank");
+  });
+
+  it("omits Open in Logfire when the datasets URL is unknown", async () => {
+    renderDetail();
+
+    await screen.findByText("header:question");
+    expect(screen.queryByRole("link", { name: "Open in Logfire" })).toBeNull();
   });
 });

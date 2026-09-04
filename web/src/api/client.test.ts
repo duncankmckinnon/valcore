@@ -611,6 +611,8 @@ describe("setup client helper", () => {
       },
     ],
     logfire_explore_url: null,
+    logfire_traces_url: null,
+    logfire_datasets_url: null,
   };
 
   it("setup.get GETs /api/setup and returns the parsed SetupStatus with all four keys", async () => {

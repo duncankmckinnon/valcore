@@ -55,7 +55,12 @@ describe("App routes", () => {
   });
 
   it("serves Settings at /settings", async () => {
-    setupGet.mockResolvedValue({ keys: [], logfire_explore_url: null });
+    setupGet.mockResolvedValue({
+      keys: [],
+      logfire_explore_url: null,
+      logfire_traces_url: null,
+      logfire_datasets_url: null,
+    });
     renderApp("/settings");
 
     expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Settings");

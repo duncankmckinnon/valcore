@@ -12,6 +12,7 @@ from typing import Literal
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
+from valcore import logfire_links
 from valcore.config import (
     clear_gateway_key,
     clear_logfire_read_key,
@@ -23,6 +24,7 @@ from valcore.config import (
     logfire_token_present,
     logfire_write_key_present,
     migrate_legacy_logfire_api_key,
+    resolve_logfire_read_key,
     save_config,
     set_key,
     set_logfire_read_key,
@@ -53,12 +55,15 @@ class KeyStatus(BaseModel):
 class SetupOut(BaseModel):
     """The full setup status: one entry per documented configuration key.
 
-    ``logfire_explore_url`` is not a secret — it is the SQL Workbench page the dataset
-    form opens — so it is returned as the URL itself (or null) rather than as a key row.
+    ``logfire_explore_url``, ``logfire_traces_url``, and ``logfire_datasets_url`` are not
+    secrets. They default to pages derived from the read key's project; a stored Explore
+    URL is only used when lookup fails.
     """
 
     keys: list[KeyStatus]
     logfire_explore_url: str | None = None
+    logfire_traces_url: str | None = None
+    logfire_datasets_url: str | None = None
 
 
 class SetupKeysIn(BaseModel):
@@ -98,9 +103,10 @@ _WRITE_EXPLANATION = (
 )
 
 
-def _status() -> SetupOut:
+async def _status() -> SetupOut:
     """Build the current setup payload from the on-disk config and environment."""
     cfg = load_config()
+    derived = await logfire_links.resolve_logfire_links(resolve_logfire_read_key(cfg))
     return SetupOut(
         keys=[
             KeyStatus(
@@ -147,14 +153,16 @@ def _status() -> SetupOut:
                 from_env=False,
             ),
         ],
-        logfire_explore_url=cfg.logfire_explore_url,
+        logfire_explore_url=(derived.explore_url if derived else None) or cfg.logfire_explore_url,
+        logfire_traces_url=derived.traces_url if derived else None,
+        logfire_datasets_url=derived.datasets_url if derived else None,
     )
 
 
 @router.get("", response_model=SetupOut)
 async def get_setup() -> SetupOut:
     """Report effective presence for the gateway key and the three Logfire credentials."""
-    return _status()
+    return await _status()
 
 
 def _require_nonblank(name: str, value: str | None) -> str | None:
@@ -212,4 +220,4 @@ async def post_setup(body: SetupKeysIn) -> SetupOut:
         elif name == "logfire_write_key":
             clear_logfire_write_key()
 
-    return _status()
+    return await _status()

@@ -64,6 +64,8 @@ function makeStatus(overrides: Partial<Record<SetupKey["name"], boolean>> = {}):
       from_env: false,
     })),
     logfire_explore_url: null,
+    logfire_traces_url: null,
+    logfire_datasets_url: null,
   };
 }
 

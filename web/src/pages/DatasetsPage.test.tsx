@@ -3,8 +3,8 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import DatasetsPage from "./DatasetsPage";
-import { datasets } from "../api/client";
-import type { Dataset } from "../api/types";
+import { datasets, setup } from "../api/client";
+import type { Dataset, SetupStatus } from "../api/types";
 
 // The four creation paths are owned by other tasks; stub each so it reports a
 // distinct id back through its `onCreated` prop. Blank and Generate hand back a
@@ -35,11 +35,20 @@ vi.mock("../api/client", async (importOriginal) => {
   return {
     ...actual,
     datasets: { ...actual.datasets, list: vi.fn(), stats: vi.fn() },
+    setup: { ...actual.setup, get: vi.fn() },
   };
 });
 
 const listMock = vi.mocked(datasets.list);
 const statsMock = vi.mocked(datasets.stats);
+const setupGet = vi.mocked(setup.get);
+
+const EMPTY_SETUP: SetupStatus = {
+  keys: [],
+  logfire_explore_url: null,
+  logfire_traces_url: null,
+  logfire_datasets_url: null,
+};
 
 // A dataset as it now arrives from `datasets.list()` — carrying the per-dataset
 // `row_count` and `labeled_count` the summary strip and table columns read.
@@ -77,6 +86,7 @@ function renderPage() {
 beforeEach(() => {
   listMock.mockResolvedValue([]);
   statsMock.mockResolvedValue({ total: 0, labeled: 0, unlabeled: 0, label_distribution: {} });
+  setupGet.mockResolvedValue(EMPTY_SETUP);
 });
 
 afterEach(() => {
@@ -266,5 +276,27 @@ describe("DatasetsPage", () => {
 
     expect(screen.getByText("33%", { selector: ".stat-value" })).toBeTruthy();
     expect(screen.queryByText(/33\.\d/)).toBeNull();
+  });
+
+  it("links Open in Logfire to the reference project's evals page when known", async () => {
+    setupGet.mockResolvedValue({
+      ...EMPTY_SETUP,
+      logfire_datasets_url: "https://logfire-us.pydantic.dev/duncan/agent-tracing/evals",
+    });
+    renderPage();
+
+    const link = await screen.findByRole("link", { name: "Open in Logfire" });
+    expect(link).toHaveAttribute(
+      "href",
+      "https://logfire-us.pydantic.dev/duncan/agent-tracing/evals",
+    );
+    expect(link).toHaveAttribute("target", "_blank");
+  });
+
+  it("omits Open in Logfire when the datasets URL is unknown", async () => {
+    renderPage();
+
+    await waitFor(() => expect(listMock).toHaveBeenCalled());
+    expect(screen.queryByRole("link", { name: "Open in Logfire" })).toBeNull();
   });
 });
