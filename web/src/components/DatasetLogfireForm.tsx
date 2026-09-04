@@ -1,6 +1,7 @@
-// Logfire create flow: SQL in, sampled top-level trees out. The workbench opens in a
-// new tab; copy-back is paste into the textarea. Pull needs the Logfire API key, which
-// is set from the CLI — this form never asks for a secret.
+// Logfire create flow: SQL in, sampled top-level trees out. The workbench and traces
+// view open in a new tab from the read key's project; copy-back is paste into the
+// textarea. Pull needs the Logfire read key, which is set on Settings — this form never
+// asks for a secret.
 
 import { useState } from "react";
 import { datasets } from "../api/client";
@@ -20,7 +21,7 @@ const DEFAULT_SCHEMA: LabelSchema = {
   maximum: null,
 };
 const DEFAULT_COUNT = 20;
-const SET_URL = "valcore config set-logfire-explore-url";
+const SET_KEY = "Set the Logfire read key on the Settings page to pull.";
 
 export default function DatasetLogfireForm({ onCreated }: Props) {
   const { status, loading, error: setupError } = useSetup();
@@ -42,6 +43,7 @@ export default function DatasetLogfireForm({ onCreated }: Props) {
   );
   const logfireReady = loading || setupError !== null || logfireKeySet !== false;
   const exploreUrl = status?.logfire_explore_url ?? null;
+  const tracesUrl = status?.logfire_traces_url ?? null;
 
   const blockers: string[] = [];
   if (!logfireReady) blockers.push("Set the Logfire read key on the Settings page to pull.");
@@ -125,10 +127,20 @@ export default function DatasetLogfireForm({ onCreated }: Props) {
               Open SQL Workbench
             </a>
           ) : (
-            <Button variant="secondary" disabled title={`Set the workbench URL first: ${SET_URL}`}>
+            <Button variant="secondary" disabled title={SET_KEY}>
               Open SQL Workbench
             </Button>
           )}
+          {tracesUrl ? (
+            <a
+              className="btn btn-secondary"
+              href={tracesUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Open traces
+            </a>
+          ) : null}
           <Button variant="secondary" onClick={() => void pasteSql()}>
             Paste
           </Button>

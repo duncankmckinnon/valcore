@@ -616,7 +616,7 @@ def config_set_logfire_write_key(key: str | None) -> None:
 @config.command("set-logfire-explore-url")
 @click.argument("url", required=False)
 def config_set_logfire_explore_url(url: str | None) -> None:
-    """Store the Logfire SQL Workbench URL (opened from the dataset form)."""
+    """Store a fallback Logfire SQL Workbench URL if the read key cannot resolve the project."""
     if url is None:
         url = click.prompt("Logfire SQL Workbench URL")
     config_module.set_logfire_explore_url(url)

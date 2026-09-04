@@ -95,7 +95,12 @@ function makeSetupStatus(overrides: Partial<Record<SetupKey["name"], boolean>> =
     "logfire_read_key",
     "logfire_write_key",
   ];
-  return { keys: names.map((name) => ({ ...fixed[name], set: set[name] })), logfire_explore_url: null };
+  return {
+    keys: names.map((name) => ({ ...fixed[name], set: set[name] })),
+    logfire_explore_url: null,
+    logfire_traces_url: null,
+    logfire_datasets_url: null,
+  };
 }
 
 function renderPage() {

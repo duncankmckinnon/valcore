@@ -97,7 +97,7 @@ Exports an evaluator version as a standalone Python script.
 | `set-logfire-key [KEY]` | Store one Logfire API key as both read and write. |
 | `set-logfire-read-key [KEY]` | Store the Logfire read key (query traces). |
 | `set-logfire-write-key [KEY]` | Store the Logfire write key (push datasets). |
-| `set-logfire-explore-url [URL]` | Store the SQL Workbench URL. |
+| `set-logfire-explore-url [URL]` | Optional fallback SQL Workbench URL if the read key cannot resolve the project. |
 | `get [--show-key] [--json]` | Show config. The key is masked unless `--show-key`. |
 | `path` | Print the config file path. |
 | `edit` | Open the config file in `$EDITOR`. |
@@ -161,7 +161,7 @@ CLI. There is no command or flag for it here; do not go looking for one. See
 | `logfire_read_key` | API key for querying traces in the operated-on project. |
 | `logfire_write_key` | API key for pushing datasets to the operated-on project. |
 | `logfire_api_key` | Legacy combined API key; still loaded as both read and write. |
-| `logfire_explore_url` | SQL Workbench URL opened from the dataset form. |
+| `logfire_explore_url` | Fallback SQL Workbench URL if the read key cannot resolve the project. |
 
 ### Environment variables
 

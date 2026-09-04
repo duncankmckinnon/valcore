@@ -49,6 +49,8 @@ function makeStatus(overrides: Partial<Record<SetupKeyName, Partial<SetupKey>>> 
   return {
     keys: NAMES.map((name) => makeKey(name, overrides[name])),
     logfire_explore_url: null,
+    logfire_traces_url: null,
+    logfire_datasets_url: null,
   };
 }
 

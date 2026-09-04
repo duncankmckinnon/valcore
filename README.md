@@ -161,7 +161,7 @@ valcore config set-logfire-token        # optional: traces to your valcore Logfi
 valcore config set-logfire-read-key     # optional: query traces in the project you operate on
 valcore config set-logfire-write-key    # optional: push datasets to that project
 valcore config set-logfire-key          # optional: one API key stored as both read and write
-valcore config set-logfire-explore-url  # optional: SQL Workbench link in the UI
+valcore config set-logfire-explore-url  # optional fallback if the read key cannot resolve the project
 ```
 
 Without the gateway key, generation and runs are unavailable, and the UI shows why. Manual
@@ -183,7 +183,7 @@ configured at all.
 | `valcore config set-logfire-key [KEY]` | Store one Logfire API key as both the read and write keys. |
 | `valcore config set-logfire-read-key [KEY]` | Store the Logfire read key (query traces). |
 | `valcore config set-logfire-write-key [KEY]` | Store the Logfire write key (push datasets). |
-| `valcore config set-logfire-explore-url [URL]` | Store the Logfire SQL Workbench URL. |
+| `valcore config set-logfire-explore-url [URL]` | Optional fallback SQL Workbench URL if the read key cannot resolve the project. |
 | `valcore config get` | Show the current config (the key is masked unless `--show-key`). |
 | `valcore config path` | Print the path to the config file. |
 | `valcore config edit` | Open the config file in `$EDITOR`. |
@@ -344,7 +344,9 @@ cancellation.
 nests child spans that the query actually returned, samples top-level entries, and stores
 them as a local dataset. Child spans become a JSON `children` column on the parent row.
 The API key needs `project:read` for the query (and the existing dataset scopes to push).
-Open Logfire's SQL Workbench from the Datasets form after storing the Explore URL:
+The Datasets page, a dataset's detail view, and the Logfire create form open the matching
+pages in that project from the read key (SQL Workbench, live traces, hosted datasets).
+A stored Explore URL is only used if that lookup fails:
 
 ```bash
 valcore config set-logfire-explore-url https://logfire-us.pydantic.dev/org/project/explore

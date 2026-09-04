@@ -26,6 +26,8 @@ const useSetupMock = vi.mocked(useSetup);
 function makeStatus(overrides: {
   logfireKey?: boolean;
   exploreUrl?: string | null;
+  tracesUrl?: string | null;
+  datasetsUrl?: string | null;
 } = {}): SetupStatus {
   const names: SetupKey["name"][] = [
     "gateway_api_key",
@@ -48,10 +50,19 @@ function makeStatus(overrides: {
       from_env: false,
     })),
     logfire_explore_url: overrides.exploreUrl === undefined ? null : overrides.exploreUrl,
+    logfire_traces_url: overrides.tracesUrl === undefined ? null : overrides.tracesUrl,
+    logfire_datasets_url: overrides.datasetsUrl === undefined ? null : overrides.datasetsUrl,
   };
 }
 
-function mockSetup(overrides: { logfireKey?: boolean; exploreUrl?: string | null } = {}): void {
+function mockSetup(
+  overrides: {
+    logfireKey?: boolean;
+    exploreUrl?: string | null;
+    tracesUrl?: string | null;
+    datasetsUrl?: string | null;
+  } = {},
+): void {
   const result: UseSetupResult = {
     status: makeStatus(overrides),
     gatewayReady: true,
@@ -103,6 +114,27 @@ describe("DatasetLogfireForm", () => {
       "https://logfire-us.pydantic.dev/duncan/agent-tracing/explore",
     );
     expect(link).toHaveAttribute("target", "_blank");
+  });
+
+  it("opens traces as a link when the traces URL is configured", () => {
+    mockSetup({
+      tracesUrl: "https://logfire-us.pydantic.dev/duncan/agent-tracing?last=%2230m%22",
+    });
+    render(<DatasetLogfireForm onCreated={vi.fn()} />);
+
+    const link = screen.getByRole("link", { name: "Open traces" });
+    expect(link).toHaveAttribute(
+      "href",
+      "https://logfire-us.pydantic.dev/duncan/agent-tracing?last=%2230m%22",
+    );
+    expect(link).toHaveAttribute("target", "_blank");
+  });
+
+  it("omits Open traces until the traces URL is set", () => {
+    mockSetup({ tracesUrl: null });
+    render(<DatasetLogfireForm onCreated={vi.fn()} />);
+
+    expect(screen.queryByRole("link", { name: "Open traces" })).toBeNull();
   });
 
   it("submits name, sql, and sample_n to fromLogfire", async () => {

@@ -16,6 +16,7 @@ import type {
 import { Button, ConfirmDialog, ErrorBanner, Spinner } from "../components/ui";
 import { useSetup } from "../components/useSetup";
 import { PageHeader } from "../components/PageHeader";
+import { datasetCasesUrl } from "../logfireLinks";
 import DatasetSettingsModal from "../components/DatasetSettingsModal";
 import { ExportModal } from "../components/ExportModal";
 import EvaluatorFromDataset from "../components/EvaluatorFromDataset";
@@ -58,6 +59,10 @@ export default function DatasetDetail({ datasetId }: Props) {
       (key) =>
         (key.name === "logfire_write_key" || key.name === "logfire_read_key") && key.set,
     ) ?? false;
+  const logfireDatasetUrl =
+    status?.logfire_datasets_url && dataset
+      ? datasetCasesUrl(status.logfire_datasets_url, dataset.name)
+      : null;
 
   const pushToLogfire = () => {
     setPushing(true);
@@ -178,6 +183,16 @@ export default function DatasetDetail({ datasetId }: Props) {
         description={dataset.description || undefined}
         action={
           <div className="form-actions">
+            {logfireDatasetUrl ? (
+              <a
+                className="btn btn-secondary"
+                href={logfireDatasetUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open in Logfire
+              </a>
+            ) : null}
             <Button variant="secondary" onClick={() => setGeneratingRows(true)}>
               Generate more rows
             </Button>

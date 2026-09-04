@@ -348,8 +348,11 @@ export interface SetupKey {
 
 export interface SetupStatus {
   keys: SetupKey[];
-  // Not a secret: the SQL Workbench page the Logfire create form opens. Null when unset.
+  // Not secrets: pages in the Logfire project the read key is scoped to. Null when
+  // the key is unset or lookup failed. A stored Explore URL fills explore only.
   logfire_explore_url: string | null;
+  logfire_traces_url: string | null;
+  logfire_datasets_url: string | null;
 }
 
 export interface SetupKeysIn {
@@ -358,12 +361,6 @@ export interface SetupKeysIn {
   logfire_read_key?: string;
   logfire_write_key?: string;
   clear?: SetupKeyName[];
-}
-
-export interface SetupStatus {
-  keys: SetupKey[];
-  // Not a secret: the SQL Workbench page the Logfire create form opens. Null when unset.
-  logfire_explore_url: string | null;
 }
 
 export interface DatasetLogfirePull {

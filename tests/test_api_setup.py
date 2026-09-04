@@ -15,6 +15,7 @@ import pytest
 from valcore.api.deps import get_store
 from valcore.api.main import create_app
 from valcore.config import FileConfig, save_config
+from valcore.logfire_links import LogfireLinks
 from valcore.store import Store, create_engine, init_db
 
 GATEWAY_ENV = "PYDANTIC_AI_GATEWAY_API_KEY"
@@ -28,6 +29,16 @@ def _no_ambient_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     """Start every test with neither env var set, so presence reflects only what the test sets."""
     monkeypatch.delenv(GATEWAY_ENV, raising=False)
     monkeypatch.delenv(LOGFIRE_TOKEN_ENV, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_logfire_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Do not call Logfire from setup GET unless a test installs its own resolver."""
+
+    async def _none(_key: str | None = None) -> LogfireLinks | None:
+        return None
+
+    monkeypatch.setattr("valcore.logfire_links.resolve_logfire_links", _none)
 
 
 def _client(app) -> httpx.AsyncClient:
@@ -232,6 +243,13 @@ async def test_logfire_read_key_ignores_a_same_named_env_var(
 # -- SQL Workbench URL (not a secret; returned as the value) -------------------
 
 
+_DERIVED = LogfireLinks(
+    explore_url="https://logfire-us.pydantic.dev/duncan/agent-tracing/explore",
+    traces_url="https://logfire-us.pydantic.dev/duncan/agent-tracing?last=%2230m%22",
+    datasets_url="https://logfire-us.pydantic.dev/duncan/agent-tracing/evals",
+)
+
+
 @pytest.mark.anyio
 async def test_setup_returns_explore_url_when_configured() -> None:
     save_config(
@@ -249,6 +267,46 @@ async def test_setup_returns_explore_url_when_configured() -> None:
 async def test_setup_explore_url_is_null_by_default() -> None:
     body = await _get_setup(create_app())
     assert body["logfire_explore_url"] is None
+    assert body["logfire_traces_url"] is None
+    assert body["logfire_datasets_url"] is None
+
+
+@pytest.mark.anyio
+async def test_setup_prefers_derived_project_links_over_a_stored_explore_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    save_config(
+        FileConfig(
+            logfire_read_key="lf-read",
+            logfire_explore_url="https://logfire-us.pydantic.dev/other/project/explore",
+        )
+    )
+
+    async def _derived(_key: str | None = None) -> LogfireLinks:
+        assert _key == "lf-read"
+        return _DERIVED
+
+    monkeypatch.setattr("valcore.logfire_links.resolve_logfire_links", _derived)
+    body = await _get_setup(create_app())
+    assert body["logfire_explore_url"] == _DERIVED.explore_url
+    assert body["logfire_traces_url"] == _DERIVED.traces_url
+    assert body["logfire_datasets_url"] == _DERIVED.datasets_url
+
+
+@pytest.mark.anyio
+async def test_setup_falls_back_to_the_stored_explore_url_when_lookup_fails() -> None:
+    save_config(
+        FileConfig(
+            logfire_read_key="lf-read",
+            logfire_explore_url="https://logfire-us.pydantic.dev/duncan/agent-tracing/explore",
+        )
+    )
+    body = await _get_setup(create_app())
+    assert body["logfire_explore_url"] == (
+        "https://logfire-us.pydantic.dev/duncan/agent-tracing/explore"
+    )
+    assert body["logfire_traces_url"] is None
+    assert body["logfire_datasets_url"] is None
 
 
 # -- No key value ever appears in the response ---------------------------------
