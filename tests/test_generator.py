@@ -387,3 +387,23 @@ async def test_refine_invalid_config_triggers_exactly_one_retry() -> None:
 
     assert counter.calls == 2
     assert result.config.score_field == "verdict"
+
+
+def test_build_generator_agent_resolves_a_local_model() -> None:
+    from valcore.generator import build_generator_agent
+    from valcore.local_cli.bridge_model import CliBridgeModel
+
+    agent = build_generator_agent("local/claude:sonnet")
+
+    assert isinstance(agent.model, CliBridgeModel)
+    assert agent.model.model_name == "sonnet"
+
+
+def test_build_refiner_agent_resolves_a_local_model() -> None:
+    from valcore.generator import build_refiner_agent
+    from valcore.local_cli.bridge_model import CliBridgeModel
+
+    agent = build_refiner_agent("local/codex:gpt-5-codex")
+
+    assert isinstance(agent.model, CliBridgeModel)
+    assert agent.model.model_name == "gpt-5-codex"

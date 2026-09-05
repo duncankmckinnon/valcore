@@ -8,6 +8,7 @@ from pydantic_ai import Agent
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 from valcore.errors import ConfigError, ContractError
+from valcore.local_cli import resolve_model
 from valcore.models import (
     VALID_CAPABILITIES,
     CapabilitySpec,
@@ -91,7 +92,7 @@ def build_generator_agent(model: str | None = None) -> Agent[None, GeneratedConf
         "and tools."
     )
     return Agent(
-        model or get_settings().default_model,
+        resolve_model(model or get_settings().default_model),
         output_type=GeneratedConfig,
         name="evaluator_generator",
         # See build_datagen_agent: the default budget of one output-validation retry turns a
@@ -113,7 +114,7 @@ def build_refiner_agent(model: str | None = None) -> Agent[None, RefinedConfig]:
         f"{_field_rules()}"
     )
     return Agent(
-        model or get_settings().default_model,
+        resolve_model(model or get_settings().default_model),
         output_type=RefinedConfig,
         name="evaluator_refiner",
         # Same reasoning as build_generator_agent.

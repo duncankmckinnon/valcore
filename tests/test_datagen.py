@@ -535,3 +535,13 @@ def test_apportion_sums_to_count_for_a_single_slack_label() -> None:
     counts = _apportion({"pass": 0.99}, 200)
 
     assert counts == {"pass": 200}
+
+
+def test_build_datagen_agent_resolves_a_local_model() -> None:
+    from valcore.datagen import build_datagen_agent
+    from valcore.local_cli.bridge_model import CliBridgeModel
+
+    agent = build_datagen_agent("local/cursor:composer")
+
+    assert isinstance(agent.model, CliBridgeModel)
+    assert agent.model.model_name == "composer"

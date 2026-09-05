@@ -8,6 +8,7 @@ from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 from valcore import settings
 from valcore.errors import ConfigError, ContractError
+from valcore.local_cli import resolve_model
 from valcore.models import LabelSchema, ScoreKind
 
 # Proportions are authored by hand, so 1/3 + 1/3 + 1/3 must be accepted as summing to 1.
@@ -47,7 +48,7 @@ def build_datagen_agent(model: str | None = None) -> Agent[None, GeneratedDatase
     resolved = model or settings.get_settings().default_model
     settings.validate_model_string(resolved)
     return Agent(
-        resolved,
+        resolve_model(resolved),
         output_type=GeneratedDataset,
         name="datagen_agent",
         # pydantic-ai budgets one output-validation retry by default, so a single malformed
