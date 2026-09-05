@@ -11,6 +11,7 @@ import sys
 from collections.abc import Sequence
 
 from valcore.capabilities import CAPABILITY_REGISTRY
+from valcore.errors import ContractError
 from valcore.models import (
     SCALAR_TYPES,
     Dataset,
@@ -20,6 +21,7 @@ from valcore.models import (
     OutputField,
     parse_output_fields,
 )
+from valcore.settings import is_local_cli_model
 from valcore.tools import TOOL_REGISTRY
 
 _INLINE_CONST_TYPES = (int, float, complex, bool, str, bytes, tuple, frozenset, type(None))
@@ -165,7 +167,21 @@ def _docstring(version: EvaluatorVersion) -> str:
 
 
 def render_script(version: EvaluatorVersion) -> str:
-    """Render an EvaluatorVersion to a standalone, runnable Python script."""
+    """Render an EvaluatorVersion to a standalone, runnable Python script.
+
+    Raises :class:`ContractError` for a ``local/<cli>:<name>`` model. The rendered script is
+    deliberately valcore-free, so it cannot import ``valcore.local_cli`` and has no
+    ``resolve_model`` seam: it would emit ``Agent("local/claude:sonnet")``, which dies with
+    pydantic_ai's ``UserError: Unknown model`` the first time it is run. Refusing here is
+    checked before any other rendering work so the caller gets the real reason.
+    """
+    if is_local_cli_model(version.model):
+        raise ContractError(
+            "Standalone export is not supported for local CLI models (model "
+            f"{version.model!r}); a rendered script has no valcore dependency and so cannot "
+            "reach a local CLI. Export requires a gateway/... model."
+        )
+
     fields = parse_output_fields(version)
 
     imports = _Imports()

@@ -165,3 +165,70 @@ async def test_cli_bridge_model_retries_on_validation_failure() -> None:
 
     # Instructions should be different
     assert first_instructions != second_instructions
+
+
+@pytest.mark.anyio
+async def test_nonzero_exit_error_carries_stdout_as_well_as_stderr() -> None:
+    """A real claude failure puts the human-readable cause on stdout, not stderr.
+
+    Exiting non-zero with `{"is_error": true, "result": "There's an issue with the selected
+    model..."}` on stdout and only a terse code on stderr is exactly what a bad --model
+    produces, so dropping stdout throws away the only usable diagnostic.
+    """
+
+    class FailingAdapter:
+        cli_name = "failing"
+
+        def build_invocation(self, **_kwargs: object) -> list[str]:
+            return [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; sys.stdout.write('the real diagnostic'); "
+                    "sys.stderr.write('terse code'); sys.exit(1)"
+                ),
+            ]
+
+        def parse_output(self, stdout: str) -> tuple[str, RequestUsage]:
+            raise AssertionError("should not be called")
+
+    model = CliBridgeModel(FailingAdapter(), model_name="fake-model")
+    agent = Agent(model, output_type=JudgeOutput, instructions="x")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await agent.run("rate this")
+
+    message = str(excinfo.value)
+    assert "exited with code 1" in message
+    assert "the real diagnostic" in message
+    assert "terse code" in message
+
+
+@pytest.mark.anyio
+async def test_undecodable_stdout_is_replaced_rather_than_raising() -> None:
+    """stdout is decoded with errors='replace', matching the stderr decode beside it.
+
+    A CLI that emits a stray non-UTF-8 byte must not turn into a UnicodeDecodeError that
+    hides whatever else it printed.
+    """
+
+    class BinaryAdapter:
+        cli_name = "binary"
+
+        def build_invocation(self, **_kwargs: object) -> list[str]:
+            return [
+                sys.executable,
+                "-c",
+                'import sys; sys.stdout.buffer.write(b\'\\xff{"verdict": "pass"}\')',
+            ]
+
+        def parse_output(self, stdout: str) -> tuple[str, RequestUsage]:
+            assert "\ufffd" in stdout
+            return stdout.lstrip("\ufffd"), RequestUsage()
+
+    model = CliBridgeModel(BinaryAdapter(), model_name="fake-model")
+    agent = Agent(model, output_type=JudgeOutput, instructions="x")
+
+    result = await agent.run("rate this")
+
+    assert result.output == JudgeOutput(verdict="pass")

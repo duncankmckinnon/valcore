@@ -24,6 +24,8 @@ def resolve_model(model_string: str) -> str | CliBridgeModel:
     if not is_local_cli_model(model_string):
         return model_string
     route, _, name = model_string.partition(":")
+    if not name:
+        raise ConfigError(f"Model string {model_string!r} is missing a model name after {route!r}.")
     cli_name = route.removeprefix("local/")
     adapter = ADAPTERS.get(cli_name)
     if adapter is None:

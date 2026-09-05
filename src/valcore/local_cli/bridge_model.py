@@ -183,12 +183,16 @@ class CliBridgeModel(Model):
             )
             stdout, stderr = await proc.communicate()
             if proc.returncode != 0:
+                # Both streams matter: claude puts the human-readable cause of a failure
+                # (a bad model name, say) on stdout inside its JSON envelope while stderr
+                # carries only a terse code, so reporting stderr alone loses the diagnostic.
                 raise RuntimeError(
                     f"{self._adapter.cli_name} exited with code {proc.returncode}: "
-                    f"{stderr.decode(errors='replace')[:2000]}"
+                    f"stdout={stdout.decode(errors='replace')[:2000]!r} "
+                    f"stderr={stderr.decode(errors='replace')[:2000]!r}"
                 )
 
-        text, usage = self._adapter.parse_output(stdout.decode())
+        text, usage = self._adapter.parse_output(stdout.decode(errors="replace"))
         result_args = _extract_json_object(text)
 
         return ModelResponse(

@@ -2,6 +2,7 @@
 
 import pytest
 
+from valcore.errors import ConfigError
 from valcore.local_cli import ADAPTERS, resolve_model
 from valcore.local_cli.bridge_model import CliBridgeModel
 from valcore.local_cli.claude_adapter import ClaudeCliAdapter
@@ -36,3 +37,26 @@ def test_each_local_route_resolves_to_its_adapter(route: str, adapter_type: type
 
 def test_adapters_registry_has_exactly_the_three_supported_clis() -> None:
     assert set(ADAPTERS) == {"claude", "codex", "cursor"}
+
+
+def test_adapters_registry_matches_local_cli_routes() -> None:
+    """The registry and the recognised route prefixes must stay in lockstep.
+
+    ``is_local_cli_model`` accepts anything in LOCAL_CLI_ROUTES, so a route added there
+    without an adapter would pass validation and then fail at resolve time.
+    """
+    from valcore.settings import LOCAL_CLI_ROUTES
+
+    assert {route.removeprefix("local/") for route in LOCAL_CLI_ROUTES} == set(ADAPTERS)
+
+
+def test_a_local_model_string_with_no_name_is_rejected() -> None:
+    """``local/claude:`` must fail at validation, not with `--model ""` in a subprocess.
+
+    ``generator.build_generator_agent``/``build_refiner_agent`` reach ``resolve_model``
+    without calling ``settings.validate_model_string`` first, and neither
+    ``VALCORE_DEFAULT_MODEL`` nor ``config.toml``'s ``model`` key is validated at load, so
+    this is the only place the empty name is caught.
+    """
+    with pytest.raises(ConfigError, match="missing a model name"):
+        resolve_model("local/claude:")
