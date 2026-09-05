@@ -319,6 +319,13 @@ def validate_version(version: EvaluatorVersion) -> None:
     """Raise ConfigError if the evaluator version's configuration is invalid."""
     settings.validate_model_string(version.model)
 
+    if version.tools and settings.is_local_cli_model(version.model):
+        raise ConfigError(
+            f"Evaluator version sets tools {version.tools}, but model {version.model!r} is a "
+            "local CLI model, which does not support tool calls. Use a gateway/... model, or "
+            "drop tools for this version."
+        )
+
     if not version.output_fields:
         raise ConfigError("Evaluator version must define at least one output field.")
 
