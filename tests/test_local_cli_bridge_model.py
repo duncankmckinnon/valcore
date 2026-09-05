@@ -36,7 +36,11 @@ class FakeCliAdapter:
         self.last_invocation: dict[str, str] | None = None
 
     def build_invocation(self, *, prompt, instructions, model_name, run_dir) -> list[str]:
-        self.last_invocation = {"prompt": prompt, "instructions": instructions, "model_name": model_name}
+        self.last_invocation = {
+            "prompt": prompt,
+            "instructions": instructions,
+            "model_name": model_name,
+        }
         return [sys.executable, "-c", f"import sys; sys.stdout.write({self._stdout_text!r})"]
 
     def parse_output(self, stdout: str) -> tuple[str, RequestUsage]:
@@ -100,3 +104,64 @@ async def test_cli_bridge_model_raises_when_output_is_not_json() -> None:
 
     with pytest.raises(RuntimeError, match="did not return a JSON object"):
         await agent.run("rate this")
+
+
+@pytest.mark.anyio
+async def test_cli_bridge_model_retries_on_validation_failure() -> None:
+    """Test that the CLI is notified of validation failures and gets a chance to correct them."""
+
+    class StrictOutput(BaseModel):
+        """Output with a required field."""
+
+        verdict: str
+        confidence: float  # Required field
+
+    class RetryingAdapter:
+        """Adapter that returns invalid JSON on first call, valid on second."""
+
+        cli_name = "retrying"
+
+        def __init__(self) -> None:
+            self.invocations: list[dict[str, str]] = []
+            self.call_count = 0
+
+        def build_invocation(self, *, prompt, instructions, model_name, run_dir) -> list[str]:
+            self.invocations.append(
+                {"prompt": prompt, "instructions": instructions, "model_name": model_name}
+            )
+            self.call_count += 1
+            # First call: return JSON missing the required 'confidence' field
+            if self.call_count == 1:
+                stdout = '{"verdict": "pass"}'
+            else:
+                # Second call: return complete JSON with both fields
+                stdout = '{"verdict": "pass", "confidence": 0.95}'
+            return [sys.executable, "-c", f"import sys; sys.stdout.write({stdout!r})"]
+
+        def parse_output(self, stdout: str) -> tuple[str, RequestUsage]:
+            return stdout, RequestUsage()
+
+    adapter = RetryingAdapter()
+    model = CliBridgeModel(adapter, model_name="fake-model")
+    agent = Agent(model, output_type=StrictOutput, instructions="be strict")
+
+    result = await agent.run("rate this")
+
+    # Should succeed after retry
+    assert result.output == StrictOutput(verdict="pass", confidence=0.95)
+
+    # Should have been called twice (initial + retry)
+    assert len(adapter.invocations) == 2
+    first_instructions = adapter.invocations[0]["instructions"]
+    second_instructions = adapter.invocations[1]["instructions"]
+
+    # Both should have the schema directive
+    assert "JSON Schema" in first_instructions
+    assert "JSON Schema" in second_instructions
+
+    # Second call should mention the validation error
+    assert "Your previous response was invalid" in second_instructions
+    assert "confidence" in second_instructions
+
+    # Instructions should be different
+    assert first_instructions != second_instructions

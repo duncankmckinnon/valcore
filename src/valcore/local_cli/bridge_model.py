@@ -7,13 +7,19 @@ in, JSON out -- no tool-call round-tripping.
 
 import asyncio
 import json
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
 
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, ToolCallPart, UserPromptPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    RetryPromptPart,
+    ToolCallPart,
+    UserPromptPart,
+)
 from pydantic_ai.models import Model, ModelRequestParameters
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RequestUsage
@@ -60,6 +66,32 @@ def _render_user_prompt(messages: list[ModelMessage]) -> str:
     raise ValueError("No user prompt found in messages.")
 
 
+def _extract_retry_content(messages: list[ModelMessage]) -> str | None:
+    """Extract retry prompt content from the most recent ModelRequest, if present.
+
+    Returns the rendered retry content if a RetryPromptPart exists, or None if there is no retry.
+    The retry content may be a string (pre-formatted error message) or a list of error dicts.
+    """
+    for message in reversed(messages):
+        if not isinstance(message, ModelRequest):
+            continue
+        for part in message.parts:
+            if isinstance(part, RetryPromptPart):
+                content = part.content
+                if isinstance(content, str):
+                    return content
+                # content is a list of error dicts (pydantic validation errors)
+                error_lines = []
+                for error in content:
+                    loc = ".".join(str(x) for x in error.get("loc", ()))
+                    msg = error.get("msg", "Unknown error")
+                    error_lines.append(f"  - {loc}: {msg}" if loc else f"  - {msg}")
+                return "Validation errors in your previous response:\n" + "\n".join(error_lines)
+        # Only check the most recent ModelRequest
+        break
+    return None
+
+
 def _strip_code_fence(text: str) -> str:
     """Strip a wrapping ``` / ```json fence, if present."""
     if not text.startswith("```"):
@@ -82,7 +114,9 @@ def _extract_json_object(text: str) -> dict[str, Any]:
             continue
         if isinstance(parsed, dict):
             return parsed
-    raise RuntimeError(f"CLI did not return a JSON object matching the output schema: {text[:2000]!r}")
+    raise RuntimeError(
+        f"CLI did not return a JSON object matching the output schema: {text[:2000]!r}"
+    )
 
 
 class CliBridgeModel(Model):
@@ -113,13 +147,23 @@ class CliBridgeModel(Model):
         output_tool = params.output_tools[0]
 
         instruction_parts = self._get_instruction_parts(messages, params)
-        instructions = "\n\n".join(p.content for p in instruction_parts) if instruction_parts else ""
+        instructions = (
+            "\n\n".join(p.content for p in instruction_parts) if instruction_parts else ""
+        )
         schema_directive = (
             "Respond with ONLY a single JSON object matching this JSON Schema, and nothing "
             "else (no markdown fences, no explanation):\n"
             f"{json.dumps(output_tool.parameters_json_schema)}"
         )
-        full_instructions = f"{instructions}\n\n{schema_directive}" if instructions else schema_directive
+        full_instructions = (
+            f"{instructions}\n\n{schema_directive}" if instructions else schema_directive
+        )
+
+        # If there's a retry, incorporate the retry content into the instructions
+        retry_content = _extract_retry_content(messages)
+        if retry_content:
+            full_instructions = f"{full_instructions}\n\nYour previous response was invalid:\n{retry_content}\n\nPlease correct it and respond again with only the JSON object."
+
         prompt = _render_user_prompt(messages)
 
         with tempfile.TemporaryDirectory(prefix="valcore-local-cli-") as run_dir_str:
@@ -148,7 +192,9 @@ class CliBridgeModel(Model):
         result_args = _extract_json_object(text)
 
         return ModelResponse(
-            parts=[ToolCallPart(tool_name=output_tool.name, args=result_args, tool_call_id=uuid4().hex)],
+            parts=[
+                ToolCallPart(tool_name=output_tool.name, args=result_args, tool_call_id=uuid4().hex)
+            ],
             usage=usage,
             model_name=self.model_name,
         )
