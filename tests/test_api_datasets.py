@@ -1951,6 +1951,93 @@ async def test_generate_rows_without_gateway_key_is_client_error_not_500(
     assert calls == []
 
 
+# -- Local CLI models need no gateway key --------------------------------------
+#
+# A local/<cli>:<name> model reaches an already-logged-in CLI on this machine, never the
+# gateway, so the guard above must not fire for one. All three generate handlers resolve to
+# get_settings().default_model, so that is what decides whether the key is required.
+
+
+@pytest.fixture
+def _local_default_model(monkeypatch: pytest.MonkeyPatch):
+    """Point ``default_model`` at a local CLI model and clear the settings cache."""
+    from valcore import settings
+
+    monkeypatch.setenv("VALCORE_DEFAULT_MODEL", "local/claude:sonnet")
+    settings.get_settings.cache_clear()
+    yield
+    settings.get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_generate_with_local_model_succeeds_without_gateway_key(
+    client: httpx.AsyncClient, monkeypatch, _local_default_model
+) -> None:
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    calls: list[dict] = []
+    _install_recording_generate(monkeypatch, calls)
+
+    resp = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "gen",
+            "description": "d",
+            "columns": ["prompt"],
+            "label_schema": CATEGORICAL_SCHEMA,
+            "count": 1,
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert len(calls) == 1
+
+
+@pytest.mark.anyio
+async def test_generate_from_version_with_local_model_succeeds_without_gateway_key(
+    client: httpx.AsyncClient, store: Store, monkeypatch, _local_default_model
+) -> None:
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    version = _make_version(store)
+    calls: list[dict] = []
+    _install_recording_generate(monkeypatch, calls)
+
+    resp = await client.post(
+        "/api/datasets/generate-from-version",
+        json={"version_id": version.id, "name": "seeded", "count": 1},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert len(calls) == 1
+
+
+@pytest.mark.anyio
+async def test_generate_rows_with_local_model_succeeds_without_gateway_key(
+    client: httpx.AsyncClient, monkeypatch, _local_default_model
+) -> None:
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    calls: list[dict] = []
+    _install_recording_generate(monkeypatch, calls)
+
+    created = await client.post(
+        "/api/datasets/generate",
+        json={
+            "name": "gen",
+            "description": "d",
+            "columns": ["prompt"],
+            "label_schema": CATEGORICAL_SCHEMA,
+            "count": 1,
+        },
+    )
+    assert created.status_code == 200, created.text
+    ds_id = created.json()["dataset"]["id"]
+    calls.clear()
+
+    resp = await client.post(f"/api/datasets/{ds_id}/generate-rows", json={"count": 1})
+
+    assert resp.status_code == 200, resp.text
+    assert len(calls) == 1
+
+
 # -- Push a dataset to Logfire's hosted store ----------------------------------
 
 

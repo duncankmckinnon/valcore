@@ -541,3 +541,58 @@ async def test_retry_failed_without_gateway_key_fails_cleanly(
     after_results = {r.row_id: r.id for r in store.list_results(run_id)}
     assert after_results == before_results
     assert run_id not in _tasks
+
+
+# -- Local CLI models need no gateway key --------------------------------------
+#
+# A local/<cli>:<name> version reaches an already-logged-in CLI on this machine, never the
+# gateway, so the guard must not fire for one -- a keyless machine is the exact scenario the
+# local-CLI feature exists for. The guard is decided by the run's own version.model, so it
+# must be resolved before the check, not after.
+
+
+@pytest.mark.anyio
+async def test_create_run_with_local_model_succeeds_without_gateway_key(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    version = make_version(store, model="local/claude:sonnet")
+    dataset, _ = make_dataset(store, ["pass", "fail", "pass"])
+
+    async with _client(store, constant_factory()) as client:
+        body = await _start_run(client, version.id, dataset.id)
+        finished = await _poll_until_terminal(client, body["id"])
+
+    assert finished["status"] == RunStatus.COMPLETED.value, finished
+    assert len(store.list_results(body["id"])) == 3
+
+
+@pytest.mark.anyio
+async def test_retry_failed_with_local_model_succeeds_without_gateway_key(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    version = make_version(store, model="local/claude:sonnet")
+    dataset, _rows = make_dataset(store, ["pass", "pass", "pass"], inputs=["ok0", "BOOM", "ok2"])
+    seen: list[str] = []
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if "BOOM" in str(messages) and "BOOM" not in seen:
+            seen.append("BOOM")
+            raise RuntimeError("kaboom")
+        name = info.output_tools[0].name
+        return ModelResponse(parts=[ToolCallPart(tool_name=name, args={"verdict": "pass"})])
+
+    factory = lambda v: Agent(FunctionModel(respond), output_type=build_output_model(v))
+
+    async with _client(store, factory) as client:
+        body = await _start_run(client, version.id, dataset.id, concurrency=1)
+        run_id = body["id"]
+        before = await _poll_until_terminal(client, run_id)
+        assert before["status"] == RunStatus.COMPLETED_WITH_ERRORS.value
+
+        monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+        resp = await client.post(f"/api/runs/{run_id}/retry-failed")
+        assert resp.status_code == 200, resp.text
+        after = await _poll_until_terminal(client, run_id)
+
+    assert after["status"] == RunStatus.COMPLETED.value, after

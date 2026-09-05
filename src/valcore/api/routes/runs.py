@@ -23,6 +23,7 @@ from valcore.errors import ContractError
 from valcore.experiment import execute_experiment
 from valcore.models import EvaluatorVersion, RunKind, RunStatus, check_dataset_compatibility
 from valcore.runner import RunEvent, execute_run
+from valcore.settings import is_local_cli_model
 from valcore.store import Store
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
@@ -161,17 +162,20 @@ async def _run_to_completion(
     Guards on ``config.require_gateway_key()`` before ever building an agent or calling
     ``execute_run``: ``defer_model_check=True`` lets ``build_agent`` succeed with no key,
     so without this a keyless run would instead fail once per row inside ``_score_row``.
+    The version is loaded first so the guard can be skipped for a ``local/<cli>:<name>``
+    model, which reaches an already-logged-in CLI on this machine rather than the gateway.
     """
 
     async def on_event(event: RunEvent) -> None:
         bus.publish(run_id, {"type": event.type, "run_id": run_id, "payload": event.payload})
 
     try:
-        config.require_gateway_key()
+        run = await asyncio.to_thread(store.get_run, run_id)
+        version = await asyncio.to_thread(store.get_version, run.version_id)
+        if not is_local_cli_model(version.model):
+            config.require_gateway_key()
         agent: Agent | None = None
         if agent_factory is not None:
-            run = await asyncio.to_thread(store.get_run, run_id)
-            version = await asyncio.to_thread(store.get_version, run.version_id)
             agent = agent_factory(version)
         if experiment:
             # The experiment engine builds its own agent and has no row-subset retry, so
@@ -257,7 +261,10 @@ async def create_run(body: RunCreate, store: StoreDep, agent_factory: AgentFacto
 
     Guards on ``config.require_gateway_key()`` before ``store.create_run``: a missing key
     must surface synchronously as a ``ConfigError``, with no run ever persisted, rather than
-    as an asynchronous ``FAILED`` transition discovered by polling.
+    as an asynchronous ``FAILED`` transition discovered by polling. The version lookup the
+    compatibility check already needs is hoisted above the guard (a read, so nothing is
+    persisted ahead of it) so the guard can be skipped for a ``local/<cli>:<name>`` model,
+    which reaches an already-logged-in CLI on this machine rather than the gateway.
 
     Compatibility is checked here for the same reason. ``execute_run`` checks it too, but only
     after the run exists, so an incompatible pairing -- most often a VALIDATION run whose
@@ -265,12 +272,10 @@ async def create_run(body: RunCreate, store: StoreDep, agent_factory: AgentFacto
     the user has to go and read. Passing ``body.kind`` keeps an EVAL run permitted when the
     label spaces differ, which is the whole point of prescribing them.
     """
-    config.require_gateway_key()
-    check_dataset_compatibility(
-        store.get_version(body.version_id),
-        store.get_dataset(body.dataset_id),
-        kind=body.kind,
-    )
+    version = store.get_version(body.version_id)
+    if not is_local_cli_model(version.model):
+        config.require_gateway_key()
+    check_dataset_compatibility(version, store.get_dataset(body.dataset_id), kind=body.kind)
     run = store.create_run(
         kind=body.kind,
         version_id=body.version_id,
@@ -437,12 +442,17 @@ async def retry_failed(id: str, store: StoreDep, agent_factory: AgentFactoryDep)
     The run is reset to ``PENDING`` before relaunching so a client polling status is
     never fooled by the previous run's stale terminal state.
 
-    Guards on ``config.require_gateway_key()`` before any other work: a missing key
+    Guards on ``config.require_gateway_key()`` before any state-changing work: a missing key
     must surface synchronously as a ``ConfigError``, with the prior run's status and
-    results untouched and no background task launched.
+    results untouched and no background task launched. The run and version lookups above the
+    guard are reads that persist nothing, and they are what tells the guard to stand down for
+    a ``local/<cli>:<name>`` model, which reaches an already-logged-in CLI on this machine
+    rather than the gateway.
     """
-    config.require_gateway_key()
-    store.get_run(id)
+    existing = store.get_run(id)
+    version = store.get_version(existing.version_id)
+    if not is_local_cli_model(version.model):
+        config.require_gateway_key()
     failed_row_ids = store.failed_result_row_ids(id)
     run = store.update_run_status(id, RunStatus.PENDING, error=None, finished_at=None)
     _launch_run(store, id, agent_factory, only_row_ids=failed_row_ids)

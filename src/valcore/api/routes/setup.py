@@ -79,9 +79,11 @@ class SetupKeysIn(BaseModel):
 
 
 _GATEWAY_EXPLANATION = (
-    "valcore reaches models only through the Pydantic AI Gateway — there is no "
+    "valcore reaches hosted models through the Pydantic AI Gateway — there is no "
     "direct-to-provider client. Without this key, generation and runs cannot call a "
-    "model. Authoring by hand, uploading a CSV, labeling, and export still work. "
+    "gateway model. Authoring by hand, uploading a CSV, labeling, and export still work. "
+    "A local/<cli>:<name> model (claude/codex/cursor) reuses an already logged-in CLI on "
+    "this machine instead, and needs no gateway key. "
     "Create the key in the Pydantic AI Gateway. This is not a Logfire credential."
 )
 _TOKEN_EXPLANATION = (
