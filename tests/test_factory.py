@@ -298,3 +298,53 @@ def test_build_agent_with_code_mode_capability() -> None:
     version = make_version(capabilities=[{"name": "CodeMode", "config": {"max_retries": 2}}])
     agent = build_agent(version)
     assert isinstance(agent, Agent)
+
+
+def test_build_agent_passes_a_gateway_string_through_unchanged() -> None:
+    version = make_version(model="gateway/anthropic:claude-sonnet-5")
+    agent = build_agent(version)
+    assert agent.model == "gateway/anthropic:claude-sonnet-5"
+
+
+def test_build_agent_resolves_a_local_model() -> None:
+    from valcore.local_cli.bridge_model import CliBridgeModel
+
+    version = make_version(model="local/claude:sonnet")
+
+    agent = build_agent(version)
+
+    assert isinstance(agent.model, CliBridgeModel)
+    assert agent.model.model_name == "sonnet"
+
+
+def test_build_agent_drops_capabilities_for_a_local_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A local CLI already has its own shell/file/sub-agent equivalents; specs must never
+    reach build_capabilities for it -- checked directly rather than via Agent internals."""
+    calls: list[list] = []
+    monkeypatch.setattr(
+        "valcore.factory.build_capabilities", lambda specs: calls.append(specs) or []
+    )
+    version = make_version(
+        model="local/claude:sonnet", capabilities=[{"name": "Shell", "config": {}}]
+    )
+
+    build_agent(version)
+
+    assert calls == [[]]
+
+
+def test_build_agent_keeps_capabilities_for_a_gateway_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list] = []
+    monkeypatch.setattr(
+        "valcore.factory.build_capabilities", lambda specs: calls.append(specs) or []
+    )
+    version = make_version(
+        model="gateway/anthropic:claude-sonnet-5", capabilities=[{"name": "Shell", "config": {}}]
+    )
+
+    build_agent(version)
+
+    assert len(calls) == 1
+    assert len(calls[0]) == 1 and calls[0][0].name == "Shell"

@@ -9,6 +9,7 @@ from pydantic_ai import Agent
 
 from valcore.capabilities import CAPABILITY_REGISTRY
 from valcore.errors import ConfigError, ContractError
+from valcore.local_cli import resolve_model
 from valcore.models import (
     SCALAR_TYPES,
     CapabilitySpec,
@@ -18,6 +19,7 @@ from valcore.models import (
     parse_output_fields,
     validate_version,
 )
+from valcore.settings import is_local_cli_model
 from valcore.tools import get_tools
 
 _NUMERIC_FIELD_TYPES: frozenset[FieldType] = frozenset({FieldType.INT, FieldType.FLOAT})
@@ -87,11 +89,17 @@ def build_agent(version: EvaluatorVersion) -> Agent[None, BaseModel]:
     runner and the experiment engine build the same agent for the same job, and naming it in one
     path only would make the identical agent appear under two names in Logfire and defeat
     comparing a run against an experiment.
+
+    Harness capabilities are never attached for a local CLI model: the CLI already has its own
+    native shell/file/sub-agent/planning behavior, so valcore's harness capability wrappers would
+    be redundant at best and conflicting at worst. Row tools are not a concern here: validate_version
+    already rejects an evaluator version that combines tools with a local model.
     """
     validate_version(version)
-    specs = [CapabilitySpec.model_validate(c) for c in version.capabilities]
+    local = is_local_cli_model(version.model)
+    specs = [] if local else [CapabilitySpec.model_validate(c) for c in version.capabilities]
     return Agent(
-        version.model,
+        resolve_model(version.model),
         output_type=build_output_model(version),
         name="scoring_agent",
         instructions=version.instructions,
