@@ -44,6 +44,7 @@ def test_codex_adapter_builds_expected_argv(tmp_path: Path) -> None:
     assert argv[1] == "exec"
     assert "--json" in argv
     assert "--model" in argv and argv[argv.index("--model") + 1] == "gpt-5-codex"
+    assert "--skip-git-repo-check" in argv
     assert argv[-1] == "judge it\n\nrate this"
 
 

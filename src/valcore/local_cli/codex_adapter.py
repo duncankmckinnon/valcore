@@ -34,6 +34,7 @@ class CodexCliAdapter:
             model_name,
             "--sandbox",
             "read-only",
+            "--skip-git-repo-check",
             "--",
             full_prompt,
         ]
