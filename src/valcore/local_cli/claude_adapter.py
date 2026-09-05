@@ -7,7 +7,18 @@ from pydantic_ai.usage import RequestUsage
 
 
 class ClaudeCliAdapter:
-    """Builds a `claude -p ...` invocation and parses its `--output-format json` envelope."""
+    """Builds a `claude -p ...` invocation and parses its `--output-format json` envelope.
+
+    ``-p``/``--print`` is a boolean flag, so the prompt is a positional argument: it goes
+    last, behind a bare ``--``, or a prompt starting with ``-`` (a markdown bullet, a ``---``
+    rule) is parsed as an unknown option and the call fails.
+
+    ``--tools ""`` disables every built-in tool: row content is untrusted third-party text
+    and a prompt-in/JSON-out judge has no use for the CLI's file or shell tools. It has to
+    be ``--tools``, not ``--allowedTools``: the latter is a permission allowlist for tools
+    that would otherwise prompt, and read-only tools like ``Read`` are permitted regardless,
+    so ``--allowedTools ""`` leaves the filesystem reachable.
+    """
 
     cli_name = "claude"
     binary = "claude"
@@ -18,13 +29,16 @@ class ClaudeCliAdapter:
         return [
             self.binary,
             "-p",
-            prompt,
             "--output-format",
             "json",
             "--model",
             model_name,
             "--system-prompt",
             instructions,
+            "--tools",
+            "",
+            "--",
+            prompt,
         ]
 
     def parse_output(self, stdout: str) -> tuple[str, RequestUsage]:

@@ -32,10 +32,49 @@ def test_claude_adapter_builds_expected_argv(tmp_path: Path) -> None:
     )
 
     assert argv[0] == "claude"
-    assert "-p" in argv and argv[argv.index("-p") + 1] == "rate this"
+    assert "-p" in argv
     assert "--output-format" in argv and argv[argv.index("--output-format") + 1] == "json"
     assert "--model" in argv and argv[argv.index("--model") + 1] == "sonnet"
     assert "--system-prompt" in argv and argv[argv.index("--system-prompt") + 1] == "judge it"
+
+
+def test_claude_adapter_passes_the_prompt_after_a_bare_double_dash(tmp_path: Path) -> None:
+    """A prompt starting with '-' must not be parsed as a CLI option.
+
+    `-p`/`--print` is a boolean flag, so the prompt is positional; a bare `--` immediately
+    before it makes the CLI treat everything after as a literal positional value.
+    """
+    adapter = ClaudeCliAdapter()
+
+    argv = adapter.build_invocation(
+        prompt="- dash bullet prompt",
+        instructions="judge it",
+        model_name="sonnet",
+        run_dir=tmp_path,
+    )
+
+    assert argv[-1] == "- dash bullet prompt"
+    assert argv[-2] == "--"
+    # Exactly one separator, and nothing between it and the prompt.
+    assert argv.count("--") == 1
+
+
+def test_claude_adapter_disables_all_tools(tmp_path: Path) -> None:
+    """Row content is untrusted; a prompt->JSON judge needs no file or shell tools.
+
+    Must be ``--tools ""`` (disable every built-in tool), not ``--allowedTools ""``: the
+    latter only pre-approves tools that would otherwise prompt, leaving read-only tools
+    like ``Read`` reachable (verified live against claude 2.1.238).
+    """
+    adapter = ClaudeCliAdapter()
+
+    argv = adapter.build_invocation(
+        prompt="rate this", instructions="judge it", model_name="sonnet", run_dir=tmp_path
+    )
+
+    assert "--tools" in argv
+    assert argv[argv.index("--tools") + 1] == ""
+    assert "--allowedTools" not in argv
 
 
 def test_claude_adapter_parses_a_real_recorded_envelope() -> None:

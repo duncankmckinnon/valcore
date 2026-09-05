@@ -57,6 +57,34 @@ def test_codex_adapter_omits_the_separator_when_there_are_no_instructions(tmp_pa
     assert argv[-1] == "rate this"
 
 
+def test_codex_adapter_passes_the_prompt_after_a_bare_double_dash(tmp_path: Path) -> None:
+    """A prompt starting with '-' must not be parsed as a CLI option."""
+    adapter = CodexCliAdapter()
+
+    argv = adapter.build_invocation(
+        prompt="- dash bullet prompt",
+        instructions="",
+        model_name="gpt-5-codex",
+        run_dir=tmp_path,
+    )
+
+    assert argv[-1] == "- dash bullet prompt"
+    assert argv[-2] == "--"
+    assert argv.count("--") == 1
+
+
+def test_codex_adapter_runs_read_only(tmp_path: Path) -> None:
+    """Row content is untrusted; a prompt->JSON judge needs no write or shell access."""
+    adapter = CodexCliAdapter()
+
+    argv = adapter.build_invocation(
+        prompt="rate this", instructions="judge it", model_name="gpt-5-codex", run_dir=tmp_path
+    )
+
+    assert "--sandbox" in argv
+    assert argv[argv.index("--sandbox") + 1] == "read-only"
+
+
 def test_codex_adapter_parses_a_real_recorded_jsonl_stream() -> None:
     adapter = CodexCliAdapter()
 

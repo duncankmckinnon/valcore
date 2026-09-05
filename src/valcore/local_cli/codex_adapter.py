@@ -7,7 +7,17 @@ from pydantic_ai.usage import RequestUsage
 
 
 class CodexCliAdapter:
-    """Builds a `codex exec --json ...` invocation and parses its JSONL event stream."""
+    """Builds a `codex exec --json ...` invocation and parses its JSONL event stream.
+
+    The prompt is a positional argument, so it goes last behind a bare ``--``, or a prompt
+    starting with ``-`` (a markdown bullet, a ``---`` rule) is parsed as an unknown option
+    and the call fails.
+
+    ``--sandbox read-only`` is the tightest restriction ``codex exec`` offers -- it denies
+    writes and network access, though shell commands and file reads still run. Row content
+    is untrusted third-party text, and a prompt-in/JSON-out judge needs none of it; codex
+    has no flag that disables tools outright the way ``claude --tools ""`` does.
+    """
 
     cli_name = "codex"
     binary = "codex"
@@ -16,7 +26,17 @@ class CodexCliAdapter:
         self, *, prompt: str, instructions: str, model_name: str, run_dir: Path
     ) -> list[str]:
         full_prompt = f"{instructions}\n\n{prompt}" if instructions else prompt
-        return [self.binary, "exec", "--json", "--model", model_name, full_prompt]
+        return [
+            self.binary,
+            "exec",
+            "--json",
+            "--model",
+            model_name,
+            "--sandbox",
+            "read-only",
+            "--",
+            full_prompt,
+        ]
 
     def parse_output(self, stdout: str) -> tuple[str, RequestUsage]:
         text: str | None = None

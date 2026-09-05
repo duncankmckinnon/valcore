@@ -11,6 +11,15 @@ class CursorCliAdapter:
 
     `--trust` is required on every call: `cursor-agent` refuses to run non-interactively in
     a directory it has not seen before, and every call here uses a fresh temp `--workspace`.
+
+    ``-p`` is a boolean flag, so the prompt is a positional argument: it goes last, behind a
+    bare ``--``, or a prompt starting with ``-`` (a markdown bullet, a ``---`` rule) is parsed
+    as an unknown option and the call fails.
+
+    ``--mode ask`` is the tightest restriction ``cursor-agent`` offers -- a read-only Q&A
+    mode that makes no edits, though it can still read files. Row content is untrusted
+    third-party text, and a prompt-in/JSON-out judge needs neither; cursor-agent has no
+    flag that disables tools outright the way ``claude --tools ""`` does.
     """
 
     cli_name = "cursor"
@@ -23,7 +32,6 @@ class CursorCliAdapter:
         return [
             self.binary,
             "-p",
-            full_prompt,
             "--output-format",
             "json",
             "--model",
@@ -31,6 +39,10 @@ class CursorCliAdapter:
             "--workspace",
             str(run_dir),
             "--trust",
+            "--mode",
+            "ask",
+            "--",
+            full_prompt,
         ]
 
     def parse_output(self, stdout: str) -> tuple[str, RequestUsage]:
