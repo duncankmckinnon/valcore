@@ -1963,7 +1963,7 @@ def _local_default_model(monkeypatch: pytest.MonkeyPatch):
     """Point ``default_model`` at a local CLI model and clear the settings cache."""
     from valcore import settings
 
-    monkeypatch.setenv("VALCORE_DEFAULT_MODEL", "local/claude:sonnet")
+    monkeypatch.setenv("VALCORE_DEFAULT_MODEL", "local/claude")
     settings.get_settings.cache_clear()
     yield
     settings.get_settings.cache_clear()

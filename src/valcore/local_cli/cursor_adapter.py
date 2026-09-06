@@ -25,17 +25,13 @@ class CursorCliAdapter:
     cli_name = "cursor"
     binary = "cursor-agent"
 
-    def build_invocation(
-        self, *, prompt: str, instructions: str, model_name: str, run_dir: Path
-    ) -> list[str]:
+    def build_invocation(self, *, prompt: str, instructions: str, run_dir: Path) -> list[str]:
         full_prompt = f"{instructions}\n\n{prompt}" if instructions else prompt
         return [
             self.binary,
             "-p",
             "--output-format",
             "json",
-            "--model",
-            model_name,
             "--workspace",
             str(run_dir),
             "--trust",

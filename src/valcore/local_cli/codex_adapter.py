@@ -22,16 +22,12 @@ class CodexCliAdapter:
     cli_name = "codex"
     binary = "codex"
 
-    def build_invocation(
-        self, *, prompt: str, instructions: str, model_name: str, run_dir: Path
-    ) -> list[str]:
+    def build_invocation(self, *, prompt: str, instructions: str, run_dir: Path) -> list[str]:
         full_prompt = f"{instructions}\n\n{prompt}" if instructions else prompt
         return [
             self.binary,
             "exec",
             "--json",
-            "--model",
-            model_name,
             "--sandbox",
             "read-only",
             "--skip-git-repo-check",

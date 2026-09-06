@@ -169,9 +169,9 @@ def _docstring(version: EvaluatorVersion) -> str:
 def render_script(version: EvaluatorVersion) -> str:
     """Render an EvaluatorVersion to a standalone, runnable Python script.
 
-    Raises :class:`ContractError` for a ``local/<cli>:<name>`` model. The rendered script is
+    Raises :class:`ContractError` for a ``local/<cli>`` model. The rendered script is
     deliberately valcore-free, so it cannot import ``valcore.local_cli`` and has no
-    ``resolve_model`` seam: it would emit ``Agent("local/claude:sonnet")``, which dies with
+    ``resolve_model`` seam: it would emit ``Agent("local/claude")``, which dies with
     pydantic_ai's ``UserError: Unknown model`` the first time it is run. Refusing here is
     checked before any other rendering work so the caller gets the real reason.
     """

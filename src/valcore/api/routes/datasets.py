@@ -37,7 +37,7 @@ def _require_gateway_key_unless_local() -> None:
     """Require the gateway key unless generation resolves to a local CLI model.
 
     None of the generate routes pass an explicit model, so they all resolve to
-    ``get_settings().default_model`` inside ``generate_rows``. A ``local/<cli>:<name>``
+    ``get_settings().default_model`` inside ``generate_rows``. A ``local/<cli>``
     default reaches an already-logged-in CLI on this machine, never the gateway, so
     demanding a gateway key there would block the exact keyless setup local models exist for.
     """

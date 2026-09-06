@@ -30,6 +30,9 @@ GATEWAY_ROUTES: tuple[str, ...] = (
 )
 
 LOCAL_CLI_ROUTES: tuple[str, ...] = ("local/claude", "local/codex", "local/cursor")
+LOCAL_CLI_NAMES: frozenset[str] = frozenset(
+    route.removeprefix("local/") for route in LOCAL_CLI_ROUTES
+)
 
 
 @functools.lru_cache
@@ -53,8 +56,9 @@ def model_catalog() -> tuple[str, ...]:
 
 
 def is_local_cli_model(model: str) -> bool:
-    """Return True if `model` names a local-CLI route rather than a gateway route."""
-    return any(model.startswith(f"{route}:") for route in LOCAL_CLI_ROUTES)
+    """Return True if `model` is exactly one of LOCAL_CLI_ROUTES (a local CLI takes no
+    model name -- it always uses that CLI's own default)."""
+    return model in LOCAL_CLI_ROUTES
 
 
 class _TomlConfigSource(PydanticBaseSettingsSource):
@@ -62,7 +66,9 @@ class _TomlConfigSource(PydanticBaseSettingsSource):
 
     Maps the config file's keys onto ``Settings`` fields: ``model`` ->
     ``default_model``, ``concurrency`` -> ``default_concurrency``, and ``db_path``
-    passes through unchanged.
+    passes through unchanged. ``local_cli_default``, when set, overrides ``model``
+    and becomes ``default_model`` as the ``local/<cli>`` route for that CLI; it is
+    validated here against ``LOCAL_CLI_NAMES`` since ``config.py`` cannot.
     """
 
     def __init__(self, settings_cls: type[BaseSettings]) -> None:
@@ -71,7 +77,14 @@ class _TomlConfigSource(PydanticBaseSettingsSource):
         mapped: dict[str, Any] = {}
         if cfg.db_path is not None:
             mapped["db_path"] = cfg.db_path
-        if cfg.model is not None:
+        if cfg.local_cli_default is not None:
+            if cfg.local_cli_default not in LOCAL_CLI_NAMES:
+                raise ConfigError(
+                    f"config.toml local_cli_default {cfg.local_cli_default!r} is not a known "
+                    f"local CLI; valid names are {sorted(LOCAL_CLI_NAMES)}."
+                )
+            mapped["default_model"] = f"local/{cfg.local_cli_default}"
+        elif cfg.model is not None:
             mapped["default_model"] = cfg.model
         if cfg.concurrency is not None:
             mapped["default_concurrency"] = cfg.concurrency
@@ -123,9 +136,11 @@ def get_settings() -> Settings:
 
 
 def validate_model_string(model: str) -> None:
-    """Raise ConfigError unless `model` is a valid `gateway/<provider>:<name>` or
-    `local/<cli>:<name>` string."""
-    for route in (*GATEWAY_ROUTES, *LOCAL_CLI_ROUTES):
+    """Raise ConfigError unless `model` is a valid `gateway/<provider>:<name>` string, or
+    exactly one of LOCAL_CLI_ROUTES."""
+    if model in LOCAL_CLI_ROUTES:
+        return
+    for route in GATEWAY_ROUTES:
         prefix = f"{route}:"
         if model.startswith(prefix):
             name = model[len(prefix) :]
@@ -135,6 +150,6 @@ def validate_model_string(model: str) -> None:
                 )
             return
     raise ConfigError(
-        f"Model string {model!r} must start with one of "
-        f"{GATEWAY_ROUTES + LOCAL_CLI_ROUTES} followed by ':<model>'."
+        f"Model string {model!r} must be one of {LOCAL_CLI_ROUTES}, or start with one of "
+        f"{GATEWAY_ROUTES} followed by ':<model>'."
     )

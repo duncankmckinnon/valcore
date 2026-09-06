@@ -162,7 +162,7 @@ async def _run_to_completion(
     Guards on ``config.require_gateway_key()`` before ever building an agent or calling
     ``execute_run``: ``defer_model_check=True`` lets ``build_agent`` succeed with no key,
     so without this a keyless run would instead fail once per row inside ``_score_row``.
-    The version is loaded first so the guard can be skipped for a ``local/<cli>:<name>``
+    The version is loaded first so the guard can be skipped for a ``local/<cli>``
     model, which reaches an already-logged-in CLI on this machine rather than the gateway.
     """
 
@@ -263,7 +263,7 @@ async def create_run(body: RunCreate, store: StoreDep, agent_factory: AgentFacto
     must surface synchronously as a ``ConfigError``, with no run ever persisted, rather than
     as an asynchronous ``FAILED`` transition discovered by polling. The version lookup the
     compatibility check already needs is hoisted above the guard (a read, so nothing is
-    persisted ahead of it) so the guard can be skipped for a ``local/<cli>:<name>`` model,
+    persisted ahead of it) so the guard can be skipped for a ``local/<cli>`` model,
     which reaches an already-logged-in CLI on this machine rather than the gateway.
 
     Compatibility is checked here for the same reason. ``execute_run`` checks it too, but only
@@ -446,7 +446,7 @@ async def retry_failed(id: str, store: StoreDep, agent_factory: AgentFactoryDep)
     must surface synchronously as a ``ConfigError``, with the prior run's status and
     results untouched and no background task launched. The run and version lookups above the
     guard are reads that persist nothing, and they are what tells the guard to stand down for
-    a ``local/<cli>:<name>`` model, which reaches an already-logged-in CLI on this machine
+    a ``local/<cli>`` model, which reaches an already-logged-in CLI on this machine
     rather than the gateway.
     """
     existing = store.get_run(id)

@@ -30,7 +30,7 @@ def anyio_backend() -> str:
 
 @pytest.mark.anyio
 async def test_claude_cli_returns_structured_output() -> None:
-    model = resolve_model("local/claude:sonnet")
+    model = resolve_model("local/claude")
     assert isinstance(model, CliBridgeModel)
     agent = Agent(model, output_type=Verdict, instructions="Always set verdict to 'ok'.")
 

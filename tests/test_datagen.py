@@ -541,7 +541,7 @@ def test_build_datagen_agent_resolves_a_local_model() -> None:
     from valcore.datagen import build_datagen_agent
     from valcore.local_cli.bridge_model import CliBridgeModel
 
-    agent = build_datagen_agent("local/cursor:composer")
+    agent = build_datagen_agent("local/cursor")
 
     assert isinstance(agent.model, CliBridgeModel)
-    assert agent.model.model_name == "composer"
+    assert agent.model.model_name == "default"

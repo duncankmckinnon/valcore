@@ -36,14 +36,11 @@ _REAL_JSONL = "\n".join(
 def test_codex_adapter_builds_expected_argv(tmp_path: Path) -> None:
     adapter = CodexCliAdapter()
 
-    argv = adapter.build_invocation(
-        prompt="rate this", instructions="judge it", model_name="gpt-5-codex", run_dir=tmp_path
-    )
+    argv = adapter.build_invocation(prompt="rate this", instructions="judge it", run_dir=tmp_path)
 
     assert argv[0] == "codex"
     assert argv[1] == "exec"
     assert "--json" in argv
-    assert "--model" in argv and argv[argv.index("--model") + 1] == "gpt-5-codex"
     assert "--skip-git-repo-check" in argv
     assert argv[-1] == "judge it\n\nrate this"
 
@@ -51,9 +48,7 @@ def test_codex_adapter_builds_expected_argv(tmp_path: Path) -> None:
 def test_codex_adapter_omits_the_separator_when_there_are_no_instructions(tmp_path: Path) -> None:
     adapter = CodexCliAdapter()
 
-    argv = adapter.build_invocation(
-        prompt="rate this", instructions="", model_name="gpt-5-codex", run_dir=tmp_path
-    )
+    argv = adapter.build_invocation(prompt="rate this", instructions="", run_dir=tmp_path)
 
     assert argv[-1] == "rate this"
 
@@ -65,7 +60,6 @@ def test_codex_adapter_passes_the_prompt_after_a_bare_double_dash(tmp_path: Path
     argv = adapter.build_invocation(
         prompt="- dash bullet prompt",
         instructions="",
-        model_name="gpt-5-codex",
         run_dir=tmp_path,
     )
 
@@ -78,9 +72,7 @@ def test_codex_adapter_runs_read_only(tmp_path: Path) -> None:
     """Row content is untrusted; a prompt->JSON judge needs no write or shell access."""
     adapter = CodexCliAdapter()
 
-    argv = adapter.build_invocation(
-        prompt="rate this", instructions="judge it", model_name="gpt-5-codex", run_dir=tmp_path
-    )
+    argv = adapter.build_invocation(prompt="rate this", instructions="judge it", run_dir=tmp_path)
 
     assert "--sandbox" in argv
     assert argv[argv.index("--sandbox") + 1] == "read-only"

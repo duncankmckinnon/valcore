@@ -97,6 +97,9 @@ function makeSetupStatus(overrides: Partial<Record<SetupKey["name"], boolean>> =
   ];
   return {
     keys: names.map((name) => ({ ...fixed[name], set: set[name] })),
+    default_model: "gateway/anthropic:claude-sonnet-5",
+    local_cli_default: null,
+    local_cli_options: ["claude", "codex", "cursor"],
     logfire_explore_url: null,
     logfire_traces_url: null,
     logfire_datasets_url: null,
@@ -376,5 +379,48 @@ describe("OverviewPage setup card", () => {
     expect(await screen.findByText("Best accuracy")).toBeTruthy();
     expect(screen.getByText("91%")).toBeTruthy();
     expect(screen.getByText("Evaluators")).toBeTruthy();
+  });
+});
+
+describe("OverviewPage default model card", () => {
+  it("shows the local CLI as the default model when one is selected", async () => {
+    getMock.mockResolvedValue(makeOverview());
+    setupGet.mockResolvedValue({
+      ...makeSetupStatus(),
+      local_cli_default: "claude",
+      default_model: "local/claude",
+    });
+    render(<OverviewPage />, { wrapper: MemoryRouter });
+
+    await screen.findByText(/local cli: claude/i);
+  });
+
+  it("shows the resolved default_model even when local_cli_default is stale relative to an env override", async () => {
+    // VALCORE_DEFAULT_MODEL outranks config.toml's local_cli_default, so the backend can report a
+    // stored local CLI alongside a resolved gateway model. The card must follow default_model.
+    getMock.mockResolvedValue(makeOverview());
+    setupGet.mockResolvedValue({
+      ...makeSetupStatus(),
+      local_cli_default: "codex",
+      default_model: "gateway/openai:gpt-5",
+    });
+    render(<OverviewPage />, { wrapper: MemoryRouter });
+
+    await screen.findByText("gateway/openai:gpt-5");
+    expect(screen.queryByText(/local cli: codex/i)).not.toBeInTheDocument();
+  });
+
+  it("shows a not-set call to action when neither a gateway key nor a local CLI is configured", async () => {
+    getMock.mockResolvedValue(makeOverview());
+    setupGet.mockResolvedValue(makeSetupStatus({ gateway_api_key: false }));
+    render(<OverviewPage />, { wrapper: MemoryRouter });
+
+    // Scoped to the default-model card itself: with the gateway key unset, SetupCard's own
+    // expanded key row also renders a "Not set" span, so an unscoped findByText(/not set/i)
+    // matches two elements.
+    const label = await screen.findByText("Default model");
+    const card = label.closest(".default-model-card") as HTMLElement;
+    expect(within(card).getByText(/not set/i)).toBeInTheDocument();
+    expect(within(card).getByRole("link", { name: /settings/i })).toBeInTheDocument();
   });
 });

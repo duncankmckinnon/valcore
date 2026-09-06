@@ -309,12 +309,12 @@ def test_build_agent_passes_a_gateway_string_through_unchanged() -> None:
 def test_build_agent_resolves_a_local_model() -> None:
     from valcore.local_cli.bridge_model import CliBridgeModel
 
-    version = make_version(model="local/claude:sonnet")
+    version = make_version(model="local/claude")
 
     agent = build_agent(version)
 
     assert isinstance(agent.model, CliBridgeModel)
-    assert agent.model.model_name == "sonnet"
+    assert agent.model.model_name == "default"
 
 
 def test_build_agent_drops_capabilities_for_a_local_model(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -324,9 +324,7 @@ def test_build_agent_drops_capabilities_for_a_local_model(monkeypatch: pytest.Mo
     monkeypatch.setattr(
         "valcore.factory.build_capabilities", lambda specs: calls.append(specs) or []
     )
-    version = make_version(
-        model="local/claude:sonnet", capabilities=[{"name": "Shell", "config": {}}]
-    )
+    version = make_version(model="local/claude", capabilities=[{"name": "Shell", "config": {}}])
 
     build_agent(version)
 

@@ -4,9 +4,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { setup } from "../api/client";
-import type { SetupKey, SetupKeyName, SetupKeysIn, SetupStatus } from "../api/types";
+import type { ClearName, SetupKey, SetupKeyName, SetupKeysIn, SetupStatus } from "../api/types";
 import { PageHeader } from "../components/PageHeader";
-import { Button, ErrorBanner, Spinner } from "../components/ui";
+import { Button, ErrorBanner, Select, Spinner } from "../components/ui";
 
 const MASK = "••••••••";
 
@@ -30,6 +30,9 @@ export default function SettingsPage(): JSX.Element {
   const [dirty, setDirty] = useState<Set<SetupKeyName>>(new Set());
   const [cleared, setCleared] = useState<Set<SetupKeyName>>(new Set());
   const [sameReadWrite, setSameReadWrite] = useState(false);
+  const [localCliDraft, setLocalCliDraft] = useState<string | null>(null);
+  const [localCliDirty, setLocalCliDirty] = useState(false);
+  const [showGatewayKey, setShowGatewayKey] = useState(false);
 
   function load() {
     setLoading(true);
@@ -41,6 +44,9 @@ export default function SettingsPage(): JSX.Element {
         setDrafts({});
         setDirty(new Set());
         setCleared(new Set());
+        setLocalCliDraft(result.local_cli_default);
+        setLocalCliDirty(false);
+        setShowGatewayKey(keyByName(result, "gateway_api_key")?.set ?? false);
       })
       .catch(setError)
       .finally(() => setLoading(false));
@@ -50,12 +56,12 @@ export default function SettingsPage(): JSX.Element {
     load();
   }, []);
 
-  const canSave = dirty.size > 0 || cleared.size > 0;
+  const canSave = dirty.size > 0 || cleared.size > 0 || localCliDirty;
 
   const payload = useMemo((): SetupKeysIn | null => {
     if (!canSave) return null;
     const body: SetupKeysIn = {};
-    const clear: SetupKeyName[] = [];
+    const clear: ClearName[] = [];
     for (const name of dirty) {
       const value = (drafts[name] ?? "").trim();
       if (value === "" || value === MASK) {
@@ -74,9 +80,16 @@ export default function SettingsPage(): JSX.Element {
     if (sameReadWrite && body.logfire_read_key) {
       body.logfire_write_key = body.logfire_read_key;
     }
+    if (localCliDirty) {
+      if (localCliDraft === null) {
+        clear.push("local_cli_default");
+      } else {
+        body.local_cli_default = localCliDraft;
+      }
+    }
     if (clear.length > 0) body.clear = clear;
     return body;
-  }, [canSave, cleared, dirty, drafts, sameReadWrite, status]);
+  }, [canSave, cleared, dirty, drafts, sameReadWrite, status, localCliDirty, localCliDraft]);
 
   function setDraft(name: SetupKeyName, raw: string, item: SetupKey) {
     let next = raw;
@@ -108,6 +121,8 @@ export default function SettingsPage(): JSX.Element {
       setDrafts({});
       setDirty(new Set());
       setCleared(new Set());
+      setLocalCliDraft(result.local_cli_default);
+      setLocalCliDirty(false);
     } catch (err) {
       setError(err);
     } finally {
@@ -133,10 +148,13 @@ export default function SettingsPage(): JSX.Element {
     );
   }
 
+  const gatewayItem = keyByName(status, "gateway_api_key");
   const writeItem = keyByName(status, "logfire_write_key");
-  const visibleKeys = sameReadWrite
-    ? status.keys.filter((key) => key.name !== "logfire_write_key")
-    : status.keys;
+  const visibleKeys = status.keys.filter((key) => {
+    if (key.name === "gateway_api_key") return false;
+    if (sameReadWrite && key.name === "logfire_write_key") return false;
+    return true;
+  });
 
   return (
     <section>
@@ -145,6 +163,101 @@ export default function SettingsPage(): JSX.Element {
         description="Store API keys in the local config. Values are never sent back to the browser — a set key shows as masked until you replace it."
       />
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      <div className="model-selection-box">
+        <h3>Model Selection</h3>
+        <div className="model-selection-field">
+          <label htmlFor="local-cli-select">Local CLI default</label>
+          <Select
+            id="local-cli-select"
+            value={localCliDraft ?? ""}
+            onChange={(event) => {
+              setLocalCliDraft(event.target.value === "" ? null : event.target.value);
+              setLocalCliDirty(true);
+            }}
+            options={[
+              { value: "", label: "None (use the gateway)" },
+              ...status.local_cli_options.map((name) => ({ value: name, label: name })),
+            ]}
+          />
+          <p className="settings-explanation">
+            Reuses an already-installed, already-authenticated CLI (<code>claude</code>,{" "}
+            <code>codex</code>, or <code>cursor-agent</code>) on this machine instead of the
+            gateway — no API key needed. Set once here; it becomes the default for every new
+            evaluator and generation call going forward, and can still be overridden per
+            evaluator version. Requires that CLI's binary on <code>PATH</code> and already
+            logged in.
+          </p>
+        </div>
+        <label className="model-selection-gateway-toggle">
+          <input
+            type="checkbox"
+            checked={showGatewayKey}
+            onChange={(event) => {
+              const checked = event.target.checked;
+              setShowGatewayKey(checked);
+              if (checked) return;
+              // The checkbox reads as an intent toggle, not just a visibility one: unchecking it
+              // discards any pending gateway-key edit so Save can't POST a value whose input is
+              // hidden and whose box is unchecked.
+              setDrafts((current) => {
+                const next = { ...current };
+                delete next.gateway_api_key;
+                return next;
+              });
+              setDirty((current) => {
+                const next = new Set(current);
+                next.delete("gateway_api_key");
+                return next;
+              });
+              setCleared((current) => {
+                const next = new Set(current);
+                next.delete("gateway_api_key");
+                return next;
+              });
+            }}
+          />
+          Use Pydantic AI Gateway
+        </label>
+        {showGatewayKey && gatewayItem && (
+          <div className="settings-key">
+            <div className="settings-key-heading">
+              <label className="settings-key-label" htmlFor={`key-${gatewayItem.name}`}>
+                {gatewayItem.label}
+              </label>
+              <span className="setup-key-required">Required for gateway models</span>
+              <span>{gatewayItem.set ? "Set" : "Not set"}</span>
+            </div>
+            <p className="settings-explanation">{gatewayItem.explanation}</p>
+            {gatewayItem.from_env && (
+              <p className="settings-from-env">
+                Currently set from the environment. Saving still writes the file, but the
+                environment variable wins until it is unset.
+              </p>
+            )}
+            <div className="settings-key-row">
+              <input
+                id={`key-${gatewayItem.name}`}
+                className="input"
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                value={displayedValue(gatewayItem, drafts, dirty)}
+                placeholder={gatewayItem.set ? undefined : "Not set"}
+                onChange={(event) => setDraft(gatewayItem.name, event.target.value, gatewayItem)}
+              />
+              {gatewayItem.set && (
+                <Button
+                  variant="secondary"
+                  type="button"
+                  onClick={() => clearKey(gatewayItem.name)}
+                >
+                  Clear
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
       <ul className="settings-keys">
         {visibleKeys.map((item) => (
           <li key={item.name} className="settings-key">

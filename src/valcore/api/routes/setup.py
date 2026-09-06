@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from valcore import logfire_links
 from valcore.config import (
     clear_gateway_key,
+    clear_local_cli_default,
     clear_logfire_read_key,
     clear_logfire_token,
     clear_logfire_write_key,
@@ -28,16 +29,26 @@ from valcore.config import (
     resolve_logfire_write_key,
     save_config,
     set_key,
+    set_local_cli_default,
     set_logfire_read_key,
     set_logfire_token,
     set_logfire_write_key,
 )
 from valcore.errors import ContractError
+from valcore.settings import LOCAL_CLI_NAMES, get_settings
 
 router = APIRouter(prefix="/api/setup", tags=["setup"])
 
-_CLEARABLE = ("gateway_api_key", "logfire_token", "logfire_read_key", "logfire_write_key")
-ClearName = Literal["gateway_api_key", "logfire_token", "logfire_read_key", "logfire_write_key"]
+_CLEARABLE = (
+    "gateway_api_key",
+    "logfire_token",
+    "logfire_read_key",
+    "logfire_write_key",
+    "local_cli_default",
+)
+ClearName = Literal[
+    "gateway_api_key", "logfire_token", "logfire_read_key", "logfire_write_key", "local_cli_default"
+]
 
 
 class KeyStatus(BaseModel):
@@ -63,6 +74,9 @@ class SetupOut(BaseModel):
     """
 
     keys: list[KeyStatus]
+    default_model: str
+    local_cli_default: str | None = None
+    local_cli_options: list[str] = Field(default_factory=list)
     logfire_explore_url: str | None = None
     logfire_traces_url: str | None = None
     logfire_datasets_url: str | None = None
@@ -75,6 +89,7 @@ class SetupKeysIn(BaseModel):
     logfire_token: str | None = None
     logfire_read_key: str | None = None
     logfire_write_key: str | None = None
+    local_cli_default: str | None = None
     clear: list[ClearName] = Field(default_factory=list)
 
 
@@ -82,7 +97,7 @@ _GATEWAY_EXPLANATION = (
     "valcore reaches hosted models through the Pydantic AI Gateway — there is no "
     "direct-to-provider client. Without this key, generation and runs cannot call a "
     "gateway model. Authoring by hand, uploading a CSV, labeling, and export still work. "
-    "A local/<cli>:<name> model (claude/codex/cursor) reuses an already logged-in CLI on "
+    "A local model (local/claude, local/codex, or local/cursor) reuses an already logged-in CLI on "
     "this machine instead, and needs no gateway key. "
     "Create the key in the Pydantic AI Gateway. This is not a Logfire credential."
 )
@@ -170,6 +185,9 @@ async def _status() -> SetupOut:
                 from_env=False,
             ),
         ],
+        default_model=get_settings().default_model,
+        local_cli_default=cfg.local_cli_default,
+        local_cli_options=sorted(LOCAL_CLI_NAMES),
         logfire_explore_url=(read_links.explore_url if read_links else None)
         or cfg.logfire_explore_url,
         logfire_traces_url=read_links.traces_url if read_links else None,
@@ -202,12 +220,19 @@ async def post_setup(body: SetupKeysIn) -> SetupOut:
         "logfire_read_key": _require_nonblank("logfire_read_key", body.logfire_read_key),
         "logfire_write_key": _require_nonblank("logfire_write_key", body.logfire_write_key),
     }
-    overlapping = [name for name in body.clear if values[name] is not None]
+    overlapping = [name for name in body.clear if values.get(name) is not None]
     if overlapping:
         raise ContractError(f"Cannot set and clear {overlapping[0]} in the same request.")
     unknown = [name for name in body.clear if name not in _CLEARABLE]
     if unknown:
         raise ContractError(f"Unknown key to clear: {unknown[0]}.")
+    if body.local_cli_default is not None and body.local_cli_default not in LOCAL_CLI_NAMES:
+        raise ContractError(
+            f"Unknown local CLI {body.local_cli_default!r}; valid names are "
+            f"{sorted(LOCAL_CLI_NAMES)}."
+        )
+    if body.local_cli_default is not None and "local_cli_default" in body.clear:
+        raise ContractError("Cannot set and clear local_cli_default in the same request.")
 
     touching_split = (
         values["logfire_read_key"] is not None
@@ -227,6 +252,10 @@ async def post_setup(body: SetupKeysIn) -> SetupOut:
         set_logfire_read_key(values["logfire_read_key"])
     if values["logfire_write_key"] is not None:
         set_logfire_write_key(values["logfire_write_key"])
+    if body.local_cli_default is not None:
+        set_local_cli_default(body.local_cli_default)
+    if "local_cli_default" in body.clear:
+        clear_local_cli_default()
 
     for name in body.clear:
         if name == "gateway_api_key":
@@ -238,4 +267,5 @@ async def post_setup(body: SetupKeysIn) -> SetupOut:
         elif name == "logfire_write_key":
             clear_logfire_write_key()
 
+    get_settings.cache_clear()
     return await _status()

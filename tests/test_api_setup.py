@@ -473,6 +473,43 @@ async def test_post_setup_clearing_read_on_legacy_key_keeps_write() -> None:
     assert cfg.logfire_api_key is None
 
 
+@pytest.mark.anyio
+async def test_get_setup_reports_no_local_cli_default_and_the_gateway_default_model() -> None:
+    body = await _get_setup(create_app())
+    assert body["local_cli_default"] is None
+    assert body["default_model"] == "gateway/anthropic:claude-sonnet-5"
+    assert set(body["local_cli_options"]) == {"claude", "codex", "cursor"}
+
+
+@pytest.mark.anyio
+async def test_post_setup_sets_local_cli_default_and_it_becomes_the_effective_default() -> None:
+    from valcore.settings import get_settings
+
+    resp = await _post_setup(create_app(), {"local_cli_default": "codex"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["local_cli_default"] == "codex"
+    assert body["default_model"] == "local/codex"
+    assert get_settings().default_model == "local/codex"
+
+
+@pytest.mark.anyio
+async def test_post_setup_clear_local_cli_default_reverts_to_the_gateway_default() -> None:
+    app = create_app()
+    await _post_setup(app, {"local_cli_default": "claude"})
+    resp = await _post_setup(app, {"clear": ["local_cli_default"]})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["local_cli_default"] is None
+    assert body["default_model"] == "gateway/anthropic:claude-sonnet-5"
+
+
+@pytest.mark.anyio
+async def test_post_setup_rejects_an_unknown_local_cli_name() -> None:
+    resp = await _post_setup(create_app(), {"local_cli_default": "chatgpt"})
+    assert resp.status_code == 422, resp.text
+
+
 # -- App starts and serves health with no Logfire token configured -------------
 
 

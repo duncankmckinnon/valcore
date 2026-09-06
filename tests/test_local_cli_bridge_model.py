@@ -35,11 +35,10 @@ class FakeCliAdapter:
         self._usage = usage
         self.last_invocation: dict[str, str] | None = None
 
-    def build_invocation(self, *, prompt, instructions, model_name, run_dir) -> list[str]:
+    def build_invocation(self, *, prompt, instructions, run_dir) -> list[str]:
         self.last_invocation = {
             "prompt": prompt,
             "instructions": instructions,
-            "model_name": model_name,
         }
         return [sys.executable, "-c", f"import sys; sys.stdout.write({self._stdout_text!r})"]
 
@@ -52,7 +51,7 @@ async def test_cli_bridge_model_parses_output_into_structured_result_and_usage()
     adapter = FakeCliAdapter(
         stdout_text='{"verdict": "pass"}', usage=RequestUsage(input_tokens=5, output_tokens=7)
     )
-    model = CliBridgeModel(adapter, model_name="fake-model")
+    model = CliBridgeModel(adapter)
     agent = Agent(model, output_type=JudgeOutput, instructions="judge it")
 
     result = await agent.run("rate this")
@@ -70,7 +69,7 @@ async def test_cli_bridge_model_parses_output_into_structured_result_and_usage()
 async def test_cli_bridge_model_tolerates_a_markdown_code_fence() -> None:
     fenced = '```json\n{"verdict": "pass"}\n```'
     adapter = FakeCliAdapter(stdout_text=fenced, usage=RequestUsage())
-    model = CliBridgeModel(adapter, model_name="fake-model")
+    model = CliBridgeModel(adapter)
     agent = Agent(model, output_type=JudgeOutput, instructions="judge it")
 
     result = await agent.run("rate this")
@@ -89,7 +88,7 @@ async def test_cli_bridge_model_raises_on_nonzero_exit() -> None:
         def parse_output(self, stdout: str) -> tuple[str, RequestUsage]:
             raise AssertionError("should not be called")
 
-    model = CliBridgeModel(FailingAdapter(), model_name="fake-model")
+    model = CliBridgeModel(FailingAdapter())
     agent = Agent(model, output_type=JudgeOutput, instructions="x")
 
     with pytest.raises(RuntimeError, match="exited with code 1"):
@@ -99,7 +98,7 @@ async def test_cli_bridge_model_raises_on_nonzero_exit() -> None:
 @pytest.mark.anyio
 async def test_cli_bridge_model_raises_when_output_is_not_json() -> None:
     adapter = FakeCliAdapter(stdout_text="not json at all", usage=RequestUsage())
-    model = CliBridgeModel(adapter, model_name="fake-model")
+    model = CliBridgeModel(adapter)
     agent = Agent(model, output_type=JudgeOutput, instructions="x")
 
     with pytest.raises(RuntimeError, match="did not return a JSON object"):
@@ -125,10 +124,8 @@ async def test_cli_bridge_model_retries_on_validation_failure() -> None:
             self.invocations: list[dict[str, str]] = []
             self.call_count = 0
 
-        def build_invocation(self, *, prompt, instructions, model_name, run_dir) -> list[str]:
-            self.invocations.append(
-                {"prompt": prompt, "instructions": instructions, "model_name": model_name}
-            )
+        def build_invocation(self, *, prompt, instructions, run_dir) -> list[str]:
+            self.invocations.append({"prompt": prompt, "instructions": instructions})
             self.call_count += 1
             # First call: return JSON missing the required 'confidence' field
             if self.call_count == 1:
@@ -142,7 +139,7 @@ async def test_cli_bridge_model_retries_on_validation_failure() -> None:
             return stdout, RequestUsage()
 
     adapter = RetryingAdapter()
-    model = CliBridgeModel(adapter, model_name="fake-model")
+    model = CliBridgeModel(adapter)
     agent = Agent(model, output_type=StrictOutput, instructions="be strict")
 
     result = await agent.run("rate this")
@@ -192,7 +189,7 @@ async def test_nonzero_exit_error_carries_stdout_as_well_as_stderr() -> None:
         def parse_output(self, stdout: str) -> tuple[str, RequestUsage]:
             raise AssertionError("should not be called")
 
-    model = CliBridgeModel(FailingAdapter(), model_name="fake-model")
+    model = CliBridgeModel(FailingAdapter())
     agent = Agent(model, output_type=JudgeOutput, instructions="x")
 
     with pytest.raises(RuntimeError) as excinfo:
@@ -226,7 +223,7 @@ async def test_undecodable_stdout_is_replaced_rather_than_raising() -> None:
             assert "\ufffd" in stdout
             return stdout.lstrip("\ufffd"), RequestUsage()
 
-    model = CliBridgeModel(BinaryAdapter(), model_name="fake-model")
+    model = CliBridgeModel(BinaryAdapter())
     agent = Agent(model, output_type=JudgeOutput, instructions="x")
 
     result = await agent.run("rate this")

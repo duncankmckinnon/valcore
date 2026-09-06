@@ -556,7 +556,7 @@ async def test_create_run_with_local_model_succeeds_without_gateway_key(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
-    version = make_version(store, model="local/claude:sonnet")
+    version = make_version(store, model="local/claude")
     dataset, _ = make_dataset(store, ["pass", "fail", "pass"])
 
     async with _client(store, constant_factory()) as client:
@@ -571,7 +571,7 @@ async def test_create_run_with_local_model_succeeds_without_gateway_key(
 async def test_retry_failed_with_local_model_succeeds_without_gateway_key(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    version = make_version(store, model="local/claude:sonnet")
+    version = make_version(store, model="local/claude")
     dataset, _rows = make_dataset(store, ["pass", "pass", "pass"], inputs=["ok0", "BOOM", "ok2"])
     seen: list[str] = []
 

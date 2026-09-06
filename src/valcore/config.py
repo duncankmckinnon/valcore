@@ -30,6 +30,7 @@ class FileConfig(BaseModel):
 
     gateway_api_key: str | None = None
     model: str | None = None
+    local_cli_default: str | None = None
     port: int | None = None
     concurrency: int | None = None
     db_path: Path | None = None
@@ -53,6 +54,8 @@ def _dump_toml(cfg: FileConfig) -> str:
         lines.append(f"gateway_api_key = {_toml_str(cfg.gateway_api_key)}")
     if cfg.model is not None:
         lines.append(f"model = {_toml_str(cfg.model)}")
+    if cfg.local_cli_default is not None:
+        lines.append(f"local_cli_default = {_toml_str(cfg.local_cli_default)}")
     if cfg.port is not None:
         lines.append(f"port = {cfg.port}")
     if cfg.concurrency is not None:
@@ -175,6 +178,25 @@ def clear_gateway_key() -> None:
     """Remove the stored gateway API key, preserving other config values."""
     cfg = load_config()
     cfg.gateway_api_key = None
+    save_config(cfg)
+
+
+def set_local_cli_default(name: str) -> None:
+    """Persist `name` ('claude'/'codex'/'cursor') as the default local CLI model.
+
+    Not validated here: `config.py` has no import of `valcore.settings` (which would cycle
+    back through `settings.py -> config.py`). The caller validates `name` against
+    `valcore.settings.LOCAL_CLI_NAMES` before calling this.
+    """
+    cfg = load_config()
+    cfg.local_cli_default = name
+    save_config(cfg)
+
+
+def clear_local_cli_default() -> None:
+    """Remove the stored local-CLI default, preserving other config values."""
+    cfg = load_config()
+    cfg.local_cli_default = None
     save_config(cfg)
 
 

@@ -547,13 +547,13 @@ def test_judge_module_reuses_output_model_renderer() -> None:
 # -- Local CLI models cannot be exported ---------------------------------------
 #
 # A rendered script is deliberately valcore-free, so it cannot import valcore.local_cli and
-# has no resolve_model seam: Agent("local/claude:sonnet") dies with pydantic_ai's
+# has no resolve_model seam: Agent("local/claude") dies with pydantic_ai's
 # `UserError: Unknown model`. Refuse up front rather than hand back a script that is broken
 # the first time it runs.
 
 
 def test_render_script_refuses_a_local_cli_model() -> None:
-    version = _make_version(model="local/claude:sonnet")
+    version = _make_version(model="local/claude")
 
     with pytest.raises(ContractError, match="local CLI"):
         render_script(version)
@@ -572,7 +572,7 @@ def test_render_script_refuses_a_local_cli_model_before_any_other_rendering_work
         render_script(_make_version(model="gateway/openai:gpt-5", output_fields=broken_fields))
 
     with pytest.raises(ContractError, match="local CLI"):
-        render_script(_make_version(model="local/cursor:composer", output_fields=broken_fields))
+        render_script(_make_version(model="local/cursor", output_fields=broken_fields))
 
 
 def test_render_script_still_accepts_a_gateway_model() -> None:

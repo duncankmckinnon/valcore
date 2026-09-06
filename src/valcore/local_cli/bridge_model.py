@@ -31,9 +31,7 @@ class CliAdapter(Protocol):
 
     cli_name: str
 
-    def build_invocation(
-        self, *, prompt: str, instructions: str, model_name: str, run_dir: Path
-    ) -> list[str]:
+    def build_invocation(self, *, prompt: str, instructions: str, run_dir: Path) -> list[str]:
         """Return the argv to run this CLI non-interactively for one prompt/instructions pair.
 
         `run_dir` is a fresh temporary directory scoped to this call alone, for an adapter
@@ -122,14 +120,13 @@ def _extract_json_object(text: str) -> dict[str, Any]:
 class CliBridgeModel(Model):
     """Delegates a single Agent turn to a non-interactive agent CLI: prompt in, JSON out."""
 
-    def __init__(self, adapter: CliAdapter, *, model_name: str) -> None:
+    def __init__(self, adapter: CliAdapter) -> None:
         self._adapter = adapter
-        self._model_name = model_name
         super().__init__()
 
     @property
     def model_name(self) -> str:
-        return self._model_name
+        return "default"
 
     @property
     def system(self) -> str:
@@ -171,7 +168,6 @@ class CliBridgeModel(Model):
             argv = self._adapter.build_invocation(
                 prompt=prompt,
                 instructions=full_instructions,
-                model_name=self._model_name,
                 run_dir=run_dir,
             )
             proc = await asyncio.create_subprocess_exec(

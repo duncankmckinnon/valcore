@@ -14,6 +14,7 @@ from valcore.config import (
     apply_gateway_key,
     apply_logfire_token,
     clear_gateway_key,
+    clear_local_cli_default,
     clear_logfire_read_key,
     clear_logfire_token,
     clear_logfire_write_key,
@@ -28,6 +29,7 @@ from valcore.config import (
     resolve_logfire_write_key,
     save_config,
     set_key,
+    set_local_cli_default,
     set_logfire_api_key,
     set_logfire_explore_url,
     set_logfire_read_key,
@@ -77,6 +79,7 @@ def test_load_config_missing_returns_all_none(_home: Path) -> None:
     assert cfg.logfire_read_key is None
     assert cfg.logfire_write_key is None
     assert cfg.logfire_explore_url is None
+    assert cfg.local_cli_default is None
 
 
 def test_save_load_round_trips_every_field() -> None:
@@ -91,10 +94,28 @@ def test_save_load_round_trips_every_field() -> None:
         logfire_read_key="lf-read-key",
         logfire_write_key="lf-write-key",
         logfire_explore_url="https://logfire-us.pydantic.dev/duncan/agent-tracing/explore",
+        local_cli_default="claude",
     )
     save_config(cfg)
     loaded = load_config()
     assert loaded == cfg
+
+
+def test_set_local_cli_default_preserves_other_fields() -> None:
+    save_config(FileConfig(model="gateway/openai:gpt-5", concurrency=3))
+    set_local_cli_default("claude")
+    loaded = load_config()
+    assert loaded.local_cli_default == "claude"
+    assert loaded.model == "gateway/openai:gpt-5"
+    assert loaded.concurrency == 3
+
+
+def test_clear_local_cli_default_preserves_other_fields() -> None:
+    save_config(FileConfig(local_cli_default="codex", model="gateway/openai:gpt-5"))
+    clear_local_cli_default()
+    loaded = load_config()
+    assert loaded.local_cli_default is None
+    assert loaded.model == "gateway/openai:gpt-5"
 
 
 def test_save_load_round_trips_logfire_fields_only() -> None:
@@ -278,6 +299,21 @@ def test_model_and_concurrency_precedence(monkeypatch: pytest.MonkeyPatch) -> No
     # explicit argument beats env.
     explicit = settings.Settings(default_model="gateway/anthropic:claude-opus-4-5")
     assert explicit.default_model == "gateway/anthropic:claude-opus-4-5"
+
+
+def test_local_cli_default_in_toml_becomes_the_local_route_and_beats_model() -> None:
+    save_config(FileConfig(local_cli_default="codex", model="gateway/openai:gpt-5"))
+    settings.get_settings.cache_clear()
+    assert settings.Settings().default_model == "local/codex"
+
+
+def test_hand_edited_bad_local_cli_default_raises_config_error() -> None:
+    # A typo in a hand-edited config.toml must fail here, naming the file and the valid names,
+    # rather than surfacing later as an "Unknown model" from deep inside pydantic-ai.
+    save_config(FileConfig(local_cli_default="claud"))
+    settings.get_settings.cache_clear()
+    with pytest.raises(ConfigError, match="local_cli_default 'claud' is not a known local CLI"):
+        settings.Settings()
 
 
 def test_interrupted_save_leaves_previous_file_intact(
@@ -574,18 +610,18 @@ def test_validate_model_string_still_rejects_malformed_names() -> None:
 
 
 def test_validate_model_string_accepts_local_cli_routes() -> None:
-    for name in ("local/claude:sonnet", "local/codex:gpt-5-codex", "local/cursor:composer"):
+    for name in ("local/claude", "local/codex", "local/cursor"):
         settings.validate_model_string(name)  # must not raise
 
 
 def test_validate_model_string_rejects_malformed_local_cli_names() -> None:
-    for bad in ("local/claude", "local/claude:", "local/unknown-cli:sonnet"):
+    for bad in ("local/claude:sonnet", "local/claude:", "local/unknown-cli"):
         with pytest.raises(ConfigError):
             settings.validate_model_string(bad)
 
 
 def test_is_local_cli_model_distinguishes_routes() -> None:
-    assert settings.is_local_cli_model("local/claude:sonnet") is True
+    assert settings.is_local_cli_model("local/claude") is True
     assert settings.is_local_cli_model("gateway/anthropic:claude-sonnet-5") is False
 
 

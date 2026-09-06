@@ -346,8 +346,13 @@ export interface SetupKey {
   from_env: boolean;
 }
 
+export type ClearName = SetupKeyName | "local_cli_default";
+
 export interface SetupStatus {
   keys: SetupKey[];
+  default_model: string;
+  local_cli_default: string | null;
+  local_cli_options: string[];
   // Not secrets: pages in the Logfire project the read key is scoped to. Null when
   // the key is unset or lookup failed. A stored Explore URL fills explore only.
   logfire_explore_url: string | null;
@@ -360,7 +365,8 @@ export interface SetupKeysIn {
   logfire_token?: string;
   logfire_read_key?: string;
   logfire_write_key?: string;
-  clear?: SetupKeyName[];
+  local_cli_default?: string | null;
+  clear?: ClearName[];
 }
 
 export interface DatasetLogfirePull {
