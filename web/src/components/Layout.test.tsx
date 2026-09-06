@@ -45,21 +45,23 @@ describe("Layout nav", () => {
     expect(screen.getAllByRole("link")).toHaveLength(7);
   });
 
-  it("orders Docs and Settings directly under Overview, above the labelled groups", () => {
+  it("separates Docs below the app-owned navigation", () => {
     renderLayout("/");
 
-    // Docs sits with Overview as the ungrouped entries at the top: it is read
-    // before you have anything to author or measure, so it should not be buried under
-    // the working surfaces. Settings follows: keys are configured before that work.
+    // Docs is an external destination, so it follows the app-owned working surfaces.
     expect(screen.getAllByRole("link").map((link) => link.textContent)).toEqual([
       "Overview",
-      "Docs",
       "Settings",
       "Evaluators",
       "Datasets",
       "Runs",
       "Compare",
+      "Docs",
     ]);
+
+    expect(screen.getByRole("link", { name: "Docs" }).parentElement?.className).toBe(
+      "nav-external",
+    );
   });
 
   it("points Docs at the canonical website and Settings into the app", () => {

@@ -72,10 +72,6 @@ export default function Layout() {
         </div>
         {/* `end` keeps the "/" link from matching every route and staying active. */}
         <NavItemLink {...OVERVIEW} end />
-        <a className="nav-link" href={DOCS_BASE_URL} target="_blank" rel="noreferrer">
-          <span className="nav-icon"><DocsIcon /></span>
-          <span className="nav-label">Docs</span>
-        </a>
         <NavItemLink {...SETTINGS} />
         {SECTIONS.map((section) => (
           <div className="nav-section" key={section.label}>
@@ -85,6 +81,12 @@ export default function Layout() {
             ))}
           </div>
         ))}
+        <div className="nav-external">
+          <a className="nav-link" href={DOCS_BASE_URL} target="_blank" rel="noreferrer">
+            <span className="nav-icon"><DocsIcon /></span>
+            <span className="nav-label">Docs</span>
+          </a>
+        </div>
         <div className="nav-footer">
           <span className="nav-footer-dot" />
           <span><strong>Local-first</strong> Your evaluation data stays under your control.</span>
