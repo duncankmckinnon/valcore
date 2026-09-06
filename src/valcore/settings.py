@@ -75,7 +75,9 @@ class _TomlConfigSource(PydanticBaseSettingsSource):
         mapped: dict[str, Any] = {}
         if cfg.db_path is not None:
             mapped["db_path"] = cfg.db_path
-        if cfg.model is not None:
+        if cfg.local_cli_default is not None:
+            mapped["default_model"] = f"local/{cfg.local_cli_default}"
+        elif cfg.model is not None:
             mapped["default_model"] = cfg.model
         if cfg.concurrency is not None:
             mapped["default_concurrency"] = cfg.concurrency
