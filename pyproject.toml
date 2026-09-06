@@ -82,3 +82,4 @@ line-length = 100
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--cov=valcore --cov-report=term-missing"

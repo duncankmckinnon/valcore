@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from pydantic_evals import Case
 from pydantic_evals import Dataset as EvalsDataset
 
+from valcore.errors import ContractError
 from valcore.export import (
     render_dataset_module,
     render_judge_module,
@@ -541,3 +542,40 @@ def test_judge_module_reuses_output_model_renderer() -> None:
     judge_ns = _exec_script(judge_src)
     assert set(judge_ns["OutputModel"].model_fields) == set(script_ns["OutputModel"].model_fields)
     assert "from typing import Literal" in judge_src
+
+
+# -- Local CLI models cannot be exported ---------------------------------------
+#
+# A rendered script is deliberately valcore-free, so it cannot import valcore.local_cli and
+# has no resolve_model seam: Agent("local/claude:sonnet") dies with pydantic_ai's
+# `UserError: Unknown model`. Refuse up front rather than hand back a script that is broken
+# the first time it runs.
+
+
+def test_render_script_refuses_a_local_cli_model() -> None:
+    version = _make_version(model="local/claude:sonnet")
+
+    with pytest.raises(ContractError, match="local CLI"):
+        render_script(version)
+
+
+def test_render_script_refuses_a_local_cli_model_before_any_other_rendering_work() -> None:
+    """The refusal comes first, so a local model is never reported as some other problem.
+
+    These same output_fields make ``parse_output_fields`` -- ``render_script``'s first step
+    -- raise a ``ValidationError`` for a gateway model (asserted here so the test keeps
+    proving ordering rather than quietly passing if that stopped being true).
+    """
+    broken_fields = [{"name": "verdict", "type": "enum", "description": "x"}]
+
+    with pytest.raises(ValidationError):
+        render_script(_make_version(model="gateway/openai:gpt-5", output_fields=broken_fields))
+
+    with pytest.raises(ContractError, match="local CLI"):
+        render_script(_make_version(model="local/cursor:composer", output_fields=broken_fields))
+
+
+def test_render_script_still_accepts_a_gateway_model() -> None:
+    src = render_script(_make_version(model="gateway/openai:gpt-5"))
+
+    assert "MODEL = 'gateway/openai:gpt-5'" in src

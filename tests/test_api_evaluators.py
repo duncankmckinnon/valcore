@@ -1125,3 +1125,78 @@ async def test_refine_without_gateway_key_is_client_error_not_500(
     assert error["type"] == "ConfigError"
     assert "valcore config set-key" in error["message"]
     assert calls == []
+
+
+# -- Local CLI models need no gateway key --------------------------------------
+#
+# A local/<cli>:<name> model reaches an already-logged-in CLI on this machine, never the
+# gateway, so the guard above must not fire for one. generate/{id}/generate/refine resolve
+# to get_settings().default_model, so that is what decides whether the key is required.
+
+
+@pytest.fixture
+def _local_default_model(monkeypatch: pytest.MonkeyPatch):
+    """Point ``default_model`` at a local CLI model and clear the settings cache."""
+    from valcore import settings
+
+    monkeypatch.setenv("VALCORE_DEFAULT_MODEL", "local/claude:sonnet")
+    settings.get_settings.cache_clear()
+    yield
+    settings.get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_generate_with_local_model_succeeds_without_gateway_key(
+    app, monkeypatch: pytest.MonkeyPatch, _local_default_model
+) -> None:
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    async with _client(app) as client:
+        response = await client.post("/api/evaluators/generate", json={"criteria": "x"})
+
+    assert response.status_code == 200, response.text
+    assert len(calls) == 1
+
+
+@pytest.mark.anyio
+async def test_generate_version_with_local_model_succeeds_without_gateway_key(
+    app, monkeypatch: pytest.MonkeyPatch, _local_default_model
+) -> None:
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    async with _client(app) as client:
+        eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]
+        response = await client.post(f"/api/evaluators/{eval_id}/generate", json={"criteria": "x"})
+
+    assert response.status_code == 200, response.text
+    assert len(calls) == 1
+
+
+@pytest.mark.anyio
+async def test_refine_with_local_model_succeeds_without_gateway_key(
+    app, monkeypatch: pytest.MonkeyPatch, _local_default_model
+) -> None:
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    calls: list[dict] = []
+
+    async def fake_refine(config: GeneratedConfig, instruction: str) -> RefinedConfig:
+        calls.append({"config": config, "instruction": instruction})
+        return RefinedConfig(config=config, changed_fields=[], summary="unused")
+
+    monkeypatch.setattr(generator, "refine_config", fake_refine)
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/refine",
+            json={
+                "config": _canned_generated().model_dump(mode="json"),
+                "instruction": "be stricter",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert len(calls) == 1

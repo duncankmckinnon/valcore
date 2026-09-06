@@ -42,7 +42,7 @@ from valcore.models import (
 )
 from valcore.paths import config_path
 from valcore.runner import RunEvent, execute_run
-from valcore.settings import get_settings
+from valcore.settings import get_settings, is_local_cli_model
 from valcore.store import Store, create_engine, init_db
 
 _LOCAL_DB = Path("valcore.db")
@@ -427,11 +427,17 @@ def run(
     watch: bool,
     min_accuracy: float | None,
 ) -> None:
-    """Run an evaluator version over a dataset."""
-    config_module.require_gateway_key()
+    """Run an evaluator version over a dataset.
+
+    Resolving the version first lets the gateway-key guard stand down for a
+    ``local/<cli>:<name>`` model, which reaches an already-logged-in CLI on this machine
+    rather than the gateway. Resolution only reads, so nothing is created ahead of the guard.
+    """
     store = _store(ctx)
     ev = resolve_evaluator(store, evaluator)
     ver = resolve_version(store, ev, version_name)
+    if not is_local_cli_model(ver.model):
+        config_module.require_gateway_key()
     ds = resolve_dataset(store, dataset)
 
     workers = concurrency if concurrency is not None else get_settings().default_concurrency
@@ -502,11 +508,16 @@ def experiment_cmd(
     A second engine over the same data as ``run``, interchangeable with it at the CLI
     level. It has no ``--watch`` and no cancellation, because ``Dataset.evaluate`` offers
     neither.
+
+    Resolving the version first lets the gateway-key guard stand down for a
+    ``local/<cli>:<name>`` model, which reaches an already-logged-in CLI on this machine
+    rather than the gateway. Resolution only reads, so nothing is created ahead of the guard.
     """
-    config_module.require_gateway_key()
     store = _store(ctx)
     ev = resolve_evaluator(store, evaluator)
     ver = resolve_version(store, ev, version_name)
+    if not is_local_cli_model(ver.model):
+        config_module.require_gateway_key()
     ds = resolve_dataset(store, dataset)
 
     workers = concurrency if concurrency is not None else get_settings().default_concurrency

@@ -15,11 +15,24 @@ from valcore.export import render_judge_module, render_script
 from valcore.generator import GeneratedConfig, RefinedConfig
 from valcore.models import CapabilitySpec, Evaluator, LabelSchema, OutputField, ScoreKind
 from valcore.seeding import evaluator_seed_from_dataset
+from valcore.settings import get_settings, is_local_cli_model
 from valcore.store import Store
 
 router = APIRouter(prefix="/api/evaluators", tags=["evaluators"])
 
 StoreDep = Annotated[Store, Depends(get_store)]
+
+
+def _require_gateway_key_unless_local() -> None:
+    """Require the gateway key unless generation resolves to a local CLI model.
+
+    None of the generate/refine routes pass an explicit model, so they all resolve to
+    ``get_settings().default_model`` inside ``generator``. A ``local/<cli>:<name>`` default
+    reaches an already-logged-in CLI on this machine, never the gateway, so demanding a
+    gateway key there would block the exact keyless setup local CLI models exist for.
+    """
+    if not is_local_cli_model(get_settings().default_model):
+        config.require_gateway_key()
 
 
 # -- Request bodies -----------------------------------------------------------
@@ -431,7 +444,7 @@ async def generate(body: GenerateRequest, store: StoreDep) -> GeneratedConfig:
     Calls an LLM and can take tens of seconds; the UI presents the returned config as an
     editable draft saved as a version separately.
     """
-    config.require_gateway_key()
+    _require_gateway_key_unless_local()
     columns, label_schema = _resolve_seed(body, store)
     return await generator.generate_config(
         body.criteria,
@@ -449,7 +462,7 @@ async def generate_version(id: str, body: GenerateRequest, store: StoreDep) -> G
     of seconds; the UI presents the returned config as an editable draft that the user
     saves as a version separately.
     """
-    config.require_gateway_key()
+    _require_gateway_key_unless_local()
     store.get_evaluator(id)
     columns, label_schema = _resolve_seed(body, store)
     return await generator.generate_config(
@@ -467,5 +480,5 @@ async def refine_version(body: RefineRequest) -> RefinedConfig:
     Calls an LLM and can take tens of seconds. The response includes ``changed_fields``
     for the diff view; nothing is saved until the user submits a new version.
     """
-    config.require_gateway_key()
+    _require_gateway_key_unless_local()
     return await generator.refine_config(body.config, body.instruction)

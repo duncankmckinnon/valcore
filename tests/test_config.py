@@ -571,3 +571,26 @@ def test_validate_model_string_still_rejects_malformed_names() -> None:
     for bad in ("claude-sonnet-5", "gateway/nope:x", "gateway/anthropic:"):
         with pytest.raises(ConfigError):
             settings.validate_model_string(bad)
+
+
+def test_validate_model_string_accepts_local_cli_routes() -> None:
+    for name in ("local/claude:sonnet", "local/codex:gpt-5-codex", "local/cursor:composer"):
+        settings.validate_model_string(name)  # must not raise
+
+
+def test_validate_model_string_rejects_malformed_local_cli_names() -> None:
+    for bad in ("local/claude", "local/claude:", "local/unknown-cli:sonnet"):
+        with pytest.raises(ConfigError):
+            settings.validate_model_string(bad)
+
+
+def test_is_local_cli_model_distinguishes_routes() -> None:
+    assert settings.is_local_cli_model("local/claude:sonnet") is True
+    assert settings.is_local_cli_model("gateway/anthropic:claude-sonnet-5") is False
+
+
+def test_model_catalog_still_only_covers_gateway_routes() -> None:
+    """Local routes are validated but not suggested -- there is no fixed name list for them."""
+    catalog = settings.model_catalog()
+    routes_seen = {name.split(":", 1)[0] for name in catalog}
+    assert routes_seen == set(settings.GATEWAY_ROUTES)

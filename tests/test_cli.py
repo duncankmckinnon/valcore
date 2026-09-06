@@ -331,6 +331,50 @@ def test_experiment_no_gateway_key_exits_nonzero_naming_set_key(
         assert store.list_results(run.id) == []
 
 
+# A local/<cli>:<name> version reaches an already-logged-in CLI on this machine, never the
+# gateway, so the guard must not fire for one -- a keyless machine is the exact scenario the
+# local-CLI feature exists for. The guard is decided by the resolved version's own model, so
+# the version must be resolved before the check, not after.
+
+
+def _local_model_version(store: Store) -> None:
+    """Add a ``local/claude:sonnet`` version ``v2`` to the seeded evaluator.
+
+    Selected explicitly with ``--version v2``; the seeded gateway version stays active so
+    the two coexist exactly as they would in a real store.
+    """
+    evaluator = resolve_evaluator(store, "judge")
+    store.create_version(
+        evaluator.id, **{**VERSION_FIELDS, "version_name": "v2", "model": "local/claude:sonnet"}
+    )
+
+
+def test_run_with_local_model_succeeds_without_gateway_key(runner, store, db_path, monkeypatch):
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    monkeypatch.setattr("valcore.runner.build_agent", _constant_agent_builder("pass"))
+    _local_model_version(store)
+
+    result = _invoke(runner, db_path, "run", "judge", "cases", "--version", "v2")
+
+    assert result.exit_code == 0, result.output + result.stderr
+    runs = store.list_runs()
+    assert runs and len(store.list_results(runs[0].id)) == 4
+
+
+def test_experiment_with_local_model_succeeds_without_gateway_key(
+    runner, store, db_path, monkeypatch
+):
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "valcore.experiment.build_agent", _constant_test_model_agent_builder("pass")
+    )
+    _local_model_version(store)
+
+    result = _invoke(runner, db_path, "experiment", "judge", "cases", "--version", "v2")
+
+    assert result.exit_code == 0, result.output + result.stderr
+
+
 def test_export_succeeds_without_gateway_key(runner, store, db_path, monkeypatch):
     monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
     result = _invoke(runner, db_path, "export", "judge")

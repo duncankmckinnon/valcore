@@ -21,6 +21,7 @@ from valcore.logfire_pull import pull_records
 from valcore.models import LabelSchema, LabelSource
 from valcore.schema_migration import label_matches_schema
 from valcore.seeding import dataset_shape_from_version
+from valcore.settings import get_settings, is_local_cli_model
 from valcore.store import Store
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
@@ -30,6 +31,18 @@ StoreDep = Annotated[Store, Depends(get_store)]
 _MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 _MAX_GENERATE_COUNT = 200
 _JSONL_INFER_LIMIT = 50
+
+
+def _require_gateway_key_unless_local() -> None:
+    """Require the gateway key unless generation resolves to a local CLI model.
+
+    None of the generate routes pass an explicit model, so they all resolve to
+    ``get_settings().default_model`` inside ``generate_rows``. A ``local/<cli>:<name>``
+    default reaches an already-logged-in CLI on this machine, never the gateway, so
+    demanding a gateway key there would block the exact keyless setup local models exist for.
+    """
+    if not is_local_cli_model(get_settings().default_model):
+        config.require_gateway_key()
 
 
 class DatasetCreate(BaseModel):
@@ -482,7 +495,7 @@ def _check_column_notes(column_notes: dict[str, str] | None, columns: list[str])
 @router.post("/generate")
 async def generate_dataset(body: DatasetGenerate, store: StoreDep) -> DatasetCreatedOut:
     """Generate a dataset and its rows with suggested labels."""
-    config.require_gateway_key()
+    _require_gateway_key_unless_local()
     if body.count > _MAX_GENERATE_COUNT:
         raise ContractError(f"count may not exceed {_MAX_GENERATE_COUNT}.")
 
@@ -530,7 +543,7 @@ async def generate_dataset_from_version(
     body: DatasetGenerateFromVersion, store: StoreDep
 ) -> DatasetCreatedOut:
     """Generate a dataset shaped by an evaluator version, runnable against it by construction."""
-    config.require_gateway_key()
+    _require_gateway_key_unless_local()
     if body.count > _MAX_GENERATE_COUNT:
         raise ContractError(f"count may not exceed {_MAX_GENERATE_COUNT}.")
 
@@ -677,7 +690,7 @@ async def generate_more_rows(id: str, body: RowsGenerate, store: StoreDep) -> li
     the new rows stay compatible with the existing ones and with any evaluator that already
     runs against them.
     """
-    config.require_gateway_key()
+    _require_gateway_key_unless_local()
     if body.count > _MAX_GENERATE_COUNT:
         raise ContractError(f"count may not exceed {_MAX_GENERATE_COUNT}.")
 

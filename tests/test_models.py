@@ -124,6 +124,11 @@ VALIDATE_VERSION_REJECTIONS = [
         id="unknown-capability",
     ),
     pytest.param(
+        {"model": "local/claude:sonnet", "tools": ["word_count"]},
+        "does not support tool calls",
+        id="local-cli-model-with-tools",
+    ),
+    pytest.param(
         {
             "output_fields": [
                 {
