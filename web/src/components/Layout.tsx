@@ -47,7 +47,7 @@ function NavItemLink({ to, label, Icon, end }: NavItem & { end?: boolean }) {
       <span className="nav-icon">
         <Icon />
       </span>
-      {label}
+      <span className="nav-label">{label}</span>
     </NavLink>
   );
 }
@@ -56,9 +56,19 @@ export default function Layout() {
   return (
     <div className="layout">
       <nav className="nav">
-        <div className="nav-brand-row">
-          <img className="nav-logo" src="/logo.png" alt="" />
-          <span className="nav-brand">valcore</span>
+        <div className="nav-top">
+          <div className="nav-brand-row">
+            <span className="nav-logo-stage">
+              <img className="nav-logo" src="/logo.png" alt="" />
+            </span>
+            <span>
+              <span className="nav-brand">valcore</span>
+              <span className="nav-brand-meta">evaluation workbench</span>
+            </span>
+          </div>
+          <span className="nav-live" title="Local workspace is active">
+            <span className="nav-live-dot" /> local
+          </span>
         </div>
         {/* `end` keeps the "/" link from matching every route and staying active. */}
         <NavItemLink {...OVERVIEW} end />
@@ -66,16 +76,23 @@ export default function Layout() {
         <NavItemLink {...DOCS} />
         <NavItemLink {...SETTINGS} />
         {SECTIONS.map((section) => (
-          <div key={section.label}>
+          <div className="nav-section" key={section.label}>
             <div className="nav-section-label">{section.label}</div>
             {section.items.map((item) => (
               <NavItemLink key={item.to} {...item} />
             ))}
           </div>
         ))}
+        <div className="nav-footer">
+          <span className="nav-footer-dot" />
+          <span><strong>Local-first</strong> Your evaluation data stays under your control.</span>
+        </div>
       </nav>
-      <main className="content">
-        <Outlet />
+      <main className="content-wrap">
+        <div className="content-glow" aria-hidden="true" />
+        <div className="content">
+          <Outlet />
+        </div>
       </main>
     </div>
   );
