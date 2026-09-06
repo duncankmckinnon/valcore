@@ -65,9 +65,10 @@ describe("Layout nav", () => {
   it("points Docs at the canonical website and Settings into the app", () => {
     renderLayout("/");
 
-    expect(screen.getByRole("link", { name: "Docs" }).getAttribute("href")).toBe(
-      "https://e-valcore.com/docs",
-    );
+    const docs = screen.getByRole("link", { name: "Docs" });
+    expect(docs.getAttribute("href")).toBe("https://e-valcore.com/docs");
+    expect(docs.getAttribute("target")).toBe("_blank");
+    expect(docs.getAttribute("rel")).toBe("noreferrer");
     expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("/settings");
   });
 

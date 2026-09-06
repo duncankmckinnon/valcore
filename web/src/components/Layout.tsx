@@ -72,7 +72,7 @@ export default function Layout() {
         </div>
         {/* `end` keeps the "/" link from matching every route and staying active. */}
         <NavItemLink {...OVERVIEW} end />
-        <a className="nav-link" href={DOCS_BASE_URL}>
+        <a className="nav-link" href={DOCS_BASE_URL} target="_blank" rel="noreferrer">
           <span className="nav-icon"><DocsIcon /></span>
           <span className="nav-label">Docs</span>
         </a>
