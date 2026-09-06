@@ -338,14 +338,14 @@ def test_experiment_no_gateway_key_exits_nonzero_naming_set_key(
 
 
 def _local_model_version(store: Store) -> None:
-    """Add a ``local/claude:sonnet`` version ``v2`` to the seeded evaluator.
+    """Add a ``local/claude`` version ``v2`` to the seeded evaluator.
 
     Selected explicitly with ``--version v2``; the seeded gateway version stays active so
     the two coexist exactly as they would in a real store.
     """
     evaluator = resolve_evaluator(store, "judge")
     store.create_version(
-        evaluator.id, **{**VERSION_FIELDS, "version_name": "v2", "model": "local/claude:sonnet"}
+        evaluator.id, **{**VERSION_FIELDS, "version_name": "v2", "model": "local/claude"}
     )
 
 

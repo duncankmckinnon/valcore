@@ -82,7 +82,7 @@ def test_valid_numeric_version_passes() -> None:
 VALIDATE_VERSION_REJECTIONS = [
     pytest.param(
         {"model": "openai:gpt-5"},
-        "must start with",
+        "start with one of",
         id="invalid-model-string",
     ),
     pytest.param(
@@ -124,7 +124,7 @@ VALIDATE_VERSION_REJECTIONS = [
         id="unknown-capability",
     ),
     pytest.param(
-        {"model": "local/claude:sonnet", "tools": ["word_count"]},
+        {"model": "local/claude", "tools": ["word_count"]},
         "does not support tool calls",
         id="local-cli-model-with-tools",
     ),

@@ -30,6 +30,9 @@ GATEWAY_ROUTES: tuple[str, ...] = (
 )
 
 LOCAL_CLI_ROUTES: tuple[str, ...] = ("local/claude", "local/codex", "local/cursor")
+LOCAL_CLI_NAMES: frozenset[str] = frozenset(
+    route.removeprefix("local/") for route in LOCAL_CLI_ROUTES
+)
 
 
 @functools.lru_cache
@@ -53,8 +56,9 @@ def model_catalog() -> tuple[str, ...]:
 
 
 def is_local_cli_model(model: str) -> bool:
-    """Return True if `model` names a local-CLI route rather than a gateway route."""
-    return any(model.startswith(f"{route}:") for route in LOCAL_CLI_ROUTES)
+    """Return True if `model` is exactly one of LOCAL_CLI_ROUTES (a local CLI takes no
+    model name -- it always uses that CLI's own default)."""
+    return model in LOCAL_CLI_ROUTES
 
 
 class _TomlConfigSource(PydanticBaseSettingsSource):
@@ -123,9 +127,11 @@ def get_settings() -> Settings:
 
 
 def validate_model_string(model: str) -> None:
-    """Raise ConfigError unless `model` is a valid `gateway/<provider>:<name>` or
-    `local/<cli>:<name>` string."""
-    for route in (*GATEWAY_ROUTES, *LOCAL_CLI_ROUTES):
+    """Raise ConfigError unless `model` is a valid `gateway/<provider>:<name>` string, or
+    exactly one of LOCAL_CLI_ROUTES."""
+    if model in LOCAL_CLI_ROUTES:
+        return
+    for route in GATEWAY_ROUTES:
         prefix = f"{route}:"
         if model.startswith(prefix):
             name = model[len(prefix) :]
@@ -135,6 +141,6 @@ def validate_model_string(model: str) -> None:
                 )
             return
     raise ConfigError(
-        f"Model string {model!r} must start with one of "
-        f"{GATEWAY_ROUTES + LOCAL_CLI_ROUTES} followed by ':<model>'."
+        f"Model string {model!r} must be one of {LOCAL_CLI_ROUTES}, or start with one of "
+        f"{GATEWAY_ROUTES} followed by ':<model>'."
     )

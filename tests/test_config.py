@@ -574,18 +574,18 @@ def test_validate_model_string_still_rejects_malformed_names() -> None:
 
 
 def test_validate_model_string_accepts_local_cli_routes() -> None:
-    for name in ("local/claude:sonnet", "local/codex:gpt-5-codex", "local/cursor:composer"):
+    for name in ("local/claude", "local/codex", "local/cursor"):
         settings.validate_model_string(name)  # must not raise
 
 
 def test_validate_model_string_rejects_malformed_local_cli_names() -> None:
-    for bad in ("local/claude", "local/claude:", "local/unknown-cli:sonnet"):
+    for bad in ("local/claude:sonnet", "local/claude:", "local/unknown-cli"):
         with pytest.raises(ConfigError):
             settings.validate_model_string(bad)
 
 
 def test_is_local_cli_model_distinguishes_routes() -> None:
-    assert settings.is_local_cli_model("local/claude:sonnet") is True
+    assert settings.is_local_cli_model("local/claude") is True
     assert settings.is_local_cli_model("gateway/anthropic:claude-sonnet-5") is False
 
 

@@ -26,14 +26,11 @@ _REAL_ENVELOPE = json.dumps(
 def test_cursor_adapter_builds_expected_argv(tmp_path: Path) -> None:
     adapter = CursorCliAdapter()
 
-    argv = adapter.build_invocation(
-        prompt="rate this", instructions="judge it", model_name="composer", run_dir=tmp_path
-    )
+    argv = adapter.build_invocation(prompt="rate this", instructions="judge it", run_dir=tmp_path)
 
     assert argv[0] == "cursor-agent"
     assert "-p" in argv
     assert argv[-1] == "judge it\n\nrate this"
-    assert "--model" in argv and argv[argv.index("--model") + 1] == "composer"
     assert "--workspace" in argv and argv[argv.index("--workspace") + 1] == str(tmp_path)
     assert "--trust" in argv
 
@@ -43,7 +40,7 @@ def test_cursor_adapter_passes_the_prompt_after_a_bare_double_dash(tmp_path: Pat
     adapter = CursorCliAdapter()
 
     argv = adapter.build_invocation(
-        prompt="- dash bullet prompt", instructions="", model_name="composer", run_dir=tmp_path
+        prompt="- dash bullet prompt", instructions="", run_dir=tmp_path
     )
 
     assert argv[-1] == "- dash bullet prompt"
@@ -55,9 +52,7 @@ def test_cursor_adapter_runs_in_ask_mode(tmp_path: Path) -> None:
     """Row content is untrusted; a prompt->JSON judge needs no file or shell tools."""
     adapter = CursorCliAdapter()
 
-    argv = adapter.build_invocation(
-        prompt="rate this", instructions="judge it", model_name="composer", run_dir=tmp_path
-    )
+    argv = adapter.build_invocation(prompt="rate this", instructions="judge it", run_dir=tmp_path)
 
     assert "--mode" in argv
     assert argv[argv.index("--mode") + 1] == "ask"

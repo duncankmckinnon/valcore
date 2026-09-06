@@ -23,16 +23,12 @@ class ClaudeCliAdapter:
     cli_name = "claude"
     binary = "claude"
 
-    def build_invocation(
-        self, *, prompt: str, instructions: str, model_name: str, run_dir: Path
-    ) -> list[str]:
+    def build_invocation(self, *, prompt: str, instructions: str, run_dir: Path) -> list[str]:
         return [
             self.binary,
             "-p",
             "--output-format",
             "json",
-            "--model",
-            model_name,
             "--system-prompt",
             instructions,
             "--tools",

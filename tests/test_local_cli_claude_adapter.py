@@ -27,14 +27,11 @@ _REAL_ENVELOPE = json.dumps(
 def test_claude_adapter_builds_expected_argv(tmp_path: Path) -> None:
     adapter = ClaudeCliAdapter()
 
-    argv = adapter.build_invocation(
-        prompt="rate this", instructions="judge it", model_name="sonnet", run_dir=tmp_path
-    )
+    argv = adapter.build_invocation(prompt="rate this", instructions="judge it", run_dir=tmp_path)
 
     assert argv[0] == "claude"
     assert "-p" in argv
     assert "--output-format" in argv and argv[argv.index("--output-format") + 1] == "json"
-    assert "--model" in argv and argv[argv.index("--model") + 1] == "sonnet"
     assert "--system-prompt" in argv and argv[argv.index("--system-prompt") + 1] == "judge it"
 
 
@@ -49,7 +46,6 @@ def test_claude_adapter_passes_the_prompt_after_a_bare_double_dash(tmp_path: Pat
     argv = adapter.build_invocation(
         prompt="- dash bullet prompt",
         instructions="judge it",
-        model_name="sonnet",
         run_dir=tmp_path,
     )
 
@@ -68,9 +64,7 @@ def test_claude_adapter_disables_all_tools(tmp_path: Path) -> None:
     """
     adapter = ClaudeCliAdapter()
 
-    argv = adapter.build_invocation(
-        prompt="rate this", instructions="judge it", model_name="sonnet", run_dir=tmp_path
-    )
+    argv = adapter.build_invocation(prompt="rate this", instructions="judge it", run_dir=tmp_path)
 
     assert "--tools" in argv
     assert argv[argv.index("--tools") + 1] == ""

@@ -393,17 +393,17 @@ def test_build_generator_agent_resolves_a_local_model() -> None:
     from valcore.generator import build_generator_agent
     from valcore.local_cli.bridge_model import CliBridgeModel
 
-    agent = build_generator_agent("local/claude:sonnet")
+    agent = build_generator_agent("local/claude")
 
     assert isinstance(agent.model, CliBridgeModel)
-    assert agent.model.model_name == "sonnet"
+    assert agent.model.model_name == "default"
 
 
 def test_build_refiner_agent_resolves_a_local_model() -> None:
     from valcore.generator import build_refiner_agent
     from valcore.local_cli.bridge_model import CliBridgeModel
 
-    agent = build_refiner_agent("local/codex:gpt-5-codex")
+    agent = build_refiner_agent("local/codex")
 
     assert isinstance(agent.model, CliBridgeModel)
-    assert agent.model.model_name == "gpt-5-codex"
+    assert agent.model.model_name == "default"
