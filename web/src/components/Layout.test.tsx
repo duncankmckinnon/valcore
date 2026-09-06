@@ -62,21 +62,13 @@ describe("Layout nav", () => {
     ]);
   });
 
-  it("points Docs at /docs and Settings at /settings", () => {
+  it("points Docs at the canonical website and Settings into the app", () => {
     renderLayout("/");
 
-    expect(screen.getByRole("link", { name: "Docs" }).getAttribute("href")).toBe("/docs");
+    expect(screen.getByRole("link", { name: "Docs" }).getAttribute("href")).toBe(
+      "https://e-valcore.com/docs",
+    );
     expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("/settings");
-  });
-
-  it("keeps Docs active on a docs sub-route", () => {
-    renderLayout("/docs/datasets");
-
-    // Docs deliberately omits `end`: every /docs/:slug tab must keep the nav item
-    // lit, otherwise the sidebar goes blank-looking while reading any tab but the
-    // first.
-    expect(screen.getByRole("link", { name: "Docs" }).getAttribute("aria-current")).toBe("page");
-    expect(screen.getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBeNull();
   });
 
   it("points Overview at / and Compare at /runs/compare", () => {

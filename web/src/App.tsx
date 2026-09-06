@@ -4,7 +4,7 @@ import OverviewPage from "./pages/OverviewPage";
 import EvaluatorsPage from "./pages/EvaluatorsPage";
 import DatasetsPage from "./pages/DatasetsPage";
 import RunsPage from "./pages/RunsPage";
-import DocsPage from "./pages/DocsPage";
+import DocsRedirect from "./pages/DocsRedirect";
 import SettingsPage from "./pages/SettingsPage";
 
 // All routes are declared here up front. The route table is maintained alongside the
@@ -21,10 +21,10 @@ export default function App() {
         <Route path="/runs" element={<RunsPage />} />
         <Route path="/runs/compare" element={<RunsPage />} />
         <Route path="/runs/:id" element={<RunsPage />} />
-        {/* Both point at DocsPage: the bare path renders the first tab, so the section
-            always has content and a stale slug degrades instead of blanking. */}
-        <Route path="/docs" element={<DocsPage />} />
-        <Route path="/docs/:slug" element={<DocsPage />} />
+        {/* Preserve bookmarks from the former embedded docs while keeping the website
+            as the single source of truth. */}
+        <Route path="/docs" element={<DocsRedirect />} />
+        <Route path="/docs/:slug" element={<DocsRedirect />} />
         <Route path="/settings" element={<SettingsPage />} />
       </Route>
     </Routes>
