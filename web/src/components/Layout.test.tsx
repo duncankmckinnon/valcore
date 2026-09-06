@@ -45,38 +45,33 @@ describe("Layout nav", () => {
     expect(screen.getAllByRole("link")).toHaveLength(7);
   });
 
-  it("orders Docs and Settings directly under Overview, above the labelled groups", () => {
+  it("separates Docs below the app-owned navigation", () => {
     renderLayout("/");
 
-    // Docs sits with Overview as the ungrouped entries at the top: it is read
-    // before you have anything to author or measure, so it should not be buried under
-    // the working surfaces. Settings follows: keys are configured before that work.
+    // Docs is an external destination, so it follows the app-owned working surfaces.
     expect(screen.getAllByRole("link").map((link) => link.textContent)).toEqual([
       "Overview",
-      "Docs",
       "Settings",
       "Evaluators",
       "Datasets",
       "Runs",
       "Compare",
+      "Docs",
     ]);
+
+    expect(screen.getByRole("link", { name: "Docs" }).parentElement?.className).toBe(
+      "nav-external",
+    );
   });
 
-  it("points Docs at /docs and Settings at /settings", () => {
+  it("points Docs at the canonical website and Settings into the app", () => {
     renderLayout("/");
 
-    expect(screen.getByRole("link", { name: "Docs" }).getAttribute("href")).toBe("/docs");
+    const docs = screen.getByRole("link", { name: "Docs" });
+    expect(docs.getAttribute("href")).toBe("https://e-valcore.com/docs");
+    expect(docs.getAttribute("target")).toBe("_blank");
+    expect(docs.getAttribute("rel")).toBe("noreferrer");
     expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("/settings");
-  });
-
-  it("keeps Docs active on a docs sub-route", () => {
-    renderLayout("/docs/datasets");
-
-    // Docs deliberately omits `end`: every /docs/:slug tab must keep the nav item
-    // lit, otherwise the sidebar goes blank-looking while reading any tab but the
-    // first.
-    expect(screen.getByRole("link", { name: "Docs" }).getAttribute("aria-current")).toBe("page");
-    expect(screen.getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBeNull();
   });
 
   it("points Overview at / and Compare at /runs/compare", () => {

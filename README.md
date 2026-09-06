@@ -1,9 +1,5 @@
 <p align="center">
-  <img
-    src="https://raw.githubusercontent.com/duncankmckinnon/valcore/main/docs/img/logo.png"
-    alt="valcore"
-    width="260"
-  >
+  <img src="docs/img/logo.png" alt="valcore" width="200" />
 </p>
 
 <p align="center">
@@ -65,12 +61,12 @@ Either way you get an `valcore` command on your `PATH`.
   from a description, or pulled from a Logfire query.
 - **Runs** — inspect completed runs, their metrics, and per-row scores, and compare runs
   against each other.
-- **Docs** — how the product works, in four tabs: Evals, Datasets, Runs, and CLI.
+- **Docs** — opens the canonical guides and CLI reference on
+  [e-valcore.com](https://e-valcore.com/docs).
 
-The docs surface explains the concepts the other four assume — label spaces, frozen
-versions, run kinds, agreement metrics — so you can read them without leaving the app.
-It covers the workflow; this README stays the reference for install, credentials,
-portable packages, CI, and Logfire.
+The website docs explain the concepts the other four surfaces assume — label spaces,
+frozen versions, run kinds, agreement metrics, installation, credentials, portable
+packages, CI, and Logfire. The app links there instead of maintaining a second copy.
 
 ## Quickstart
 
@@ -86,8 +82,8 @@ valcore serve
 and datasets in the UI, then drive runs from the command line. Both can be written by
 hand or generated from a description; a generated result is an editable draft either way.
 
-From there, the **Docs** tab in the app walks through the full workflow — authoring a
-judge, getting labeled rows, and reading what a run measured.
+From there, **Docs** in the app opens the website reference for the full workflow —
+authoring a judge, getting labeled rows, and reading what a run measured.
 
 ## Seeding one from the other
 

@@ -9,6 +9,7 @@ import {
   RunIcon,
   SettingsIcon,
 } from "./icons";
+import { DOCS_BASE_URL } from "../docsLinks";
 
 type NavItem = { to: string; label: string; Icon: ComponentType<{ className?: string }> };
 type NavSection = { label: string; items: NavItem[] };
@@ -18,7 +19,6 @@ type NavSection = { label: string; items: NavItem[] };
 // rather than at the bottom because it is what you read before you have anything to
 // author or measure — a new user needs it first, not last.
 const OVERVIEW: NavItem = { to: "/", label: "Overview", Icon: OverviewIcon };
-const DOCS: NavItem = { to: "/docs", label: "Docs", Icon: DocsIcon };
 const SETTINGS: NavItem = { to: "/settings", label: "Settings", Icon: SettingsIcon };
 const SECTIONS: NavSection[] = [
   {
@@ -47,7 +47,7 @@ function NavItemLink({ to, label, Icon, end }: NavItem & { end?: boolean }) {
       <span className="nav-icon">
         <Icon />
       </span>
-      {label}
+      <span className="nav-label">{label}</span>
     </NavLink>
   );
 }
@@ -56,26 +56,47 @@ export default function Layout() {
   return (
     <div className="layout">
       <nav className="nav">
-        <div className="nav-brand-row">
-          <img className="nav-logo" src="/logo.png" alt="" />
-          <span className="nav-brand">valcore</span>
+        <div className="nav-top">
+          <div className="nav-brand-row">
+            <span className="nav-logo-stage">
+              <img className="nav-logo" src="/logo.png" alt="" />
+            </span>
+            <span>
+              <span className="nav-brand">valcore</span>
+              <span className="nav-brand-meta">evaluation workbench</span>
+            </span>
+          </div>
+          <span className="nav-live" title="Local workspace is active">
+            <span className="nav-live-dot" /> local
+          </span>
         </div>
         {/* `end` keeps the "/" link from matching every route and staying active. */}
         <NavItemLink {...OVERVIEW} end />
-        {/* No `end`: every /docs/:slug tab keeps the nav item lit. */}
-        <NavItemLink {...DOCS} />
         <NavItemLink {...SETTINGS} />
         {SECTIONS.map((section) => (
-          <div key={section.label}>
+          <div className="nav-section" key={section.label}>
             <div className="nav-section-label">{section.label}</div>
             {section.items.map((item) => (
               <NavItemLink key={item.to} {...item} />
             ))}
           </div>
         ))}
+        <div className="nav-external">
+          <a className="nav-link" href={DOCS_BASE_URL} target="_blank" rel="noreferrer">
+            <span className="nav-icon"><DocsIcon /></span>
+            <span className="nav-label">Docs</span>
+          </a>
+        </div>
+        <div className="nav-footer">
+          <span className="nav-footer-dot" />
+          <span><strong>Local-first</strong> Your evaluation data stays under your control.</span>
+        </div>
       </nav>
-      <main className="content">
-        <Outlet />
+      <main className="content-wrap">
+        <div className="content-glow" aria-hidden="true" />
+        <div className="content">
+          <Outlet />
+        </div>
       </main>
     </div>
   );
