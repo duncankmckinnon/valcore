@@ -9,6 +9,7 @@ import {
   RunIcon,
   SettingsIcon,
 } from "./icons";
+import { DOCS_BASE_URL } from "../docsLinks";
 
 type NavItem = { to: string; label: string; Icon: ComponentType<{ className?: string }> };
 type NavSection = { label: string; items: NavItem[] };
@@ -18,7 +19,6 @@ type NavSection = { label: string; items: NavItem[] };
 // rather than at the bottom because it is what you read before you have anything to
 // author or measure — a new user needs it first, not last.
 const OVERVIEW: NavItem = { to: "/", label: "Overview", Icon: OverviewIcon };
-const DOCS: NavItem = { to: "/docs", label: "Docs", Icon: DocsIcon };
 const SETTINGS: NavItem = { to: "/settings", label: "Settings", Icon: SettingsIcon };
 const SECTIONS: NavSection[] = [
   {
@@ -72,8 +72,6 @@ export default function Layout() {
         </div>
         {/* `end` keeps the "/" link from matching every route and staying active. */}
         <NavItemLink {...OVERVIEW} end />
-        {/* No `end`: every /docs/:slug tab keeps the nav item lit. */}
-        <NavItemLink {...DOCS} />
         <NavItemLink {...SETTINGS} />
         {SECTIONS.map((section) => (
           <div className="nav-section" key={section.label}>
@@ -83,6 +81,12 @@ export default function Layout() {
             ))}
           </div>
         ))}
+        <div className="nav-external">
+          <a className="nav-link" href={DOCS_BASE_URL} target="_blank" rel="noreferrer">
+            <span className="nav-icon"><DocsIcon /></span>
+            <span className="nav-label">Docs</span>
+          </a>
+        </div>
         <div className="nav-footer">
           <span className="nav-footer-dot" />
           <span><strong>Local-first</strong> Your evaluation data stays under your control.</span>

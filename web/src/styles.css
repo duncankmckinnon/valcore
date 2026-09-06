@@ -2048,6 +2048,16 @@ kbd {
   line-height: 1.5;
 }
 
+.nav-external {
+  margin-top: auto;
+  padding-top: 13px;
+  border-top: 1px solid var(--border);
+}
+
+.nav-external + .nav-footer {
+  margin-top: 8px;
+}
+
 .nav-footer-dot {
   margin-top: 4px;
 }
@@ -2582,6 +2592,14 @@ kbd {
   .nav-section-label,
   .nav-footer {
     display: none;
+  }
+
+  .nav-external {
+    flex: none;
+    margin: 0 0 0 6px;
+    padding: 0 0 0 8px;
+    border-top: 0;
+    border-left: 1px solid var(--border);
   }
 
   .nav-link {
