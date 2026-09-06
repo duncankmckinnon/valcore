@@ -10,7 +10,7 @@ import { setup } from "../api/client";
 import type { SetupStatus } from "../api/types";
 
 export const GATEWAY_BLOCKER =
-  "Set the Pydantic AI Gateway key to generate or run — see Settings.";
+  "Set the Pydantic AI Gateway key, or choose a local CLI as the default, to generate or run — see Settings.";
 
 export interface UseSetupResult {
   status: SetupStatus | null;
@@ -62,10 +62,13 @@ export function useSetup(): UseSetupResult {
     setVersion((current) => current + 1);
   }, []);
 
-  // Only a loaded, successful response reporting the key unset may disable gated actions —
-  // loading, an error, or a not-yet-loaded status must all resolve to true.
+  // Only a loaded, successful response reporting the key unset AND no local CLI default may
+  // disable gated actions -- loading, an error, or a not-yet-loaded status must all resolve to
+  // true, and a selected local CLI needs no gateway key at all.
   const gatewayKey = status?.keys.find((key) => key.name === "gateway_api_key");
-  const gatewayReady = loading || error !== null || gatewayKey?.set !== false;
+  const hasLocalDefault = status !== null && status.local_cli_default !== null;
+  const gatewayReady =
+    loading || error !== null || hasLocalDefault || gatewayKey?.set !== false;
 
   return { status, gatewayReady, loading, error, refetch };
 }

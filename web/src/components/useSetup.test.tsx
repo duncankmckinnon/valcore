@@ -38,7 +38,10 @@ function deferred<T>() {
 
 // Builds a SetupStatus with all three known keys, overriding only the `set` flag for each so a
 // test can flip just the one bit it cares about.
-function makeStatus(overrides: Partial<Record<SetupKey["name"], boolean>> = {}): SetupStatus {
+function makeStatus(
+  overrides: Partial<Record<SetupKey["name"], boolean>> = {},
+  localCliDefault: string | null = null
+): SetupStatus {
   const defaults: Record<SetupKey["name"], boolean> = {
     gateway_api_key: true,
     logfire_token: false,
@@ -63,6 +66,9 @@ function makeStatus(overrides: Partial<Record<SetupKey["name"], boolean>> = {}):
       explanation: `explanation for ${name}`,
       from_env: false,
     })),
+    default_model: "default/model",
+    local_cli_default: localCliDefault,
+    local_cli_options: [],
     logfire_explore_url: null,
     logfire_traces_url: null,
     logfire_datasets_url: null,
@@ -238,5 +244,36 @@ describe("useSetup", () => {
     expect(typeof GATEWAY_BLOCKER).toBe("string");
     expect(GATEWAY_BLOCKER.length).toBeGreaterThan(0);
     expect(GATEWAY_BLOCKER.toLowerCase()).toContain("gateway");
+  });
+
+  it("is ready when a local CLI default is set, even with no gateway key", async () => {
+    setupGet.mockResolvedValue({
+      keys: [
+        {
+          name: "gateway_api_key",
+          set: false,
+          required: true,
+          label: "Pydantic AI Gateway key",
+          command: "valcore config set-key",
+          purpose: "",
+          explanation: "",
+          from_env: false,
+        },
+      ],
+      default_model: "local/claude",
+      local_cli_default: "claude",
+      local_cli_options: ["claude", "codex", "cursor"],
+      logfire_explore_url: null,
+      logfire_traces_url: null,
+      logfire_datasets_url: null,
+    });
+
+    render(<Probe />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("gateway ready")).toBeInTheDocument();
   });
 });
