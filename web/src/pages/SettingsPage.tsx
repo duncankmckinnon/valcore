@@ -82,7 +82,7 @@ export default function SettingsPage(): JSX.Element {
     }
     if (localCliDirty) {
       if (localCliDraft === null) {
-        clear.push("local_cli_default" as ClearName);
+        clear.push("local_cli_default");
       } else {
         body.local_cli_default = localCliDraft;
       }
@@ -192,7 +192,29 @@ export default function SettingsPage(): JSX.Element {
           <input
             type="checkbox"
             checked={showGatewayKey}
-            onChange={(event) => setShowGatewayKey(event.target.checked)}
+            onChange={(event) => {
+              const checked = event.target.checked;
+              setShowGatewayKey(checked);
+              if (checked) return;
+              // The checkbox reads as an intent toggle, not just a visibility one: unchecking it
+              // discards any pending gateway-key edit so Save can't POST a value whose input is
+              // hidden and whose box is unchecked.
+              setDrafts((current) => {
+                const next = { ...current };
+                delete next.gateway_api_key;
+                return next;
+              });
+              setDirty((current) => {
+                const next = new Set(current);
+                next.delete("gateway_api_key");
+                return next;
+              });
+              setCleared((current) => {
+                const next = new Set(current);
+                next.delete("gateway_api_key");
+                return next;
+              });
+            }}
           />
           Use Pydantic AI Gateway
         </label>

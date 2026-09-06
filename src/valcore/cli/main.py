@@ -430,7 +430,7 @@ def run(
     """Run an evaluator version over a dataset.
 
     Resolving the version first lets the gateway-key guard stand down for a
-    ``local/<cli>:<name>`` model, which reaches an already-logged-in CLI on this machine
+    ``local/<cli>`` model, which reaches an already-logged-in CLI on this machine
     rather than the gateway. Resolution only reads, so nothing is created ahead of the guard.
     """
     store = _store(ctx)
@@ -510,7 +510,7 @@ def experiment_cmd(
     neither.
 
     Resolving the version first lets the gateway-key guard stand down for a
-    ``local/<cli>:<name>`` model, which reaches an already-logged-in CLI on this machine
+    ``local/<cli>`` model, which reaches an already-logged-in CLI on this machine
     rather than the gateway. Resolution only reads, so nothing is created ahead of the guard.
     """
     store = _store(ctx)

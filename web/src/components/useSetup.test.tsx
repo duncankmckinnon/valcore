@@ -38,10 +38,7 @@ function deferred<T>() {
 
 // Builds a SetupStatus with all three known keys, overriding only the `set` flag for each so a
 // test can flip just the one bit it cares about.
-function makeStatus(
-  overrides: Partial<Record<SetupKey["name"], boolean>> = {},
-  localCliDefault: string | null = null
-): SetupStatus {
+function makeStatus(overrides: Partial<Record<SetupKey["name"], boolean>> = {}): SetupStatus {
   const defaults: Record<SetupKey["name"], boolean> = {
     gateway_api_key: true,
     logfire_token: false,
@@ -67,7 +64,7 @@ function makeStatus(
       from_env: false,
     })),
     default_model: "default/model",
-    local_cli_default: localCliDefault,
+    local_cli_default: null,
     local_cli_options: [],
     logfire_explore_url: null,
     logfire_traces_url: null,

@@ -187,6 +187,26 @@ describe("SettingsPage", () => {
     await screen.findByLabelText("Pydantic AI Gateway key");
   });
 
+  it("discards a pending gateway key edit when the gateway checkbox is unchecked", async () => {
+    const user = userEvent.setup();
+    setupGet.mockResolvedValue(makeStatus({ gateway_api_key: { set: false } }));
+    renderPage();
+
+    await screen.findByText("Model Selection");
+    await user.click(screen.getByLabelText("Use Pydantic AI Gateway"));
+    await user.type(screen.getByLabelText(LABELS.gateway_api_key), "pag-typed-then-abandoned");
+    await user.click(screen.getByLabelText("Use Pydantic AI Gateway"));
+    expect(screen.queryByLabelText(LABELS.gateway_api_key)).not.toBeInTheDocument();
+
+    // Another key keeps Save enabled, so the payload proves the abandoned draft is gone rather
+    // than merely unreachable behind a disabled button.
+    await user.type(screen.getByLabelText(LABELS.logfire_read_key), "lf-new-read");
+    await user.click(screen.getByRole("button", { name: "Save keys" }));
+
+    await waitFor(() => expect(setupSave).toHaveBeenCalledOnce());
+    expect(setupSave).toHaveBeenCalledWith({ logfire_read_key: "lf-new-read" });
+  });
+
   it("saves a selected local CLI as local_cli_default", async () => {
     setupGet.mockResolvedValue(makeStatus());
     setupSave.mockResolvedValue({ ...makeStatus(), local_cli_default: "codex" });

@@ -75,9 +75,12 @@ function SetupCard({
 }
 
 // The effective default model, derived from the same setup fetch as SetupCard (passed down as a
-// prop rather than a second useSetup() call — see the note on SetupCard above): the selected
-// local CLI takes priority, then the resolved gateway model when a key is set, else a not-set
-// call to action linking to Settings. Renders nothing while status hasn't loaded yet.
+// prop rather than a second useSetup() call — see the note on SetupCard above). It reads
+// status.default_model, the value the backend actually resolves and uses, rather than
+// status.local_cli_default: VALCORE_DEFAULT_MODEL outranks both config.toml keys, so a stored
+// local_cli_default can be stale relative to the model every run really calls. Renders nothing
+// while status hasn't loaded yet, and a not-set call to action linking to Settings when no
+// gateway key is set.
 function DefaultModelCard({ status }: { status: SetupStatus | null }): JSX.Element | null {
   if (status === null) {
     return null;
@@ -85,11 +88,13 @@ function DefaultModelCard({ status }: { status: SetupStatus | null }): JSX.Eleme
 
   const gatewaySet = status.keys.find((key) => key.name === "gateway_api_key")?.set ?? false;
 
-  if (status.local_cli_default !== null) {
+  if (status.default_model.startsWith("local/")) {
     return (
       <div className="default-model-card">
         <span className="default-model-label">Default model</span>
-        <span className="default-model-value">Local CLI: {status.local_cli_default}</span>
+        <span className="default-model-value">
+          Local CLI: {status.default_model.slice("local/".length)}
+        </span>
       </div>
     );
   }

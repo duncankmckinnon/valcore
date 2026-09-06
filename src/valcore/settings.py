@@ -66,7 +66,9 @@ class _TomlConfigSource(PydanticBaseSettingsSource):
 
     Maps the config file's keys onto ``Settings`` fields: ``model`` ->
     ``default_model``, ``concurrency`` -> ``default_concurrency``, and ``db_path``
-    passes through unchanged.
+    passes through unchanged. ``local_cli_default``, when set, overrides ``model``
+    and becomes ``default_model`` as the ``local/<cli>`` route for that CLI; it is
+    validated here against ``LOCAL_CLI_NAMES`` since ``config.py`` cannot.
     """
 
     def __init__(self, settings_cls: type[BaseSettings]) -> None:
@@ -76,6 +78,11 @@ class _TomlConfigSource(PydanticBaseSettingsSource):
         if cfg.db_path is not None:
             mapped["db_path"] = cfg.db_path
         if cfg.local_cli_default is not None:
+            if cfg.local_cli_default not in LOCAL_CLI_NAMES:
+                raise ConfigError(
+                    f"config.toml local_cli_default {cfg.local_cli_default!r} is not a known "
+                    f"local CLI; valid names are {sorted(LOCAL_CLI_NAMES)}."
+                )
             mapped["default_model"] = f"local/{cfg.local_cli_default}"
         elif cfg.model is not None:
             mapped["default_model"] = cfg.model

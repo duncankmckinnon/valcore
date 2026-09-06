@@ -301,6 +301,21 @@ def test_model_and_concurrency_precedence(monkeypatch: pytest.MonkeyPatch) -> No
     assert explicit.default_model == "gateway/anthropic:claude-opus-4-5"
 
 
+def test_local_cli_default_in_toml_becomes_the_local_route_and_beats_model() -> None:
+    save_config(FileConfig(local_cli_default="codex", model="gateway/openai:gpt-5"))
+    settings.get_settings.cache_clear()
+    assert settings.Settings().default_model == "local/codex"
+
+
+def test_hand_edited_bad_local_cli_default_raises_config_error() -> None:
+    # A typo in a hand-edited config.toml must fail here, naming the file and the valid names,
+    # rather than surfacing later as an "Unknown model" from deep inside pydantic-ai.
+    save_config(FileConfig(local_cli_default="claud"))
+    settings.get_settings.cache_clear()
+    with pytest.raises(ConfigError, match="local_cli_default 'claud' is not a known local CLI"):
+        settings.Settings()
+
+
 def test_interrupted_save_leaves_previous_file_intact(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

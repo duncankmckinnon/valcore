@@ -109,12 +109,12 @@ measure agreement.
 
 ## Models and the gateway
 
-valcore reaches models through the [Pydantic AI Gateway](https://ai.pydantic.dev/gateway/).
-That is currently the only route: there is no direct-to-provider client and no
-per-provider API key, so a gateway key is required before anything that calls a model
-will run.
+valcore reaches hosted models through the
+[Pydantic AI Gateway](https://ai.pydantic.dev/gateway/). That is the only hosted route:
+there is no direct-to-provider client and no per-provider API key, so a gateway key is
+required before anything that calls a hosted model will run.
 
-Model strings are always `gateway/<provider>:<model>`:
+Hosted model strings are `gateway/<provider>:<model>`:
 
 ```
 gateway/anthropic:claude-sonnet-5      # the default
@@ -138,15 +138,28 @@ export PYDANTIC_AI_GATEWAY_API_KEY=sk-...
 
 Run `valcore config set-key` with no argument to be prompted without echoing the key.
 
-Override the default model, highest precedence first: an explicit argument,
-`VALCORE_DEFAULT_MODEL`, `model` in `config.toml`, then the built-in default.
+A local model — `local/claude`, `local/codex`, or `local/cursor` — reuses an already
+logged-in CLI on this machine instead, and needs no gateway key. There is no model name
+after the CLI: each route runs that CLI's own binary (`claude`, `codex`, or
+`cursor-agent`), which must be on `PATH` and already authenticated, and it answers with
+whichever model it is configured to use.
 
-> **On other providers.** Routing everything through one gateway keeps model access to a
-> single credential and a single validated string format. It also means valcore inherits
-> whatever the gateway supports and nothing else. Provider routing is confined to one
-> module, so widening this later — direct provider clients, a self-hosted or
-> OpenAI-compatible endpoint, local models — is a change to that resolution layer and the
-> config schema rather than a change to how evaluators, datasets, or runs work.
+Pick one under **Model Selection** in Settings, which stores it as `local_cli_default` in
+`config.toml`; a version can still name a local route explicitly as its `model`. Overview's
+default-model card shows whichever model actually resolves.
+
+Override the default model, highest precedence first: an explicit argument,
+`VALCORE_DEFAULT_MODEL`, `local_cli_default` in `config.toml`, `model` in `config.toml`,
+then the built-in default.
+
+> **On other providers.** Routing every hosted call through one gateway keeps model access
+> to a single credential and a single validated string format. It also means valcore
+> inherits whatever the gateway supports and nothing else — the local CLI routes above are
+> the one way around that, and they borrow a CLI's existing login rather than adding a
+> provider. Provider routing is confined to one module, so widening this later — direct
+> provider clients, a self-hosted or OpenAI-compatible endpoint — is a change to that
+> resolution layer and the config schema rather than a change to how evaluators, datasets,
+> or runs work.
 
 ## Setup
 
