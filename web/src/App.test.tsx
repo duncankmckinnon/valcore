@@ -57,6 +57,9 @@ describe("App routes", () => {
   it("serves Settings at /settings", async () => {
     setupGet.mockResolvedValue({
       keys: [],
+      default_model: "gateway/anthropic:claude-sonnet-5",
+      local_cli_default: null,
+      local_cli_options: ["claude", "codex", "cursor"],
       logfire_explore_url: null,
       logfire_traces_url: null,
       logfire_datasets_url: null,

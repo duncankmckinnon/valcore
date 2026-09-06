@@ -5,7 +5,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { overview } from "../api/client";
-import type { Overview, SetupKey } from "../api/types";
+import type { Overview, SetupKey, SetupStatus } from "../api/types";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
 import { useSetup } from "../components/useSetup";
@@ -37,9 +37,18 @@ function SetupKeyRow({ item }: { item: SetupKey }): JSX.Element {
 // quiet summary once everything is configured — incomplete setup is itself the trigger, so it
 // reappears on its own if a user clears their config. A still-loading or errored fetch renders
 // nothing here; the rest of the page never waits on it.
-function SetupCard(): JSX.Element | null {
-  const { status, refetch } = useSetup();
-
+//
+// Takes status/refetch as props rather than calling useSetup() itself: DefaultModelCard below
+// needs the same status, and useSetup() has no shared cache between call sites, so a second
+// internal call would double the initial fetch and desync Recheck (it would only refresh
+// whichever card owns the call). OverviewPage fetches setup status once and hands it to both.
+function SetupCard({
+  status,
+  refetch,
+}: {
+  status: SetupStatus | null;
+  refetch: () => void;
+}): JSX.Element | null {
   if (status === null) {
     return null;
   }
@@ -65,9 +74,51 @@ function SetupCard(): JSX.Element | null {
   );
 }
 
+// The effective default model, derived from the same setup fetch as SetupCard (passed down as a
+// prop rather than a second useSetup() call — see the note on SetupCard above): the selected
+// local CLI takes priority, then the resolved gateway model when a key is set, else a not-set
+// call to action linking to Settings. Renders nothing while status hasn't loaded yet.
+function DefaultModelCard({ status }: { status: SetupStatus | null }): JSX.Element | null {
+  if (status === null) {
+    return null;
+  }
+
+  const gatewaySet = status.keys.find((key) => key.name === "gateway_api_key")?.set ?? false;
+
+  if (status.local_cli_default !== null) {
+    return (
+      <div className="default-model-card">
+        <span className="default-model-label">Default model</span>
+        <span className="default-model-value">Local CLI: {status.local_cli_default}</span>
+      </div>
+    );
+  }
+
+  if (gatewaySet) {
+    return (
+      <div className="default-model-card">
+        <span className="default-model-label">Default model</span>
+        <span className="default-model-value">{status.default_model}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="default-model-card default-model-card-unset">
+      <span className="default-model-label">Default model</span>
+      <span className="default-model-value">Not set</span>
+      <p className="default-model-explanation">
+        Set a Pydantic AI Gateway key or pick a local CLI to enable generation and runs.
+      </p>
+      <Link to="/settings">Go to Settings</Link>
+    </div>
+  );
+}
+
 export default function OverviewPage(): JSX.Element {
   const [data, setData] = useState<Overview | null>(null);
   const [error, setError] = useState<unknown>(null);
+  const { status: setupStatus, refetch: setupRefetch } = useSetup();
 
   useEffect(() => {
     overview.get().then(setData).catch(setError);
@@ -103,7 +154,8 @@ export default function OverviewPage(): JSX.Element {
     return (
       <section>
         <PageHeader title="Overview" description={description} />
-        <SetupCard />
+        <SetupCard status={setupStatus} refetch={setupRefetch} />
+        <DefaultModelCard status={setupStatus} />
         <div className="overview-empty">
           <EmptyState
             message="Start by authoring an evaluator, label a dataset to score it against, run it, and gate CI on the accuracy it reports."
@@ -122,7 +174,8 @@ export default function OverviewPage(): JSX.Element {
     <section>
       <PageHeader title="Overview" description={description} />
 
-      <SetupCard />
+      <SetupCard status={setupStatus} refetch={setupRefetch} />
+      <DefaultModelCard status={setupStatus} />
 
       <div className="overview-stats">
         <div className="stat-card">

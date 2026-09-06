@@ -1917,3 +1917,35 @@ kbd {
 .doc-link:hover {
   text-decoration: underline;
 }
+
+/* -- Default model card -------------------------------------------------------- */
+
+.default-model-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  margin-top: var(--space-3);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.default-model-label {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.default-model-value {
+  font-weight: 600;
+}
+
+.default-model-card-unset {
+  border-color: var(--accent);
+}
+
+.default-model-explanation {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  margin: 0;
+}
