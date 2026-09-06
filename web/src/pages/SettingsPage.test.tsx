@@ -48,6 +48,9 @@ function makeKey(name: SetupKeyName, overrides: Partial<SetupKey> = {}): SetupKe
 function makeStatus(overrides: Partial<Record<SetupKeyName, Partial<SetupKey>>> = {}): SetupStatus {
   return {
     keys: NAMES.map((name) => makeKey(name, overrides[name])),
+    default_model: "gateway/anthropic:claude-sonnet-5",
+    local_cli_default: null,
+    local_cli_options: ["claude", "codex", "cursor"],
     logfire_explore_url: null,
     logfire_traces_url: null,
     logfire_datasets_url: null,
@@ -76,7 +79,10 @@ describe("SettingsPage", () => {
   it("renders a password input per key, empty when unset, with each explanation", async () => {
     renderPage();
 
-    for (const name of NAMES) {
+    // gateway_api_key now lives in the Model Selection box, gated behind the
+    // "Use Pydantic AI Gateway" checkbox (unchecked here since it's unset) —
+    // covered separately by the gateway-key-visibility tests below.
+    for (const name of NAMES.filter((n) => n !== "gateway_api_key")) {
       const input = await screen.findByLabelText(LABELS[name]);
       expect(input).toHaveAttribute("type", "password");
       expect(input).toHaveValue("");
@@ -150,5 +156,60 @@ describe("SettingsPage", () => {
     renderPage();
 
     expect(await screen.findByText(/set from the environment/i)).toBeTruthy();
+  });
+
+  it("renders a local CLI option per local_cli_options entry with an explanation", async () => {
+    setupGet.mockResolvedValue(makeStatus());
+    renderPage();
+
+    await screen.findByText("Model Selection");
+    const select = screen.getByLabelText(/local cli/i) as HTMLSelectElement;
+    expect(within(select).getAllByRole("option").map((o) => o.textContent)).toEqual(
+      expect.arrayContaining(["None (use the gateway)", "claude", "codex", "cursor"])
+    );
+  });
+
+  it("does not render the gateway key input until the checkbox is checked, unless already set", async () => {
+    setupGet.mockResolvedValue(makeStatus({ gateway_api_key: { set: false } }));
+    renderPage();
+
+    await screen.findByText("Model Selection");
+    expect(screen.queryByLabelText("Pydantic AI Gateway key")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("Use Pydantic AI Gateway"));
+    expect(screen.getByLabelText("Pydantic AI Gateway key")).toBeInTheDocument();
+  });
+
+  it("shows the gateway key input already, unchecked-but-visible, when the key is already set", async () => {
+    setupGet.mockResolvedValue(makeStatus({ gateway_api_key: { set: true } }));
+    renderPage();
+
+    await screen.findByLabelText("Pydantic AI Gateway key");
+  });
+
+  it("saves a selected local CLI as local_cli_default", async () => {
+    setupGet.mockResolvedValue(makeStatus());
+    setupSave.mockResolvedValue({ ...makeStatus(), local_cli_default: "codex" });
+    renderPage();
+
+    await screen.findByText("Model Selection");
+    await userEvent.selectOptions(screen.getByLabelText(/local cli/i), "codex");
+    await userEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    expect(setupSave).toHaveBeenCalledWith(expect.objectContaining({ local_cli_default: "codex" }));
+  });
+
+  it("clears local_cli_default when None is selected after it was set", async () => {
+    setupGet.mockResolvedValue({ ...makeStatus(), local_cli_default: "claude" });
+    setupSave.mockResolvedValue(makeStatus());
+    renderPage();
+
+    await screen.findByText("Model Selection");
+    await userEvent.selectOptions(screen.getByLabelText(/local cli/i), "");
+    await userEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    expect(setupSave).toHaveBeenCalledWith(
+      expect.objectContaining({ clear: expect.arrayContaining(["local_cli_default"]) })
+    );
   });
 });

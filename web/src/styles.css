@@ -1757,6 +1757,41 @@ kbd {
   max-width: 42rem;
 }
 
+/* -- Model selection box ------------------------------------------------------- */
+
+.model-selection-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  margin-bottom: var(--space-5);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.model-selection-box h3 {
+  margin: 0;
+}
+
+.model-selection-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.model-selection-field select {
+  max-width: 20rem;
+}
+
+.model-selection-gateway-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
 /* -- Docs ------------------------------------------------------------------- */
 
 /* Secondary navigation under the page header. Underline-on-active rather than a filled
