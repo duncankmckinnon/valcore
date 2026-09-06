@@ -14,6 +14,7 @@ from valcore.config import (
     apply_gateway_key,
     apply_logfire_token,
     clear_gateway_key,
+    clear_local_cli_default,
     clear_logfire_read_key,
     clear_logfire_token,
     clear_logfire_write_key,
@@ -28,6 +29,7 @@ from valcore.config import (
     resolve_logfire_write_key,
     save_config,
     set_key,
+    set_local_cli_default,
     set_logfire_api_key,
     set_logfire_explore_url,
     set_logfire_read_key,
@@ -77,6 +79,7 @@ def test_load_config_missing_returns_all_none(_home: Path) -> None:
     assert cfg.logfire_read_key is None
     assert cfg.logfire_write_key is None
     assert cfg.logfire_explore_url is None
+    assert cfg.local_cli_default is None
 
 
 def test_save_load_round_trips_every_field() -> None:
@@ -91,10 +94,28 @@ def test_save_load_round_trips_every_field() -> None:
         logfire_read_key="lf-read-key",
         logfire_write_key="lf-write-key",
         logfire_explore_url="https://logfire-us.pydantic.dev/duncan/agent-tracing/explore",
+        local_cli_default="claude",
     )
     save_config(cfg)
     loaded = load_config()
     assert loaded == cfg
+
+
+def test_set_local_cli_default_preserves_other_fields() -> None:
+    save_config(FileConfig(model="gateway/openai:gpt-5", concurrency=3))
+    set_local_cli_default("claude")
+    loaded = load_config()
+    assert loaded.local_cli_default == "claude"
+    assert loaded.model == "gateway/openai:gpt-5"
+    assert loaded.concurrency == 3
+
+
+def test_clear_local_cli_default_preserves_other_fields() -> None:
+    save_config(FileConfig(local_cli_default="codex", model="gateway/openai:gpt-5"))
+    clear_local_cli_default()
+    loaded = load_config()
+    assert loaded.local_cli_default is None
+    assert loaded.model == "gateway/openai:gpt-5"
 
 
 def test_save_load_round_trips_logfire_fields_only() -> None:
