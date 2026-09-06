@@ -14,6 +14,7 @@ export function PageHeader({ title, description, action }: PageHeaderProps): JSX
   return (
     <div className="page-header">
       <div className="page-header-text">
+        <div className="page-eyebrow"><span /> Valcore workspace</div>
         <h1 className="page-title">{title}</h1>
         {description !== undefined && <p className="page-description">{description}</p>}
       </div>

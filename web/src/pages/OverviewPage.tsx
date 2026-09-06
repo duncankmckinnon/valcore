@@ -119,10 +119,21 @@ export default function OverviewPage(): JSX.Element {
   }
 
   return (
-    <section>
+    <section className="overview-page">
       <PageHeader title="Overview" description={description} />
 
       <SetupCard />
+
+      <div className="workflow-strip" aria-label="Valcore workflow">
+        <span className="workflow-kicker">One tight loop</span>
+        <div className="workflow-steps">
+          <Link to="/evaluators"><b>01</b> Author the evaluator</Link>
+          <i aria-hidden="true">→</i>
+          <Link to="/datasets"><b>02</b> Build the evidence</Link>
+          <i aria-hidden="true">→</i>
+          <Link to="/runs"><b>03</b> Validate and ship</Link>
+        </div>
+      </div>
 
       <div className="overview-stats">
         <div className="stat-card">
