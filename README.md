@@ -1,9 +1,5 @@
 <p align="center">
-  <img
-    src="https://raw.githubusercontent.com/duncankmckinnon/valcore/main/docs/img/logo.png"
-    alt="valcore"
-    width="260"
-  >
+  <img src="docs/img/logo.png" alt="valcore" width="200" />
 </p>
 
 <p align="center">
