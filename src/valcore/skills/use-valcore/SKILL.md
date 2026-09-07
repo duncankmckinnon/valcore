@@ -13,6 +13,12 @@ the machine except the model calls the judge itself makes.
 configuration key, environment variable, and exit code. Read it when you need exact
 syntax.
 
+[installation.md](installation.md) is the headless setup checklist: which keys are
+required for what, and how to confirm a `local/<cli>` route's CLI is actually installed
+and logged in before trusting a run. Read it when driving valcore non-interactively and
+something needs to be verified before it runs, or when a run fails in a way that looks
+environmental rather than a config or data problem.
+
 ## Setup: the Pydantic AI gateway
 
 **valcore talks to models exclusively through the [Pydantic AI](https://ai.pydantic.dev)
