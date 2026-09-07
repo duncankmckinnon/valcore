@@ -35,6 +35,7 @@ from valcore.config import (
     set_logfire_read_key,
     set_logfire_token,
     set_logfire_write_key,
+    sync_logfire_token_env,
 )
 from valcore.errors import ConfigError
 from valcore.paths import config_path, default_db_path, home_dir
@@ -202,6 +203,28 @@ def test_apply_logfire_token_returns_false_with_no_token(
     cfg = FileConfig()
 
     assert apply_logfire_token(cfg) is False
+    assert "LOGFIRE_TOKEN" not in os.environ
+
+
+def test_sync_logfire_token_env_overwrites_an_existing_env_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LOGFIRE_TOKEN", "lf-stale")
+    cfg = FileConfig(logfire_token="lf-fresh")
+
+    sync_logfire_token_env(cfg)
+
+    assert os.environ["LOGFIRE_TOKEN"] == "lf-fresh"
+
+
+def test_sync_logfire_token_env_clears_env_when_config_has_no_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LOGFIRE_TOKEN", "lf-stale")
+    cfg = FileConfig()
+
+    sync_logfire_token_env(cfg)
+
     assert "LOGFIRE_TOKEN" not in os.environ
 
 

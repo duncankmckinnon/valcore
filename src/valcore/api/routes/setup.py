@@ -12,7 +12,7 @@ from typing import Literal
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from valcore import logfire_links
+from valcore import logfire_links, tracing
 from valcore.config import (
     clear_gateway_key,
     clear_local_cli_default,
@@ -266,6 +266,9 @@ async def post_setup(body: SetupKeysIn) -> SetupOut:
             clear_logfire_read_key()
         elif name == "logfire_write_key":
             clear_logfire_write_key()
+
+    if values["logfire_token"] is not None or "logfire_token" in body.clear:
+        tracing.reconfigure_logfire_token(load_config())
 
     get_settings.cache_clear()
     return await _status()
