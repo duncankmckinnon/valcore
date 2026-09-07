@@ -104,11 +104,11 @@ Exports an evaluator version as a standalone Python script.
 | `path` | Print the config file path. |
 | `edit` | Open the config file in `$EDITOR`. |
 
-`set` validates before writing: `model` must be a valid model string, `local_cli_default`
-must name a supported CLI, and `port`/`concurrency` must be positive integers. A secret's
-value is not echoed back. The one key `set` refuses is `logfire_api_key`, the legacy
-combined key -- use `set-logfire-key`, or set the read and write keys separately. `unset`
-accepts every key including that one.
+[Configuration](#configuration) lists every valid key and the value each accepts; `set`
+validates against that before writing, so a bad model string or an unknown local CLI is
+refused rather than stored. The one key `set` will not take is `logfire_api_key`, the
+legacy combined key -- use `set-logfire-key`, or set the read and write keys separately.
+`unset` accepts it along with everything else.
 
 ```bash
 valcore config set local_cli_default claude
@@ -167,19 +167,28 @@ CLI. There is no command or flag for it here; do not go looking for one. See
 
 `~/.valcore/config.toml`, or `$VALCORE_HOME/config.toml`. Written with mode `0600`.
 
-| Key | Meaning |
-|---|---|
-| `gateway_api_key` | Pydantic AI gateway key, exported as `PYDANTIC_AI_GATEWAY_API_KEY`. |
-| `model` | Default model, as `gateway/<provider>:<model>` or `local/<cli>`. |
-| `local_cli_default` | Local CLI (`claude`/`codex`/`cursor`) used as the default model. Outranks `model`. |
-| `port` | Default port for `serve`. |
-| `concurrency` | Default max concurrent rows. |
-| `db_path` | Default database path. |
-| `logfire_token` | Write token for tracing valcore's own project. |
-| `logfire_read_key` | API key for querying traces and hosted datasets in the source-trace project. |
-| `logfire_write_key` | API key for pushing datasets to the valcore project. |
-| `logfire_api_key` | Legacy combined API key; still loaded as both read and write. |
-| `logfire_explore_url` | Fallback SQL Workbench URL if the read key cannot resolve the project. |
+These eleven keys are the complete set. `config set` accepts any of them except
+`logfire_api_key`; `config unset` accepts all eleven. Anything else is refused with an
+error naming the valid keys.
+
+| Key | Accepted value | Meaning |
+|---|---|---|
+| `gateway_api_key` | string | Pydantic AI gateway key, exported as `PYDANTIC_AI_GATEWAY_API_KEY`. |
+| `model` | `gateway/<provider>:<model>` or `local/<cli>` | Default model. Validated on write. |
+| `local_cli_default` | `claude`, `codex`, or `cursor` | Local CLI used as the default model. Outranks `model`. |
+| `port` | integer >= 1 | Default port for `serve`. |
+| `concurrency` | integer >= 1 | Default max concurrent rows. |
+| `db_path` | path | Default database path. |
+| `logfire_token` | string | Write token for tracing valcore's own project. |
+| `logfire_read_key` | string | API key for querying traces and hosted datasets in the source-trace project. |
+| `logfire_write_key` | string | API key for pushing datasets to the valcore project. |
+| `logfire_api_key` | *unset only* | Legacy combined API key; still loaded as both read and write. |
+| `logfire_explore_url` | string | Fallback SQL Workbench URL if the read key cannot resolve the project. |
+
+`gateway_api_key`, `logfire_token`, `logfire_api_key`, `logfire_read_key`, and
+`logfire_write_key` are secrets: `config set` confirms them as `(hidden)` rather than
+echoing the value. `config get` shows the gateway key masked (unless `--show-key`) and the
+four Logfire credentials only as present or absent.
 
 ### Environment variables
 
