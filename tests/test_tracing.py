@@ -414,6 +414,73 @@ class TestNoTokenStaysSilentRegardlessOfLogfirePresence:
         assert len(user_warnings) == 0
 
 
+class TestReconfigureLogfireToken:
+    """reconfigure_logfire_token lets a settings-UI save take effect without a restart."""
+
+    def test_noop_before_configure_tracing_has_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[dict[str, object]] = []
+        monkeypatch.setattr(tracing.logfire, "configure", lambda **kwargs: calls.append(kwargs))
+        cfg = FileConfig(logfire_token="lf-new")
+
+        tracing.reconfigure_logfire_token(cfg)
+
+        assert calls == []
+
+    def test_reconfigures_logfire_after_configure_tracing_has_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[dict[str, object]] = []
+        monkeypatch.setattr(tracing.logfire, "configure", lambda **kwargs: calls.append(kwargs))
+        tracing.configure_tracing(FileConfig())
+
+        tracing.reconfigure_logfire_token(FileConfig(logfire_token="lf-new"))
+
+        assert len(calls) == 2
+        assert calls[1]["send_to_logfire"] == "if-token-present"
+        assert calls[1]["service_name"] == "valcore"
+        assert calls[1]["console"] is False
+
+    def test_does_not_reinstrument_pydantic_ai(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        instrument_calls: list[object] = []
+        monkeypatch.setattr(tracing.logfire, "configure", lambda **kwargs: None)
+        monkeypatch.setattr(
+            tracing.logfire,
+            "instrument_pydantic_ai",
+            lambda *_args, **_kwargs: instrument_calls.append(1),
+        )
+        tracing.configure_tracing(FileConfig())
+        assert len(instrument_calls) == 1
+
+        tracing.reconfigure_logfire_token(FileConfig(logfire_token="lf-new"))
+
+        assert len(instrument_calls) == 1
+
+    def test_updates_the_environment_with_the_new_token(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(tracing.logfire, "configure", lambda **kwargs: None)
+        tracing.configure_tracing(FileConfig())
+        monkeypatch.setenv("LOGFIRE_TOKEN", "lf-stale")
+
+        tracing.reconfigure_logfire_token(FileConfig(logfire_token="lf-fresh"))
+
+        import os
+
+        assert os.environ["LOGFIRE_TOKEN"] == "lf-fresh"
+
+    def test_clears_the_environment_when_the_token_is_removed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(tracing.logfire, "configure", lambda **kwargs: None)
+        tracing.configure_tracing(FileConfig(logfire_token="lf-initial"))
+
+        tracing.reconfigure_logfire_token(FileConfig())
+
+        import os
+
+        assert "LOGFIRE_TOKEN" not in os.environ
+
+
 class TestSourceDoesNotImportLogfireDirectlyOrSwallowImportError:
     """tracing.py must import the shim only, and never guard it with try/except ImportError."""
 
