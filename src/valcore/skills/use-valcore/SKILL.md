@@ -1,13 +1,14 @@
 ---
 name: use-valcore
-description: Use when building, running, or debugging LLM-as-judge evaluations with valcore — setting up the Pydantic AI gateway key, authoring evaluators and datasets by hand or by generation, running validation and eval runs, reading agreement metrics, or exporting a judge as a standalone script.
+description: Use when building, running, or debugging LLM-as-judge evaluations with valcore — choosing a model route (a Pydantic AI gateway key, or a local Claude Code/Codex/Cursor CLI), authoring evaluators and datasets by hand or by generation, running validation and eval runs, reading agreement metrics, or exporting a judge as a standalone script.
 ---
 
 # Using valcore
 
 valcore develops, runs, and exports agentic evaluations locally. Everything lives in one
 SQLite database and one process — there is no service to sign up for, and no data leaves
-the machine except the model calls the judge itself makes.
+the machine except the model calls the judge itself makes, which go through either a
+hosted gateway or a coding CLI already logged in on this machine.
 
 [reference.md](reference.md) is the complete CLI reference: every command, flag,
 configuration key, environment variable, and exit code. Read it when you need exact
@@ -19,13 +20,21 @@ and logged in before trusting a run. Read it when driving valcore non-interactiv
 something needs to be verified before it runs, or when a run fails in a way that looks
 environmental rather than a config or data problem.
 
-## Setup: the Pydantic AI gateway
+## Setup: choosing a model route
 
-**valcore talks to models exclusively through the [Pydantic AI](https://ai.pydantic.dev)
-gateway.** There is no direct-to-provider path and no per-provider API key. Nothing runs
-until a gateway key is configured.
+A model string names one of two routes.
 
-Model strings are always `gateway/<provider>:<model>`:
+**Gateway** reaches a hosted model through the [Pydantic AI](https://ai.pydantic.dev)
+gateway. There is no direct-to-provider path and no per-provider API key, so a gateway key
+is required before a hosted model will run.
+
+**Local CLI** reuses a coding-agent CLI already installed and logged in on this machine,
+and needs no key at all. Prefer it when the user has no gateway key — it is usually the
+difference between "cannot run anything" and a working evaluation loop.
+
+### Gateway model strings
+
+Hosted model strings are always `gateway/<provider>:<model>`:
 
 ```
 gateway/anthropic:claude-sonnet-5      # the default
@@ -36,10 +45,45 @@ gateway/google:gemini-2.5-pro
 ```
 
 Valid providers are `anthropic`, `openai`, `google`, `google-cloud`, `bedrock`, and
-`groq`. Anything not matching `gateway/<provider>:<model>` is rejected up front with a
-`ConfigError` — a bare `claude-sonnet-5` or `openai:gpt-5` will not work.
+`groq`. A bare `claude-sonnet-5` or `openai:gpt-5` is rejected up front with a
+`ConfigError`.
 
-### Configure the key
+### Local CLI model strings
+
+A local route names a CLI and nothing else — there is no model name after it, because
+each route runs that CLI's own binary, which answers with whichever model it is already
+configured to use:
+
+```
+local/claude    # the `claude` binary (Claude Code)
+local/codex     # the `codex` binary (Codex CLI)
+local/cursor    # the `cursor-agent` binary (Cursor CLI)
+```
+
+The binary must be on `PATH` and already authenticated; valcore does not manage the login,
+and does not check any of this before a run — see [installation.md](installation.md) for
+which binary backs which route name and how to verify one. Set a route as the default, or
+name it as a version's `model`:
+
+```bash
+valcore config set local_cli_default claude   # default for new versions and generation
+valcore config unset local_cli_default        # back to the gateway
+```
+
+**A local model gives up three things**, and valcore enforces each rather than failing at
+call time:
+
+- **No tools.** A version that sets `tools` *and* a local model is rejected when saved.
+- **No harness capabilities.** `capabilities` are not attached for a local model; the CLI
+  brings its own tooling.
+- **No standalone export.** `valcore export` to Python refuses a local model — the
+  rendered script is valcore-free, so it has no way to reach a local CLI.
+
+Prefer an explicit gateway model on any version whose validation number is a release gate:
+a local CLI answers with whatever model it currently defaults to, which can change when
+the tool updates.
+
+### Configure the gateway key
 
 ```bash
 valcore config set-key          # prompts, input hidden
@@ -61,17 +105,30 @@ export PYDANTIC_AI_GATEWAY_API_KEY=sk-...
 If the config file is group- or world-readable, valcore warns and tells you to
 `chmod 600` it, but still loads it.
 
-### Choosing a model
+### Which model actually resolves
 
-The default is `gateway/anthropic:claude-sonnet-5`. Override it, highest precedence
-first:
+The built-in default is `gateway/anthropic:claude-sonnet-5`. Override it, highest
+precedence first:
 
 1. an explicit argument
 2. `VALCORE_DEFAULT_MODEL` in the environment
-3. `model` in `config.toml`
-4. the built-in default
+3. `local_cli_default` in `config.toml`
+4. `model` in `config.toml`
+5. the built-in default
 
-The same order governs `VALCORE_DEFAULT_CONCURRENCY` and `VALCORE_DB_PATH`.
+Note rung 3: a stored local CLI outranks a stored gateway model string.
+`VALCORE_DEFAULT_MODEL` outranks both, so a stored `local_cli_default` can be stale
+relative to what really runs — `valcore config get` shows what is stored, and the
+Overview page shows what resolves.
+
+`VALCORE_DEFAULT_CONCURRENCY` and `VALCORE_DB_PATH` follow the same
+argument/env/file/default order.
+
+### Setting any config key
+
+`valcore config set KEY VALUE` and `valcore config unset KEY` cover every key in
+`config.toml`, including the ones with no named command (`model`, `local_cli_default`,
+`port`, `concurrency`, `db_path`). Values are validated before they are written.
 
 ## The model
 
@@ -89,8 +146,8 @@ The same order governs `VALCORE_DEFAULT_CONCURRENCY` and `VALCORE_DB_PATH`.
 | `score_kind` | `categorical` or `numeric`. |
 | `score_labels` | The label set, for categorical scoring. |
 | `score_minimum` / `score_maximum` | The bounds, for numeric scoring. |
-| `capabilities` | `CodeMode`, `SubAgents`, `Planning`, `FileSystem`, `Shell`. |
-| `tools` | Registry tools the rubric actually needs. |
+| `capabilities` | `CodeMode`, `SubAgents`, `Planning`, `FileSystem`, `Shell`. Ignored for a local CLI model. |
+| `tools` | Registry tools the rubric actually needs. Rejected with a local CLI model. |
 
 **Dataset** — `columns`, a `label_schema`, and rows. Each row has `data` keyed by column,
 and an **optional** `label`. Unlabeled datasets are fine.
@@ -220,6 +277,9 @@ Once the judge agrees with you, run `eval` runs over unlabeled data to score it.
 
 Export an evaluator version as a standalone Python script that runs the same judge
 without valcore installed. Use this to embed a validated judge into another pipeline.
+
+This requires a `gateway/...` model: the rendered script has no valcore dependency, so a
+local CLI model is refused with a `ContractError`.
 
 ## Practical notes
 

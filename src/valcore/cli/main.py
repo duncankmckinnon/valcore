@@ -12,6 +12,8 @@ import re
 import sys
 import threading
 import webbrowser
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
@@ -26,7 +28,7 @@ from valcore.cli.resolve import resolve_dataset, resolve_evaluator, resolve_vers
 from valcore.cli.skills import skills
 from valcore.config import apply_gateway_key, load_config, save_config, set_key
 from valcore.config_io import EvalPackage
-from valcore.errors import ContractError, ValcoreError
+from valcore.errors import ConfigError, ContractError, ValcoreError
 from valcore.export import render_dataset_module, render_judge_module, render_script
 from valcore.models import (
     Dataset,
@@ -42,7 +44,12 @@ from valcore.models import (
 )
 from valcore.paths import config_path
 from valcore.runner import RunEvent, execute_run
-from valcore.settings import get_settings, is_local_cli_model
+from valcore.settings import (
+    LOCAL_CLI_NAMES,
+    get_settings,
+    is_local_cli_model,
+    validate_model_string,
+)
 from valcore.store import Store, create_engine, init_db
 
 _LOCAL_DB = Path("valcore.db")
@@ -546,6 +553,108 @@ def config_set_key(key: str | None) -> None:
         key = click.prompt("Gateway API key", hide_input=True)
     set_key(key)
     click.echo(f"Saved gateway API key to {config_path()}", err=True)
+
+
+def _parse_local_cli_default(value: str) -> str:
+    """Return `value` if it names a supported local CLI, else raise ConfigError."""
+    if value not in LOCAL_CLI_NAMES:
+        raise ConfigError(
+            f"{value!r} is not a known local CLI; valid names are {sorted(LOCAL_CLI_NAMES)}."
+        )
+    return value
+
+
+def _parse_positive_int(field: str) -> Callable[[str], int]:
+    """Return a parser turning a string into a positive int for `field`."""
+
+    def parse(value: str) -> int:
+        try:
+            number = int(value)
+        except ValueError:
+            raise ConfigError(f"{field} must be a whole number, not {value!r}.") from None
+        if number < 1:
+            raise ConfigError(f"{field} must be at least 1, not {number}.")
+        return number
+
+    return parse
+
+
+def _parse_model(value: str) -> str:
+    """Return `value` if it is a valid model string; validate_model_string raises otherwise."""
+    validate_model_string(value)
+    return value
+
+
+@dataclass(frozen=True)
+class _ConfigField:
+    """One settable config.toml key: how to parse its value, and whether it is a secret.
+
+    ``settable`` is False for ``logfire_api_key``: it is the legacy combined key that
+    ``set_logfire_api_key`` migrates away from by writing the split read/write fields, so
+    ``set`` would reintroduce what the migration removes. ``unset`` still clears it, which
+    is the only thing a user with a legacy config actually wants to do to it.
+    """
+
+    parse: Callable[[str], object] = str
+    secret: bool = False
+    settable: bool = True
+
+
+_CONFIG_FIELDS: dict[str, _ConfigField] = {
+    "gateway_api_key": _ConfigField(secret=True),
+    "model": _ConfigField(parse=_parse_model),
+    "local_cli_default": _ConfigField(parse=_parse_local_cli_default),
+    "port": _ConfigField(parse=_parse_positive_int("port")),
+    "concurrency": _ConfigField(parse=_parse_positive_int("concurrency")),
+    "db_path": _ConfigField(parse=Path),
+    "logfire_token": _ConfigField(secret=True),
+    "logfire_api_key": _ConfigField(secret=True, settable=False),
+    "logfire_read_key": _ConfigField(secret=True),
+    "logfire_write_key": _ConfigField(secret=True),
+    "logfire_explore_url": _ConfigField(),
+}
+
+
+def _config_field(key: str, *, for_set: bool) -> _ConfigField:
+    """Look up `key`, raising ConfigError naming the valid alternatives when it is unknown."""
+    field = _CONFIG_FIELDS.get(key)
+    if field is None:
+        raise ConfigError(f"Unknown config key {key!r}; valid keys are {sorted(_CONFIG_FIELDS)}.")
+    if for_set and not field.settable:
+        raise ConfigError(
+            f"{key!r} is the legacy combined Logfire key and cannot be set directly. Use "
+            "'valcore config set-logfire-key' to store one key as both, or set "
+            "logfire_read_key and logfire_write_key separately."
+        )
+    return field
+
+
+@config.command("set")
+@click.argument("key")
+@click.argument("value")
+def config_set(key: str, value: str) -> None:
+    """Set any config.toml KEY to VALUE, leaving every other key untouched."""
+    field = _config_field(key, for_set=True)
+    cfg = load_config()
+    setattr(cfg, key, field.parse(value))
+    save_config(cfg)
+    shown = "(hidden)" if field.secret else value
+    click.echo(f"Set {key} = {shown} in {config_path()}", err=True)
+
+
+@config.command("unset")
+@click.argument("key")
+def config_unset(key: str) -> None:
+    """Remove any config.toml KEY, leaving every other key untouched.
+
+    Unsetting a key that is already absent succeeds: the requested end state holds either
+    way, and a CLI that errors on it cannot be used to make config idempotent.
+    """
+    _config_field(key, for_set=False)
+    cfg = load_config()
+    setattr(cfg, key, None)
+    save_config(cfg)
+    click.echo(f"Unset {key} in {config_path()}", err=True)
 
 
 @config.command("get")

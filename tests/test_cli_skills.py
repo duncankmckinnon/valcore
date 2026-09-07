@@ -341,3 +341,52 @@ def test_resolve_version_falls_back_when_not_installed(monkeypatch: pytest.Monke
 
     monkeypatch.setattr(main_mod, "package_version", _raise)
     assert main_mod._resolve_version()  # non-empty, no exception
+
+
+# -- config reference content -------------------------------------------------
+#
+# `config set`/`unset` accept keys by name, so an agent works from the reference
+# table rather than a --help listing. These pin that table to the code: a new
+# FileConfig field, or a change to which keys `set` refuses, has to reach the docs
+# in the same commit. They derive their expectations from the code, so ordinary
+# prose edits do not require touching them.
+
+
+def _config_table_row(body: str, key: str) -> str:
+    """Return the reference.md table row documenting `key`, or raise if there is none."""
+    prefix = f"| `{key}` |"
+    rows = [line for line in body.splitlines() if line.startswith(prefix)]
+    assert rows, f"no config table row for {key!r} in reference.md"
+    return rows[0]
+
+
+def test_reference_table_lists_every_config_key() -> None:
+    """Every key `config set`/`unset` accepts has its own row in the reference table.
+
+    Matching the row rather than a bare mention: these key names also appear in prose,
+    so a substring check passes even when the table itself has lost the key.
+    """
+    from valcore.config import FileConfig
+
+    body = _reference_body()
+    for key in FileConfig.model_fields:
+        _config_table_row(body, key)
+
+
+def test_reference_marks_the_keys_set_refuses() -> None:
+    """A key `set` will not take must be documented as unset-only, not silently listed."""
+    from valcore.cli.main import _CONFIG_FIELDS
+
+    body = _reference_body()
+    refused = [key for key, field in _CONFIG_FIELDS.items() if not field.settable]
+    assert refused, "expected at least one non-settable key to document"
+    for key in refused:
+        row = _config_table_row(body, key)
+        assert "unset only" in row, f"{key} is not marked unset-only in reference.md: {row}"
+
+
+def test_reference_documents_the_config_set_commands() -> None:
+    """The generic setters are the only path to five of the keys, so they must appear."""
+    body = _reference_body()
+    assert "`set KEY VALUE`" in body
+    assert "`unset KEY`" in body
