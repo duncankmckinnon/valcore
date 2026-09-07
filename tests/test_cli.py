@@ -1118,3 +1118,127 @@ def test_serve_calls_uvicorn_with_host_and_port(runner, db_path, monkeypatch):
     )
     assert result.exit_code == 0
     assert calls == {"host": "0.0.0.0", "port": 9123}
+
+
+# -- config set / unset -------------------------------------------------------
+
+
+def test_config_set_model_persists_and_preserves_others(runner, db_path):
+    _invoke(runner, db_path, "config", "set-key", "sk-secret-1234")
+    result = _invoke(runner, db_path, "config", "set", "model", "gateway/openai:gpt-5")
+    assert result.exit_code == 0
+
+    cfg = load_config()
+    assert cfg.model == "gateway/openai:gpt-5"
+    assert cfg.gateway_api_key == "sk-secret-1234"
+
+
+def test_config_set_model_rejects_a_malformed_string(runner, db_path):
+    result = _invoke(runner, db_path, "config", "set", "model", "claude-sonnet-5")
+    assert result.exit_code == 1
+    assert load_config().model is None
+
+
+def test_config_set_model_accepts_a_local_cli_route(runner, db_path):
+    result = _invoke(runner, db_path, "config", "set", "model", "local/claude")
+    assert result.exit_code == 0
+    assert load_config().model == "local/claude"
+
+
+def test_config_set_local_cli_default_persists(runner, db_path):
+    result = _invoke(runner, db_path, "config", "set", "local_cli_default", "claude")
+    assert result.exit_code == 0
+    assert load_config().local_cli_default == "claude"
+
+
+def test_config_set_local_cli_default_rejects_an_unknown_cli(runner, db_path):
+    result = _invoke(runner, db_path, "config", "set", "local_cli_default", "aider")
+    assert result.exit_code == 1
+    assert "claude" in result.stderr
+    assert load_config().local_cli_default is None
+
+
+def test_config_set_concurrency_stores_an_int(runner, db_path):
+    result = _invoke(runner, db_path, "config", "set", "concurrency", "16")
+    assert result.exit_code == 0
+    assert load_config().concurrency == 16
+
+
+def test_config_set_concurrency_rejects_a_non_integer(runner, db_path):
+    result = _invoke(runner, db_path, "config", "set", "concurrency", "lots")
+    assert result.exit_code == 1
+    assert load_config().concurrency is None
+
+
+def test_config_set_db_path_stores_a_path(runner, db_path, tmp_path):
+    target = tmp_path / "other.sqlite"
+    result = _invoke(runner, db_path, "config", "set", "db_path", str(target))
+    assert result.exit_code == 0
+    assert load_config().db_path == target
+
+
+def test_config_set_rejects_an_unknown_key(runner, db_path):
+    result = _invoke(runner, db_path, "config", "set", "nonsense", "x")
+    assert result.exit_code == 1
+    assert "nonsense" in result.stderr
+    # The error names the keys that would have worked.
+    assert "local_cli_default" in result.stderr
+
+
+def test_config_set_does_not_echo_a_secret_value(runner, db_path):
+    result = _invoke(runner, db_path, "config", "set", "gateway_api_key", "sk-secret-1234")
+    assert result.exit_code == 0
+    assert load_config().gateway_api_key == "sk-secret-1234"
+    assert "sk-secret-1234" not in result.output
+
+
+def test_config_set_rejects_the_legacy_combined_logfire_key(runner, db_path):
+    result = _invoke(runner, db_path, "config", "set", "logfire_api_key", "lf-legacy")
+    assert result.exit_code == 1
+    assert "set-logfire-key" in result.stderr
+    assert load_config().logfire_api_key is None
+
+
+def test_config_unset_clears_one_key_and_preserves_others(runner, db_path):
+    _invoke(runner, db_path, "config", "set-key", "sk-secret-1234")
+    _invoke(runner, db_path, "config", "set", "local_cli_default", "codex")
+
+    result = _invoke(runner, db_path, "config", "unset", "local_cli_default")
+    assert result.exit_code == 0
+
+    cfg = load_config()
+    assert cfg.local_cli_default is None
+    assert cfg.gateway_api_key == "sk-secret-1234"
+
+
+def test_config_unset_clears_a_secret(runner, db_path):
+    _invoke(runner, db_path, "config", "set-key", "sk-secret-1234")
+    result = _invoke(runner, db_path, "config", "unset", "gateway_api_key")
+    assert result.exit_code == 0
+    assert load_config().gateway_api_key is None
+
+
+def test_config_unset_clears_the_legacy_combined_logfire_key(runner, db_path):
+    _invoke(runner, db_path, "config", "set-logfire-key", "lf-both")
+    result = _invoke(runner, db_path, "config", "unset", "logfire_api_key")
+    assert result.exit_code == 0
+    assert load_config().logfire_api_key is None
+
+
+def test_config_unset_rejects_an_unknown_key(runner, db_path):
+    result = _invoke(runner, db_path, "config", "unset", "nonsense")
+    assert result.exit_code == 1
+    assert "nonsense" in result.stderr
+
+
+def test_config_unset_an_already_unset_key_succeeds(runner, db_path):
+    result = _invoke(runner, db_path, "config", "unset", "local_cli_default")
+    assert result.exit_code == 0
+    assert load_config().local_cli_default is None
+
+
+def test_config_set_then_get_round_trips(runner, db_path):
+    _invoke(runner, db_path, "config", "set", "local_cli_default", "cursor")
+    result = _invoke(runner, db_path, "config", "get")
+    assert result.exit_code == 0
+    assert "cursor" in result.output

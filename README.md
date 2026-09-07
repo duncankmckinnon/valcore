@@ -134,15 +134,27 @@ export PYDANTIC_AI_GATEWAY_API_KEY=sk-...
 
 Run `valcore config set-key` with no argument to be prompted without echoing the key.
 
+Every key in `config.toml` can also be set generically. `valcore config set <key> <value>`
+validates before writing (a bad model string, an unknown local CLI, or a non-numeric
+`concurrency` is refused), and `valcore config unset <key>` removes one. The named
+`set-*` commands remain the way to enter a secret without it appearing in shell history.
+
 A local model — `local/claude`, `local/codex`, or `local/cursor` — reuses an already
 logged-in CLI on this machine instead, and needs no gateway key. There is no model name
 after the CLI: each route runs that CLI's own binary (`claude`, `codex`, or
 `cursor-agent`), which must be on `PATH` and already authenticated, and it answers with
 whichever model it is configured to use.
 
-Pick one under **Model Selection** in Settings, which stores it as `local_cli_default` in
-`config.toml`; a version can still name a local route explicitly as its `model`. Overview's
-default-model card shows whichever model actually resolves.
+Pick one under **Model Selection** in Settings, or from the command line:
+
+```bash
+valcore config set local_cli_default claude   # or codex, cursor
+valcore config unset local_cli_default        # back to the gateway
+```
+
+Either way it is stored as `local_cli_default` in `config.toml`; a version can still name a
+local route explicitly as its `model`. Overview's default-model card shows whichever model
+actually resolves.
 
 Override the default model, highest precedence first: an explicit argument,
 `VALCORE_DEFAULT_MODEL`, `local_cli_default` in `config.toml`, `model` in `config.toml`,
@@ -187,6 +199,8 @@ configured at all.
 | `valcore experiment <evaluator> <dataset>` | Run an evaluator version over a dataset via `pydantic_evals.Dataset.evaluate`. |
 | `valcore export <evaluator>` | Export an evaluator (and, with `--dataset`, a dataset) as a Python script or, with `--format json`, a portable eval package. |
 | `valcore import <file>` | Import a JSON eval package back into the local database. |
+| `valcore config set <key> <value>` | Set any config key, including `model`, `local_cli_default`, `port`, `concurrency`, and `db_path`. |
+| `valcore config unset <key>` | Remove any config key. |
 | `valcore config set-key [KEY]` | Store the gateway API key in the config file. |
 | `valcore config set-logfire-token [TOKEN]` | Store the Logfire tracing token in the config file. |
 | `valcore config set-logfire-key [KEY]` | Store one Logfire API key as both the read and write keys. |
