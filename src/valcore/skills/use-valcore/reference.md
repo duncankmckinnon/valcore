@@ -98,9 +98,24 @@ Exports an evaluator version as a standalone Python script.
 | `set-logfire-read-key [KEY]` | Store the Logfire read key (query traces and hosted datasets in the source project). |
 | `set-logfire-write-key [KEY]` | Store the Logfire write key (push datasets to the valcore project). |
 | `set-logfire-explore-url [URL]` | Optional fallback SQL Workbench URL if the read key cannot resolve the project. |
+| `set KEY VALUE` | Set any config key. Covers every key, including the ones with no named command. |
+| `unset KEY` | Remove any config key. Succeeds whether or not it was set. |
 | `get [--show-key] [--json]` | Show config. The key is masked unless `--show-key`. |
 | `path` | Print the config file path. |
 | `edit` | Open the config file in `$EDITOR`. |
+
+`set` validates before writing: `model` must be a valid model string, `local_cli_default`
+must name a supported CLI, and `port`/`concurrency` must be positive integers. A secret's
+value is not echoed back. The one key `set` refuses is `logfire_api_key`, the legacy
+combined key -- use `set-logfire-key`, or set the read and write keys separately. `unset`
+accepts every key including that one.
+
+```bash
+valcore config set local_cli_default claude
+valcore config set model gateway/openai:gpt-5
+valcore config set concurrency 16
+valcore config unset local_cli_default
+```
 
 ### `valcore skills`
 
@@ -155,7 +170,8 @@ CLI. There is no command or flag for it here; do not go looking for one. See
 | Key | Meaning |
 |---|---|
 | `gateway_api_key` | Pydantic AI gateway key, exported as `PYDANTIC_AI_GATEWAY_API_KEY`. |
-| `model` | Default model, as `gateway/<provider>:<model>`. |
+| `model` | Default model, as `gateway/<provider>:<model>` or `local/<cli>`. |
+| `local_cli_default` | Local CLI (`claude`/`codex`/`cursor`) used as the default model. Outranks `model`. |
 | `port` | Default port for `serve`. |
 | `concurrency` | Default max concurrent rows. |
 | `db_path` | Default database path. |
@@ -177,7 +193,8 @@ CLI. There is no command or flag for it here; do not go looking for one. See
 | `VALCORE_LOGFIRE_ENABLED` | Enable Logfire instrumentation. |
 
 Precedence, highest first: explicit argument, `VALCORE_*` environment variable,
-`config.toml`, built-in default.
+`config.toml`, built-in default. Within `config.toml`, `local_cli_default` outranks
+`model`: a stored local CLI wins over a stored gateway model string.
 
 ## Exit codes
 
