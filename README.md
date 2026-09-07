@@ -191,6 +191,12 @@ configured at all.
 
 ## Commands
 
+The full CLI reference — with option-by-option detail, examples, exit codes, and
+configuration keys — ships as part of the [agent skill](#agent-skills) at
+[`reference.md`](src/valcore/skills/use-valcore/reference.md); it is this table's
+source of truth (`scripts/sync_command_table.py --check` fails CI if the two drift).
+
+<!-- COMMANDS:START -->
 | Command | What it does |
 | --- | --- |
 | `valcore serve` | Serve the web UI and API (`--port`, `--host`, `--no-browser`). |
@@ -218,6 +224,7 @@ configured at all.
 | `valcore skills list` | Show the bundled skills and where each is installed. |
 | `valcore skills uninstall` | Remove the bundled skills from the selected directories. |
 | `valcore version` | Print the installed valcore version. |
+<!-- COMMANDS:END -->
 
 Evaluators, versions, and datasets are addressable by name or by a unique id prefix;
 an ambiguous value is an error that lists the candidates. Pass `--db PATH` on the group

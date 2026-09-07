@@ -458,6 +458,45 @@ async def test_post_setup_blank_value_is_rejected() -> None:
 
 
 @pytest.mark.anyio
+async def test_post_setup_reconfigures_logfire_when_token_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A settings-UI save must take effect immediately, without a server restart."""
+    calls: list[object] = []
+    monkeypatch.setattr(
+        "valcore.tracing.reconfigure_logfire_token", lambda cfg: calls.append(cfg.logfire_token)
+    )
+    resp = await _post_setup(create_app(), {"logfire_token": "lf-new-token"})
+    assert resp.status_code == 200, resp.text
+    assert calls == ["lf-new-token"]
+
+
+@pytest.mark.anyio
+async def test_post_setup_reconfigures_logfire_when_token_is_cleared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    save_config(FileConfig(logfire_token="lf-existing"))
+    calls: list[object] = []
+    monkeypatch.setattr(
+        "valcore.tracing.reconfigure_logfire_token", lambda cfg: calls.append(cfg.logfire_token)
+    )
+    resp = await _post_setup(create_app(), {"clear": ["logfire_token"]})
+    assert resp.status_code == 200, resp.text
+    assert calls == [None]
+
+
+@pytest.mark.anyio
+async def test_post_setup_does_not_reconfigure_logfire_for_unrelated_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr("valcore.tracing.reconfigure_logfire_token", lambda cfg: calls.append(cfg))
+    resp = await _post_setup(create_app(), {"gateway_api_key": "sk-new"})
+    assert resp.status_code == 200, resp.text
+    assert calls == []
+
+
+@pytest.mark.anyio
 async def test_post_setup_clearing_read_on_legacy_key_keeps_write() -> None:
     from valcore.config import load_config
 

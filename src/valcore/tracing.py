@@ -24,7 +24,12 @@ from typing import Any
 
 import logfire_api as logfire
 
-from valcore.config import FileConfig, apply_logfire_token, logfire_token_present
+from valcore.config import (
+    FileConfig,
+    apply_logfire_token,
+    logfire_token_present,
+    sync_logfire_token_env,
+)
 from valcore.models import Dataset, DatasetRow, EvaluatorVersion, Run
 
 _configured = False
@@ -91,6 +96,29 @@ def configure_tracing(cfg: FileConfig) -> None:
     logfire.instrument_pydantic_ai()
 
     _configured = True
+
+
+def reconfigure_logfire_token(cfg: FileConfig) -> None:
+    """Re-apply a changed Logfire token to the already-configured global instance.
+
+    Lets a settings-UI save (``POST /api/setup``) take effect immediately, without
+    restarting the server process. ``logfire.configure`` is safe to call again: it
+    shuts down and replaces the delegate of the single ``ProxyTracerProvider`` that
+    ``instrument_pydantic_ai`` captured a reference to inside ``configure_tracing``,
+    rather than creating a new provider object, so already-instrumented agents pick
+    up the new token on their very next span -- no re-instrumentation needed here.
+
+    A no-op before the first successful ``configure_tracing`` call: nothing is
+    listening for spans yet, so there is nothing to hand a new token to.
+    """
+    if not _configured:
+        return
+    sync_logfire_token_env(cfg)
+    logfire.configure(
+        send_to_logfire="if-token-present",
+        service_name="valcore",
+        console=False,
+    )
 
 
 def instrument_app(app: Any) -> None:

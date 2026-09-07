@@ -14,6 +14,12 @@ hosted gateway or a coding CLI already logged in on this machine.
 configuration key, environment variable, and exit code. Read it when you need exact
 syntax.
 
+[installation.md](installation.md) is the headless setup checklist: which keys are
+required for what, and how to confirm a `local/<cli>` route's CLI is actually installed
+and logged in before trusting a run. Read it when driving valcore non-interactively and
+something needs to be verified before it runs, or when a run fails in a way that looks
+environmental rather than a config or data problem.
+
 ## Setup: choosing a model route
 
 A model string names one of two routes.
@@ -54,8 +60,10 @@ local/codex     # the `codex` binary (Codex CLI)
 local/cursor    # the `cursor-agent` binary (Cursor CLI)
 ```
 
-The binary must be on `PATH` and already authenticated; valcore does not manage the login.
-Set one as the default, or name it as a version's `model`:
+The binary must be on `PATH` and already authenticated; valcore does not manage the login,
+and does not check any of this before a run — see [installation.md](installation.md) for
+which binary backs which route name and how to verify one. Set a route as the default, or
+name it as a version's `model`:
 
 ```bash
 valcore config set local_cli_default claude   # default for new versions and generation

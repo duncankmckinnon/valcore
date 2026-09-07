@@ -139,6 +139,21 @@ def apply_gateway_key(cfg: FileConfig) -> bool:
     return True
 
 
+def sync_logfire_token_env(cfg: FileConfig) -> None:
+    """Force the environment to match ``cfg``'s Logfire token, overwriting or clearing it.
+
+    Unlike ``apply_logfire_token``, an existing ``LOGFIRE_TOKEN`` does not win here --
+    this exists for the moment a running process's token changes through valcore's own
+    config (e.g. a settings-UI save hitting ``POST /api/setup``), and the value valcore
+    itself exported at startup needs to move to match so ``tracing.reconfigure_logfire_token``
+    can pick it up without a restart.
+    """
+    if cfg.logfire_token is None:
+        os.environ.pop(_LOGFIRE_TOKEN_ENV, None)
+    else:
+        os.environ[_LOGFIRE_TOKEN_ENV] = cfg.logfire_token
+
+
 def set_logfire_token(token: str) -> None:
     """Persist ``token`` as the Logfire write token, preserving other config values."""
     cfg = load_config()

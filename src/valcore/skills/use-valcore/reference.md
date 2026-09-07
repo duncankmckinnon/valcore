@@ -1,21 +1,61 @@
 # valcore CLI reference
 
-Syntax only. Concepts, workflow, and gateway setup are in [SKILL.md](SKILL.md).
+Syntax only. Concepts, workflow, and gateway setup are in [SKILL.md](SKILL.md). Setup and
+environment verification for headless use are in [installation.md](installation.md).
+
+This file is the source of truth for the command list: `README.md`'s own summary table
+is generated from the one below and a test fails if the two drift apart. Add or change a
+command here first, then regenerate with `scripts/sync_command_table.py`.
 
 ## Contents
 
+- [Command summary](#command-summary) — every command in one table
 - [Global](#global) — `--db`, `--version`, database resolution
 - [`valcore version`](#valcore-version)
 - [`valcore serve`](#valcore-serve) — run the web app and API
 - [`valcore list`](#valcore-list-evaluatorsdatasetsruns) — evaluators, datasets, runs
 - [`valcore run`](#valcore-run-evaluator-dataset) — validation and eval runs
-- [`valcore export`](#valcore-export-evaluator) — standalone judge script
+- [`valcore experiment`](#valcore-experiment-evaluator-dataset) — the `pydantic_evals` engine over the same data
+- [`valcore export`](#valcore-export-evaluator) — standalone judge script or portable eval package
+- [`valcore import`](#valcore-import-path) — load a portable eval package back in
 - [`valcore config`](#valcore-config) — gateway key and defaults
 - [`valcore skills`](#valcore-skills) — install these skills into agent directories
 - [`valcore logfire`](#valcore-logfire) — pull from a query or hosted dataset; push to hosted store
 - [Not in the CLI](#not-in-the-cli) — seeded generation is API and web only
 - [Configuration](#configuration) — `config.toml` keys, `VALCORE_*` environment variables
 - [Exit codes](#exit-codes)
+
+## Command summary
+
+<!-- COMMANDS:START -->
+| Command | What it does |
+| --- | --- |
+| `valcore serve` | Serve the web UI and API (`--port`, `--host`, `--no-browser`). |
+| `valcore list <evaluators\|datasets\|runs>` | List resources as a table or, with `--json`, as JSON. |
+| `valcore run <evaluator> <dataset>` | Run an evaluator version over a dataset. |
+| `valcore experiment <evaluator> <dataset>` | Run an evaluator version over a dataset via `pydantic_evals.Dataset.evaluate`. |
+| `valcore export <evaluator>` | Export an evaluator (and, with `--dataset`, a dataset) as a Python script or, with `--format json`, a portable eval package. |
+| `valcore import <file>` | Import a JSON eval package back into the local database. |
+| `valcore config set <key> <value>` | Set any config key, including `model`, `local_cli_default`, `port`, `concurrency`, and `db_path`. |
+| `valcore config unset <key>` | Remove any config key. |
+| `valcore config set-key [KEY]` | Store the gateway API key in the config file. |
+| `valcore config set-logfire-token [TOKEN]` | Store the Logfire tracing token in the config file. |
+| `valcore config set-logfire-key [KEY]` | Store one Logfire API key as both the read and write keys. |
+| `valcore config set-logfire-read-key [KEY]` | Store the Logfire read key (query traces and hosted datasets in the source project). |
+| `valcore config set-logfire-write-key [KEY]` | Store the Logfire write key (push datasets to the valcore project). |
+| `valcore config set-logfire-explore-url [URL]` | Optional fallback SQL Workbench URL if the read key cannot resolve the project. |
+| `valcore config get` | Show the current config (the key is masked unless `--show-key`). |
+| `valcore config path` | Print the path to the config file. |
+| `valcore config edit` | Open the config file in `$EDITOR`. |
+| `valcore logfire pull` | Create a dataset from a Logfire SQL query (`--sql` or `--sql-file`, `--name`, `--count`). |
+| `valcore logfire list` | List hosted datasets in the source Logfire project. |
+| `valcore logfire fetch <name>` | Create a local dataset from a hosted Logfire dataset. |
+| `valcore logfire push <dataset>` | Push a dataset to Logfire's hosted dataset store. |
+| `valcore skills install` | Install the bundled agent skills (`--claude`, `--copilot`, …). |
+| `valcore skills list` | Show the bundled skills and where each is installed. |
+| `valcore skills uninstall` | Remove the bundled skills from the selected directories. |
+| `valcore version` | Print the installed valcore version. |
+<!-- COMMANDS:END -->
 
 ## Global
 
@@ -79,14 +119,48 @@ Runs an evaluator version over a dataset.
 `--kind validation` requires every row to carry a label and fails outright if any row is
 unlabeled. `--kind validation --min-accuracy 0.9` is the CI pattern.
 
-### `valcore export EVALUATOR`
+### `valcore experiment EVALUATOR DATASET`
 
-Exports an evaluator version as a standalone Python script.
+A second engine over the same data as `run`, driven by `pydantic_evals.Dataset.evaluate`
+instead of valcore's own runner. Interchangeable with `run` at the CLI level, except it
+has no `--watch` and no cancellation, because `Dataset.evaluate` offers neither.
 
 | Option | Meaning |
 |---|---|
 | `--version TEXT` | Version name. Defaults to the active version. |
-| `-o, --output FILE` | Write to a file instead of stdout. |
+| `--concurrency INTEGER` | Max concurrent rows. |
+| `--json` | Emit JSON results to stdout. |
+
+Always runs as `validation` kind; there is no `--kind` here.
+
+### `valcore export [EVALUATOR]`
+
+Exports an evaluator version, a dataset, or both, as Python code or as an eval-package
+JSON document.
+
+| Option | Meaning |
+|---|---|
+| `--version TEXT` | Version name. Defaults to the active version. |
+| `-o, --output FILE` | Write to a file (or, with `--split`, its stem's siblings) instead of stdout. |
+| `--format [code\|json]` | `code` (default) emits a standalone Python script; `json` emits the eval-package format. |
+| `--dataset TEXT` | Include this dataset in the export. |
+| `--split` | With `--format json`, write two files (`<stem>.agent.json`, `<stem>.dataset.json`) instead of one bundle. Needs `-o`; meaningless with `--format code`. |
+
+`EVALUATOR` is optional: `valcore export --dataset my-data --format json` exports a
+dataset with no evaluator. At least one of `EVALUATOR` or `--dataset` must be given.
+
+### `valcore import PATH`
+
+Imports an eval-package JSON document (from `valcore export --format json`), creating its
+dataset and/or evaluator version in the local database.
+
+| Option | Meaning |
+|---|---|
+| `--name TEXT` | Override the imported dataset's name. |
+
+A `.py` export is not importable — only the JSON form round-trips. The evaluator's
+version is validated before anything is written, so a package that fails validation
+persists nothing, not even its dataset half.
 
 ### `valcore config`
 
