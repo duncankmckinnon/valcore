@@ -238,6 +238,19 @@ class DatasetLogfirePull(SQLModel, table=True):
     label_column: str | None = None
 
 
+class DatasetHostedFetch(SQLModel, table=True):
+    """Which hosted Logfire dataset a dataset was fetched from, kept so a refetch can repeat it.
+
+    A separate table rather than columns on ``Dataset``, for the same ``create_all`` reason as
+    ``DatasetGeneration``. A SQL-pulled, uploaded, blank, or generated dataset has no row.
+    """
+
+    id: str = Field(default_factory=lambda: uuid4().hex, primary_key=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    dataset_id: str = Field(index=True)
+    source_name: str
+
+
 class DatasetRow(SQLModel, table=True):
     """A single row of a dataset with its (optional) hand-assigned label."""
 

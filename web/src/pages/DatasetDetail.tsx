@@ -7,6 +7,7 @@ import { datasets } from "../api/client";
 import type {
   Dataset,
   DatasetGeneration,
+  DatasetHostedFetch,
   DatasetLogfirePull,
   DatasetStats,
   GeneratedConfig,
@@ -22,6 +23,7 @@ import { ExportModal } from "../components/ExportModal";
 import EvaluatorFromDataset from "../components/EvaluatorFromDataset";
 import GenerateMoreRows from "../components/GenerateMoreRows";
 import GenerationSettings from "../components/GenerationSettings";
+import LogfirePullMoreRows from "../components/LogfirePullMoreRows";
 import { LogfirePullSettings } from "../components/LogfirePullSettings";
 import LabelingGrid from "../components/LabelingGrid";
 
@@ -40,8 +42,13 @@ export default function DatasetDetail({ datasetId }: Props) {
   const [error, setError] = useState<unknown>(null);
   const [generation, setGeneration] = useState<DatasetGeneration | null>(null);
   const [logfirePull, setLogfirePull] = useState<DatasetLogfirePull | null>(null);
+  const [hostedFetch, setHostedFetch] = useState<DatasetHostedFetch | null>(null);
   const [editing, setEditing] = useState(false);
   const [generatingRows, setGeneratingRows] = useState(false);
+  const [pullingRows, setPullingRows] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncAdded, setSyncAdded] = useState<number | null>(null);
+  const [syncError, setSyncError] = useState<unknown>(null);
   const [gridEpoch, setGridEpoch] = useState(0);
   const [generatingEvaluator, setGeneratingEvaluator] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -102,7 +109,7 @@ export default function DatasetDetail({ datasetId }: Props) {
     refreshGeneration();
   }, [refreshGeneration]);
 
-  useEffect(() => {
+  const refreshLogfirePull = useCallback(() => {
     datasets
       .logfirePull(datasetId)
       .then(setLogfirePull)
@@ -110,6 +117,34 @@ export default function DatasetDetail({ datasetId }: Props) {
         // Provenance is non-critical: a failure just leaves the panel empty.
       });
   }, [datasetId]);
+
+  useEffect(() => {
+    refreshLogfirePull();
+  }, [refreshLogfirePull]);
+
+  useEffect(() => {
+    datasets
+      .hostedFetch(datasetId)
+      .then(setHostedFetch)
+      .catch(() => {
+        // Provenance is non-critical: a failure just leaves the Sync action hidden.
+      });
+  }, [datasetId]);
+
+  const syncFromLogfire = () => {
+    setSyncing(true);
+    setSyncError(null);
+    setSyncAdded(null);
+    datasets
+      .pullMoreFromLogfireHosted(datasetId)
+      .then((added) => {
+        setSyncAdded(added.length);
+        refreshStats();
+        setGridEpoch((epoch) => epoch + 1);
+      })
+      .catch(setSyncError)
+      .finally(() => setSyncing(false));
+  };
 
   const refreshStats = useCallback(() => {
     datasets
@@ -176,6 +211,16 @@ export default function DatasetDetail({ datasetId }: Props) {
           {pushResult.case_count !== null && ` with ${pushResult.case_count} cases`}.
         </p>
       )}
+      {/* Sync feedback is inline for the same reason push's is: a failed or empty sync must
+          not take the dataset view down with it. */}
+      {syncError !== null && <ErrorBanner error={syncError} onDismiss={() => setSyncError(null)} />}
+      {syncAdded !== null && (
+        <p className="field-hint" role="status">
+          {syncAdded === 0
+            ? "Already up to date with the hosted dataset."
+            : `Added ${syncAdded} new row${syncAdded === 1 ? "" : "s"} from the hosted dataset.`}
+        </p>
+      )}
       <PageHeader
         title={dataset.name}
         description={dataset.description || undefined}
@@ -194,6 +239,16 @@ export default function DatasetDetail({ datasetId }: Props) {
             <Button variant="secondary" onClick={() => setGeneratingRows(true)}>
               Generate more rows
             </Button>
+            {logfirePull !== null ? (
+              <Button variant="secondary" onClick={() => setPullingRows(true)}>
+                Pull more from Logfire
+              </Button>
+            ) : null}
+            {hostedFetch !== null ? (
+              <Button variant="secondary" onClick={syncFromLogfire} disabled={syncing}>
+                {syncing ? "Syncing…" : "Sync from Logfire"}
+              </Button>
+            ) : null}
             <Button variant="secondary" onClick={() => setGeneratingEvaluator(true)}>
               Generate evaluator
             </Button>
@@ -284,6 +339,22 @@ export default function DatasetDetail({ datasetId }: Props) {
         }}
         onClose={() => setGeneratingRows(false)}
       />
+
+      {logfirePull !== null && (
+        <LogfirePullMoreRows
+          open={pullingRows}
+          dataset={dataset}
+          pull={logfirePull}
+          onPulled={() => {
+            setPullingRows(false);
+            // The top-up records the ask that ran, so refetch it for the next prefill.
+            refreshLogfirePull();
+            refreshStats();
+            setGridEpoch((epoch) => epoch + 1);
+          }}
+          onClose={() => setPullingRows(false)}
+        />
+      )}
 
       <EvaluatorFromDataset
         open={generatingEvaluator}

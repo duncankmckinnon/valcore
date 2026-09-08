@@ -55,6 +55,8 @@ vi.mock("../api/client", async (importOriginal) => {
       remove: vi.fn(),
       generation: vi.fn(),
       logfirePull: vi.fn(),
+      hostedFetch: vi.fn(),
+      pullMoreFromLogfireHosted: vi.fn(),
       // The header's Export action opens the real ExportModal, which fetches through this.
       exportFiles: vi.fn(),
     },
@@ -76,6 +78,8 @@ const statsMock = vi.mocked(datasets.stats);
 const removeMock = vi.mocked(datasets.remove);
 const generationMock = vi.mocked(datasets.generation);
 const logfirePullMock = vi.mocked(datasets.logfirePull);
+const hostedFetchMock = vi.mocked(datasets.hostedFetch);
+const pullMoreFromLogfireHostedMock = vi.mocked(datasets.pullMoreFromLogfireHosted);
 const generateMock = vi.mocked(evaluators.generate);
 const createMock = vi.mocked(evaluators.create);
 const createVersionMock = vi.mocked(evaluators.createVersion);
@@ -150,6 +154,7 @@ beforeEach(() => {
   statsMock.mockResolvedValue({ total: 5, labeled: 5, unlabeled: 0, label_distribution: {} });
   generationMock.mockResolvedValue(null);
   logfirePullMock.mockResolvedValue(null);
+  hostedFetchMock.mockResolvedValue(null);
   setupGet.mockResolvedValue(EMPTY_SETUP);
 });
 
@@ -397,5 +402,77 @@ describe("DatasetDetail", () => {
     const button = await screen.findByRole("button", { name: "Push to Logfire" });
     expect(button).toBeDisabled();
     expect(button).toHaveAttribute("title", "Set the Logfire write key first — see Settings");
+  });
+
+  it("offers neither Logfire top-up action for a dataset with no Logfire provenance", async () => {
+    renderDetail();
+
+    await screen.findByText("header:question");
+    expect(screen.queryByRole("button", { name: "Pull more from Logfire" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Sync from Logfire" })).toBeNull();
+  });
+
+  it("offers Pull more from Logfire for a dataset pulled by SQL, opening it prefilled", async () => {
+    logfirePullMock.mockResolvedValue({
+      sql: "SELECT question FROM records",
+      sample_n: 20,
+      seed: 42,
+      min_timestamp: "2026-09-01T00:00:00Z",
+      max_timestamp: null,
+      label_column: null,
+    });
+    renderDetail();
+
+    const button = await screen.findByRole("button", { name: "Pull more from Logfire" });
+    await userEvent.click(button);
+
+    expect(await screen.findByLabelText("SQL")).toHaveValue("SELECT question FROM records");
+  });
+
+  it("offers Sync from Logfire for a dataset created from a hosted fetch", async () => {
+    hostedFetchMock.mockResolvedValue({ source_name: "qa-set" });
+    renderDetail();
+
+    expect(await screen.findByRole("button", { name: "Sync from Logfire" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Pull more from Logfire" })).toBeNull();
+  });
+
+  it("syncs from the hosted source and reports how many rows were added", async () => {
+    hostedFetchMock.mockResolvedValue({ source_name: "qa-set" });
+    pullMoreFromLogfireHostedMock.mockResolvedValue([
+      {
+        id: "r1",
+        created_at: "2026-09-08T00:00:00Z",
+        dataset_id: "d1",
+        idx: 5,
+        data: { question: "new" },
+        label: null,
+        suggested_label: null,
+        label_reasoning: null,
+        label_source: null,
+        note: null,
+      },
+    ]);
+    statsMock
+      .mockResolvedValueOnce({ total: 5, labeled: 5, unlabeled: 0, label_distribution: {} })
+      .mockResolvedValue({ total: 6, labeled: 5, unlabeled: 1, label_distribution: {} });
+    renderDetail();
+
+    const button = await screen.findByRole("button", { name: "Sync from Logfire" });
+    await userEvent.click(button);
+
+    await waitFor(() => expect(pullMoreFromLogfireHostedMock).toHaveBeenCalledWith("d1"));
+    expect(await screen.findByText(/added 1 new row/i)).toBeTruthy();
+    await waitFor(() => expect(statsMock).toHaveBeenCalledTimes(2));
+  });
+
+  it("reports when a sync finds nothing new", async () => {
+    hostedFetchMock.mockResolvedValue({ source_name: "qa-set" });
+    pullMoreFromLogfireHostedMock.mockResolvedValue([]);
+    renderDetail();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Sync from Logfire" }));
+
+    expect(await screen.findByText(/already up to date/i)).toBeTruthy();
   });
 });

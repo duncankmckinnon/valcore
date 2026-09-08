@@ -388,6 +388,13 @@ valcore config set-logfire-explore-url https://logfire-us.pydantic.dev/org/proje
 `--description` for the local copy). The Logfire tab in the Datasets UI offers the same
 SQL and hosted sources.
 
+A dataset created from either Logfire source can pull in more data later, from its detail
+page: a SQL-pulled dataset gets a "Pull more from Logfire" action that repeats the stored
+query (or an edited one) and appends the result; a hosted-fetch dataset gets a "Sync from
+Logfire" action that refetches the same hosted dataset and appends only the cases not
+already present by content, leaving existing rows (including any local relabeling) untouched.
+Both are UI-only for now, with no CLI equivalent.
+
 `valcore logfire push <dataset>` publishes a dataset to Logfire's hosted dataset store on
 the valcore project (the same project experiment runs appear in). The Datasets page and a
 dataset's detail view open that project's evals pages from the write key. The write key

@@ -6,6 +6,7 @@ import type {
   DatasetCreated,
   DatasetGenerateFromVersion,
   DatasetGeneration,
+  DatasetHostedFetch,
   DatasetLogfirePull,
   DatasetFromLogfire,
   DatasetFromLogfireHosted,
@@ -28,6 +29,7 @@ import type {
   RefinedConfig,
   RowPatch,
   RowsGenerate,
+  RowsLogfirePull,
   RowsPage,
   CompareOut,
   ResultsPage,
@@ -187,6 +189,12 @@ export const datasets = {
     }),
   logfirePull: (id: string) =>
     api<DatasetLogfirePull | null>(`/api/datasets/${id}/logfire-pull`),
+  pullMoreFromLogfire: (id: string, data: RowsLogfirePull = {}) =>
+    api<DatasetRow[]>(`/api/datasets/${id}/logfire-pull`, { method: "POST", ...jsonBody(data) }),
+  hostedFetch: (id: string) =>
+    api<DatasetHostedFetch | null>(`/api/datasets/${id}/hosted-fetch`),
+  pullMoreFromLogfireHosted: (id: string) =>
+    api<DatasetRow[]>(`/api/datasets/${id}/hosted-fetch`, { method: "POST" }),
   // Null for a dataset that was uploaded or created blank rather than generated.
   generation: (id: string) =>
     api<DatasetGeneration | null>(`/api/datasets/${id}/generation`),
