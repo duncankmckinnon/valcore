@@ -146,6 +146,23 @@ class HostedDatasetSummaryOut(BaseModel):
     case_count: int | None = None
 
 
+class RowsLogfirePull(BaseModel):
+    """Request body to pull more rows from Logfire into an existing dataset.
+
+    Every field is an override: omitted ones fall back to the dataset's stored pull settings,
+    so repeating an ask needs only an empty body. ``seed`` is the exception: omitting it always
+    draws a fresh random sample rather than repeating the stored one, since reusing the same
+    seed over an unwidened time window would likely resample the same rows. ``label_column`` is
+    never overridable here, so a growing dataset's label meaning cannot drift between pulls.
+    """
+
+    sql: str | None = None
+    sample_n: int | None = None
+    seed: int | None = None
+    min_timestamp: datetime | None = None
+    max_timestamp: datetime | None = None
+
+
 class LogfirePullOut(BaseModel):
     """The stored Logfire-pull settings for a dataset, as returned to the client."""
 
@@ -157,6 +174,14 @@ class LogfirePullOut(BaseModel):
     min_timestamp: datetime | None
     max_timestamp: datetime | None
     label_column: str | None
+
+
+class HostedFetchOut(BaseModel):
+    """The stored hosted-fetch source for a dataset, as returned to the client."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    source_name: str
 
 
 class LogfirePushRequest(BaseModel):
@@ -664,6 +689,7 @@ async def create_dataset_from_logfire_hosted(
         label_schema=result.label_schema,
     )
     rows = store.add_prepared_rows(dataset.id, result.prepared)
+    store.set_hosted_fetch(dataset.id, source_name=source_name)
     return DatasetCreatedOut(dataset=DatasetOut.model_validate(dataset), row_count=len(rows))
 
 
@@ -672,6 +698,110 @@ async def get_dataset_logfire_pull(id: str, store: StoreDep) -> LogfirePullOut |
     """Return how a dataset's rows were pulled from Logfire, or null if they were not."""
     pull = store.get_logfire_pull(id)
     return None if pull is None else LogfirePullOut.model_validate(pull)
+
+
+@router.post("/{id}/logfire-pull")
+async def pull_more_from_logfire(id: str, body: RowsLogfirePull, store: StoreDep) -> list[RowOut]:
+    """Pull more rows from Logfire into an existing dataset, appending to the rows already there.
+
+    Steering falls back to the dataset's stored pull settings, so repeating a previous ask needs
+    only an empty body. Shape does not: the newly pulled columns must match the dataset's own, so
+    the new rows stay compatible with the existing ones and with any evaluator that already runs
+    against them.
+    """
+    dataset = store.get_dataset(id)
+    stored = store.get_logfire_pull(id)
+    if stored is None:
+        raise ContractError(f"Dataset {dataset.name!r} has no stored Logfire pull to repeat.")
+
+    def resolve(override, attribute: str):
+        return override if override is not None else getattr(stored, attribute)
+
+    sql = resolve(body.sql, "sql")
+    sample_n = resolve(body.sample_n, "sample_n")
+    min_timestamp = resolve(body.min_timestamp, "min_timestamp")
+    max_timestamp = resolve(body.max_timestamp, "max_timestamp")
+
+    if sample_n < 1:
+        raise ContractError(f"sample_n must be at least 1, got {sample_n}.")
+    if not sql.strip():
+        raise ContractError("sql must not be empty.")
+
+    result = await pull_records(
+        sql,
+        sample_n,
+        seed=body.seed,
+        min_timestamp=min_timestamp,
+        max_timestamp=max_timestamp,
+        label_column=stored.label_column,
+    )
+    if result.columns != dataset.columns:
+        raise ContractError(
+            f"Pulled columns {result.columns} do not match this dataset's columns "
+            f"{dataset.columns}."
+        )
+
+    rows = store.add_prepared_rows(dataset.id, result.prepared)
+    # Record the ask that actually ran, so the next top-up repeats it rather than the
+    # original creation call.
+    store.set_logfire_pull(
+        dataset.id,
+        sql=result.sql,
+        sample_n=result.sample_n,
+        seed=result.seed,
+        min_timestamp=result.min_timestamp,
+        max_timestamp=result.max_timestamp,
+        label_column=result.label_column,
+    )
+    return [RowOut.model_validate(row) for row in rows]
+
+
+def _row_content_key(data: dict, label: dict | None) -> str:
+    """A canonical key for union-style dedup: rows with identical data and label collide.
+
+    Hosted cases carry no stable id once imported (see ``spec.evals_to_dataset_fields``), so
+    exact content match is the only signal available for "already present."
+    """
+    return json.dumps({"data": data, "label": label}, sort_keys=True, default=str)
+
+
+@router.get("/{id}/hosted-fetch")
+async def get_dataset_hosted_fetch(id: str, store: StoreDep) -> HostedFetchOut | None:
+    """Return which hosted Logfire dataset a dataset was fetched from, or null if it was not."""
+    fetch = store.get_hosted_fetch(id)
+    return None if fetch is None else HostedFetchOut.model_validate(fetch)
+
+
+@router.post("/{id}/hosted-fetch")
+async def pull_more_from_logfire_hosted(id: str, store: StoreDep) -> list[RowOut]:
+    """Refetch this dataset's hosted source and append any rows not already present.
+
+    A union, not a sync: rows already here by content match are left completely alone (even if
+    they were since relabeled or annotated, and even if they no longer exist upstream) — only
+    rows the local dataset doesn't already have are appended.
+    """
+    dataset = store.get_dataset(id)
+    stored = store.get_hosted_fetch(id)
+    if stored is None:
+        raise ContractError(
+            f"Dataset {dataset.name!r} has no stored Logfire hosted-fetch source to repeat."
+        )
+
+    result = await fetch_hosted_dataset(stored.source_name)
+    if result.columns != dataset.columns:
+        raise ContractError(
+            f"Hosted dataset columns {result.columns} do not match this dataset's columns "
+            f"{dataset.columns}."
+        )
+
+    existing = {_row_content_key(row.data, row.label) for row in store.list_rows(dataset.id)}
+    new_rows = [
+        prepared
+        for prepared in result.prepared
+        if _row_content_key(prepared.get("data", {}), prepared.get("label")) not in existing
+    ]
+    rows = store.add_prepared_rows(dataset.id, new_rows) if new_rows else []
+    return [RowOut.model_validate(row) for row in rows]
 
 
 @router.get("/{id}/generation")

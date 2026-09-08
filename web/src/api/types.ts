@@ -378,6 +378,21 @@ export interface DatasetLogfirePull {
   label_column: string | null;
 }
 
+// Pull more rows from Logfire into an existing dataset. Every field is an override: omitted
+// ones fall back to the dataset's stored pull settings. `seed` is never prefilled from storage
+// (a fresh sample is the default); `label_column` is never overridable — shape stays fixed.
+export interface RowsLogfirePull {
+  sql?: string;
+  sample_n?: number;
+  seed?: number;
+  min_timestamp?: string;
+  max_timestamp?: string;
+}
+
+export interface DatasetHostedFetch {
+  source_name: string;
+}
+
 export interface DatasetFromLogfire {
   name: string;
   description?: string;

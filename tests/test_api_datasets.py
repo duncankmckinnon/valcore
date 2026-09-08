@@ -2340,3 +2340,286 @@ async def test_from_logfire_hosted_empty_source_name_is_422(client: httpx.AsyncC
         json={"source_name": "  "},
     )
     assert resp.status_code == 422
+
+
+# -- Pulling more rows from Logfire into an existing dataset -----------------
+
+
+def _install_recording_pull(monkeypatch, calls: list[dict], *, columns=None, prepared=None):
+    """Stub ``pull_records`` so it records each call's kwargs and never touches Logfire."""
+    from datetime import UTC, datetime
+
+    from valcore.logfire_pull import PullResult
+
+    async def fake_pull_records(sql, sample_n, **kwargs):
+        calls.append({"sql": sql, "sample_n": sample_n, **kwargs})
+        return PullResult(
+            columns=columns if columns is not None else ["question"],
+            prepared=prepared if prepared is not None else [{"data": {"question": "Q"}}],
+            sql=sql,
+            sample_n=sample_n,
+            seed=kwargs.get("seed") if kwargs.get("seed") is not None else 99,
+            min_timestamp=kwargs.get("min_timestamp") or datetime(2026, 9, 1, tzinfo=UTC),
+            max_timestamp=kwargs.get("max_timestamp"),
+            label_column=kwargs.get("label_column"),
+        )
+
+    monkeypatch.setattr("valcore.api.routes.datasets.pull_records", fake_pull_records)
+
+
+async def _create_from_logfire(client: httpx.AsyncClient, monkeypatch, **overrides) -> str:
+    calls: list[dict] = []
+    _install_recording_pull(monkeypatch, calls)
+    body = {
+        "name": "from-lf",
+        "description": "traces",
+        "sql": "SELECT question FROM records",
+        "sample_n": 5,
+        "seed": 11,
+        **overrides,
+    }
+    created = await client.post("/api/datasets/from-logfire", json=body)
+    return created.json()["dataset"]["id"]
+
+
+@pytest.mark.anyio
+async def test_logfire_pull_more_falls_back_to_the_stored_settings(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    ds_id = await _create_from_logfire(client, monkeypatch)
+
+    calls: list[dict] = []
+    _install_recording_pull(monkeypatch, calls)
+    resp = await client.post(f"/api/datasets/{ds_id}/logfire-pull", json={})
+    assert resp.status_code == 200, resp.text
+
+    top_up = calls[-1]
+    assert top_up["sql"] == "SELECT question FROM records"
+    assert top_up["sample_n"] == 5
+    # Seed is deliberately not repeated: omitting it draws a fresh sample.
+    assert top_up["seed"] is None
+
+
+@pytest.mark.anyio
+async def test_logfire_pull_more_appends_after_the_existing_rows(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    ds_id = await _create_from_logfire(client, monkeypatch)
+
+    _install_recording_pull(monkeypatch, [], prepared=[{"data": {"question": "Q2"}}])
+    appended = (await client.post(f"/api/datasets/{ds_id}/logfire-pull", json={})).json()
+    assert len(appended) == 1
+    assert appended[0]["idx"] == 1
+
+    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()
+    assert rows["total"] == 2
+
+
+@pytest.mark.anyio
+async def test_logfire_pull_more_overrides_win_and_are_persisted(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    ds_id = await _create_from_logfire(client, monkeypatch)
+
+    calls: list[dict] = []
+    _install_recording_pull(monkeypatch, calls)
+    await client.post(
+        f"/api/datasets/{ds_id}/logfire-pull",
+        json={"sql": "SELECT question FROM records WHERE ok", "sample_n": 10},
+    )
+    assert calls[-1]["sql"] == "SELECT question FROM records WHERE ok"
+    assert calls[-1]["sample_n"] == 10
+
+    pull = (await client.get(f"/api/datasets/{ds_id}/logfire-pull")).json()
+    assert pull["sql"] == "SELECT question FROM records WHERE ok"
+    assert pull["sample_n"] == 10
+
+
+@pytest.mark.anyio
+async def test_logfire_pull_more_rejects_a_column_mismatch(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    ds_id = await _create_from_logfire(client, monkeypatch)
+
+    _install_recording_pull(monkeypatch, [], columns=["different"])
+    resp = await client.post(f"/api/datasets/{ds_id}/logfire-pull", json={})
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.anyio
+async def test_logfire_pull_more_without_a_stored_pull_is_422(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    dataset = store.create_dataset(name="blank", description="", columns=["a"], label_schema={})
+    resp = await client.post(f"/api/datasets/{dataset.id}/logfire-pull", json={})
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.anyio
+async def test_logfire_pull_more_for_missing_dataset_is_404(client: httpx.AsyncClient) -> None:
+    resp = await client.post("/api/datasets/nope/logfire-pull", json={})
+    assert resp.status_code == 404, resp.text
+
+
+# -- Pulling (unioning) more rows from a hosted Logfire dataset ---------------
+
+
+async def _create_from_logfire_hosted(client: httpx.AsyncClient, monkeypatch, prepared) -> str:
+    from valcore.logfire_io import HostedFetch
+
+    async def fake_fetch(id_or_name: str, *, api_key: str | None = None) -> HostedFetch:
+        return HostedFetch(
+            source_name=id_or_name,
+            name="qa-set",
+            columns=["question"],
+            label_schema={},
+            prepared=prepared,
+        )
+
+    monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_fetch)
+    created = await client.post("/api/datasets/from-logfire-hosted", json={"source_name": "qa-set"})
+    return created.json()["dataset"]["id"]
+
+
+@pytest.mark.anyio
+async def test_from_logfire_hosted_stores_source_provenance(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    ds_id = await _create_from_logfire_hosted(client, monkeypatch, [{"data": {"question": "Q1"}}])
+    resp = await client.get(f"/api/datasets/{ds_id}/hosted-fetch")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"source_name": "qa-set"}
+
+
+@pytest.mark.anyio
+async def test_hosted_fetch_provenance_is_null_for_a_non_hosted_dataset(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    dataset = store.create_dataset(name="blank", description="", columns=["a"], label_schema={})
+    resp = await client.get(f"/api/datasets/{dataset.id}/hosted-fetch")
+    assert resp.status_code == 200
+    assert resp.json() is None
+
+
+@pytest.mark.anyio
+async def test_hosted_fetch_union_adds_only_rows_not_already_present(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    ds_id = await _create_from_logfire_hosted(
+        client, monkeypatch, [{"data": {"question": "Q1"}}, {"data": {"question": "Q2"}}]
+    )
+
+    async def fake_refetch(id_or_name, *, api_key=None):
+        from valcore.logfire_io import HostedFetch
+
+        return HostedFetch(
+            source_name=id_or_name,
+            name="qa-set",
+            columns=["question"],
+            label_schema={},
+            prepared=[
+                {"data": {"question": "Q1"}},
+                {"data": {"question": "Q2"}},
+                {"data": {"question": "Q3"}},
+            ],
+        )
+
+    monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_refetch)
+    appended = (await client.post(f"/api/datasets/{ds_id}/hosted-fetch")).json()
+    assert len(appended) == 1
+    assert appended[0]["data"]["question"] == "Q3"
+
+    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()
+    assert rows["total"] == 3
+
+
+@pytest.mark.anyio
+async def test_hosted_fetch_union_with_nothing_new_is_a_noop(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    ds_id = await _create_from_logfire_hosted(client, monkeypatch, [{"data": {"question": "Q1"}}])
+
+    async def fake_refetch(id_or_name, *, api_key=None):
+        from valcore.logfire_io import HostedFetch
+
+        return HostedFetch(
+            source_name=id_or_name,
+            name="qa-set",
+            columns=["question"],
+            label_schema={},
+            prepared=[{"data": {"question": "Q1"}}],
+        )
+
+    monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_refetch)
+    resp = await client.post(f"/api/datasets/{ds_id}/hosted-fetch")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == []
+
+    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()
+    assert rows["total"] == 1
+
+
+@pytest.mark.anyio
+async def test_hosted_fetch_union_never_touches_an_edited_existing_row(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    ds_id = await _create_from_logfire_hosted(client, monkeypatch, [{"data": {"question": "Q1"}}])
+    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
+    await client.patch(f"/api/datasets/rows/{rows[0]['id']}", json={"note": "keep me"})
+
+    async def fake_refetch(id_or_name, *, api_key=None):
+        from valcore.logfire_io import HostedFetch
+
+        return HostedFetch(
+            source_name=id_or_name,
+            name="qa-set",
+            columns=["question"],
+            label_schema={},
+            prepared=[{"data": {"question": "Q1"}}],
+        )
+
+    monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_refetch)
+    resp = await client.post(f"/api/datasets/{ds_id}/hosted-fetch")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == []
+
+    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
+    assert len(rows) == 1
+    assert rows[0]["note"] == "keep me"
+
+
+@pytest.mark.anyio
+async def test_hosted_fetch_union_rejects_a_column_mismatch(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    ds_id = await _create_from_logfire_hosted(client, monkeypatch, [{"data": {"question": "Q1"}}])
+
+    async def fake_refetch(id_or_name, *, api_key=None):
+        from valcore.logfire_io import HostedFetch
+
+        return HostedFetch(
+            source_name=id_or_name,
+            name="qa-set",
+            columns=["different"],
+            label_schema={},
+            prepared=[{"data": {"different": "X"}}],
+        )
+
+    monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_refetch)
+    resp = await client.post(f"/api/datasets/{ds_id}/hosted-fetch")
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.anyio
+async def test_hosted_fetch_union_without_a_stored_fetch_is_422(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    dataset = store.create_dataset(name="blank", description="", columns=["a"], label_schema={})
+    resp = await client.post(f"/api/datasets/{dataset.id}/hosted-fetch")
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.anyio
+async def test_hosted_fetch_union_for_missing_dataset_is_404(client: httpx.AsyncClient) -> None:
+    resp = await client.post("/api/datasets/nope/hosted-fetch")
+    assert resp.status_code == 404, resp.text

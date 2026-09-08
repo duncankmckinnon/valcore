@@ -23,6 +23,7 @@ from valcore.errors import (
 from valcore.models import (
     Dataset,
     DatasetGeneration,
+    DatasetHostedFetch,
     DatasetLogfirePull,
     DatasetRow,
     Evaluator,
@@ -440,6 +441,11 @@ class Store:
             )
             for pull in pulls:
                 session.delete(pull)
+            hosted_fetches = session.exec(
+                select(DatasetHostedFetch).where(DatasetHostedFetch.dataset_id == id)
+            )
+            for fetch in hosted_fetches:
+                session.delete(fetch)
             session.delete(dataset)
 
     def add_rows(self, dataset_id: str, rows: list[dict]) -> list[DatasetRow]:
@@ -507,6 +513,28 @@ class Store:
             _require(session, Dataset, dataset_id)
             return session.exec(
                 select(DatasetLogfirePull).where(DatasetLogfirePull.dataset_id == dataset_id)
+            ).first()
+
+    def set_hosted_fetch(self, dataset_id: str, **fields) -> DatasetHostedFetch:
+        """Record (or replace) which hosted dataset ``dataset_id`` was fetched from."""
+        with session_scope(self.engine) as session:
+            _require(session, Dataset, dataset_id)
+            existing = session.exec(
+                select(DatasetHostedFetch).where(DatasetHostedFetch.dataset_id == dataset_id)
+            ).first()
+            if existing is not None:
+                session.delete(existing)
+                session.flush()
+            fetch = DatasetHostedFetch(dataset_id=dataset_id, **fields)
+            session.add(fetch)
+            return fetch
+
+    def get_hosted_fetch(self, dataset_id: str) -> DatasetHostedFetch | None:
+        """Return which hosted dataset ``dataset_id`` was fetched from, or None if it was not."""
+        with session_scope(self.engine) as session:
+            _require(session, Dataset, dataset_id)
+            return session.exec(
+                select(DatasetHostedFetch).where(DatasetHostedFetch.dataset_id == dataset_id)
             ).first()
 
     def get_row(self, id: str) -> DatasetRow:
