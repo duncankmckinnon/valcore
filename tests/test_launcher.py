@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 LAUNCHER = Path(__file__).resolve().parent.parent / "packaging" / "valcore.sh"
+pytestmark = pytest.mark.skipif(os.name == "nt", reason="Homebrew launcher is POSIX-only")
 
 # A fake ``uv`` that logs every invocation and materializes the files the launcher
 # expects: ``uv venv`` creates the venv bin dir and interpreter, ``uv pip install`` drops

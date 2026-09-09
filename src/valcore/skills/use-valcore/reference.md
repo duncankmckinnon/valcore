@@ -239,7 +239,9 @@ CLI. There is no command or flag for it here; do not go looking for one. See
 
 ## Configuration
 
-`~/.valcore/config.toml`, or `$VALCORE_HOME/config.toml`. Written with mode `0600`.
+`~/.valcore/config.toml`, or `$VALCORE_HOME/config.toml`. On Windows, `~` is
+`$HOME` (normally `C:\Users\<name>`) and access is controlled by filesystem ACLs.
+On POSIX systems the file is written with mode `0600`.
 
 These eleven keys are the complete set. `config set` accepts any of them except
 `logfire_api_key`; `config unset` accepts all eleven. Anything else is refused with an
@@ -269,7 +271,7 @@ four Logfire credentials only as present or absent.
 | Variable | Effect |
 |---|---|
 | `PYDANTIC_AI_GATEWAY_API_KEY` | Gateway key. Overrides the stored one when set. |
-| `VALCORE_HOME` | Home directory. Defaults to `~/.valcore`. |
+| `VALCORE_HOME` | Home directory. Defaults to `~/.valcore` (`$HOME\.valcore` on Windows). |
 | `VALCORE_DEFAULT_MODEL` | Default model. |
 | `VALCORE_DEFAULT_CONCURRENCY` | Default max concurrent rows. |
 | `VALCORE_DB_PATH` | Database path. |

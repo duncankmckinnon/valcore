@@ -1,5 +1,6 @@
 """Tests for ``valcore skills`` install/uninstall/list and the ``--version`` flag."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -224,11 +225,27 @@ def test_install_multiple_agents(packaged: Path, tmp_path: Path) -> None:
     assert not (result.sandbox / ".agents").exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows symlinks require optional privileges")
 def test_symlink_links_rather_than_copies(packaged: Path, tmp_path: Path) -> None:
     result = _run(["skills", "install", "--claude", "--symlink"], tmp_path)
     dest = result.sandbox / ".claude" / "skills" / "alpha"
     assert dest.is_symlink()
     assert dest.resolve() == (packaged / "alpha").resolve()
+
+
+def test_symlink_failure_explains_windows_and_copy_fallback(
+    packaged: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = packaged / "alpha"
+    dest = tmp_path / "installed" / "alpha"
+
+    def _deny_symlink(*_args: object, **_kwargs: object) -> None:
+        raise OSError("privilege not held")
+
+    monkeypatch.setattr(Path, "symlink_to", _deny_symlink)
+
+    with pytest.raises(ContractError, match="Developer Mode.*omit --symlink"):
+        skills_mod.install_skill(src, dest, symlink=True, force=False)
 
 
 def test_reinstall_of_identical_content_is_reported_up_to_date(
@@ -260,6 +277,7 @@ def test_divergent_content_prompts_and_declining_leaves_it_alone(
         assert edited.read_text() == "# alpha\n"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows symlinks require optional privileges")
 def test_symlink_replaces_an_existing_copy(packaged: Path, tmp_path: Path) -> None:
     runner = CliRunner()
     with runner.isolated_filesystem(temp_dir=tmp_path):
@@ -290,6 +308,7 @@ def test_uninstall_reports_when_nothing_is_installed(packaged: Path, tmp_path: P
     assert "not installed" in result.output
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows symlinks require optional privileges")
 def test_uninstall_removes_a_symlink(packaged: Path, tmp_path: Path) -> None:
     runner = CliRunner()
     with runner.isolated_filesystem(temp_dir=tmp_path):

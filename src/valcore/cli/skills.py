@@ -111,7 +111,14 @@ def install_skill(src: Path, dest: Path, *, symlink: bool, force: bool) -> str:
     if symlink:
         _clear(dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.symlink_to(src.resolve(), target_is_directory=True)
+        try:
+            dest.symlink_to(src.resolve(), target_is_directory=True)
+        except OSError as exc:
+            raise ContractError(
+                f"Could not create skill symlink at {dest}: {exc}. On Windows, enable "
+                "Developer Mode or run an elevated terminal; otherwise omit --symlink "
+                "to install by copying."
+            ) from exc
         return "linked"
 
     if dest.exists() and not dest.is_symlink():

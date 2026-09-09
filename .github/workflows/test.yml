@@ -55,6 +55,18 @@ jobs:
           files: coverage.xml
           fail_ci_if_error: false
 
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install dependencies on Python 3.12
+        run: uv sync --python 3.12
+      - name: Run tests on Windows
+        run: uv run --python 3.12 pytest -q
+
   web:
     runs-on: ubuntu-latest
     steps:

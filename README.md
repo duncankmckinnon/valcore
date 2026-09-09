@@ -36,19 +36,21 @@ line, and gate CI on their accuracy.
 
 ## Install
 
-With Homebrew:
+On macOS or Linux, with Homebrew:
 
 ```bash
 brew install duncankmckinnon/tap/valcore
 ```
 
-Or as a `uv` tool:
+On macOS, Linux, or Windows, as a `uv` tool:
 
 ```bash
 uv tool install valcore
 ```
 
-Either way you get an `valcore` command on your `PATH`.
+In PowerShell, the same `uv tool install valcore` command installs the Windows
+entrypoint. Either route gives you a `valcore` command on your `PATH`; run
+`valcore serve` to open the interface.
 
 ## Web UI
 
@@ -395,11 +397,16 @@ needs `project:read_datasets` and `project:write_datasets`.
 
 ## `~/.valcore`
 
-All state lives under `~/.valcore` (mode `0700`). Set `VALCORE_HOME` to relocate it.
+All state lives under the current user's `~/.valcore` directory. In PowerShell this is
+`$HOME\.valcore`, normally `C:\Users\<name>\.valcore`. Set `VALCORE_HOME` to relocate it.
+
+On macOS and Linux, valcore creates the directory with mode `0700` and
+`config.toml` with mode `0600`. On Windows, access is governed by the current user's
+filesystem ACLs.
 
 ```
-~/.valcore/              0700
-  config.toml              0600  gateway key + defaults
+~/.valcore/
+  config.toml                    gateway key + defaults
   valcore.db             SQLite (plus -wal, -shm)
   logs/                    serve logs
 ```

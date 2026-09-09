@@ -6,6 +6,24 @@ like when you hit it. [reference.md](reference.md) has exact command syntax;
 [SKILL.md](SKILL.md) has the workflow. This is the "is my environment actually ready"
 checklist.
 
+## Install on Windows
+
+Install valcore from PowerShell with the same cross-platform `uv` package used on
+macOS and Linux:
+
+```powershell
+uv tool install valcore
+valcore serve
+```
+
+Valcore stores local state in `$HOME\.valcore`, normally
+`C:\Users\<name>\.valcore`. `VALCORE_HOME` overrides that location. Windows protects
+the directory with the current user's filesystem ACLs; the `0700` and `0600` modes
+documented for Unix systems do not apply.
+
+Normal `valcore skills install` uses copies and works without special privileges.
+`--symlink` may require Windows Developer Mode or an elevated terminal.
+
 ## Required vs optional
 
 Nothing here is required just to author or edit evaluators and datasets by hand. Two
@@ -43,12 +61,11 @@ out to:
 | `local/codex` | `codex` | `codex --version` |
 | `local/cursor` | `cursor-agent` | `cursor-agent --version` |
 
-valcore does not check any of this before running — there is no preflight, and it
-never triggers a login flow. A missing binary or an expired login surfaces as a raw
-error from deep inside the run (a subprocess `FileNotFoundError`, or the adapter's own
-`RuntimeError: <cli> exited with code ...` carrying whatever the CLI printed), not a
-clean message up front. If a `local/<cli>` run fails, run the version check above
-before assuming valcore itself is broken.
+valcore resolves the binary through the current terminal's `PATH` (including Windows
+`PATHEXT`) and reports a clear error when it is missing. It does not trigger a login
+flow; an expired login surfaces through the adapter's error output. If a
+`local/<cli>` run fails, run the version check above before assuming valcore itself is
+broken.
 
 Each adapter also runs its CLI in the tightest non-interactive, read-only mode that
 CLI offers (no file edits, no shell, no network where the CLI can disable them) —

@@ -96,6 +96,28 @@ async def test_cli_bridge_model_raises_on_nonzero_exit() -> None:
 
 
 @pytest.mark.anyio
+async def test_cli_bridge_model_reports_a_missing_cli_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class MissingAdapter:
+        cli_name = "missing"
+
+        def build_invocation(self, **_kwargs: object) -> list[str]:
+            return ["definitely-not-a-real-valcore-cli"]
+
+        def parse_output(self, stdout: str) -> tuple[str, RequestUsage]:
+            raise AssertionError("should not be called")
+
+    monkeypatch.setattr("valcore.local_cli.bridge_model.shutil.which", lambda _name: None)
+    agent = Agent(
+        CliBridgeModel(MissingAdapter()), output_type=JudgeOutput, instructions="judge it"
+    )
+
+    with pytest.raises(RuntimeError, match="was not found on PATH"):
+        await agent.run("rate this")
+
+
+@pytest.mark.anyio
 async def test_cli_bridge_model_raises_when_output_is_not_json() -> None:
     adapter = FakeCliAdapter(stdout_text="not json at all", usage=RequestUsage())
     model = CliBridgeModel(adapter)
