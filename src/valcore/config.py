@@ -78,31 +78,33 @@ def _dump_toml(cfg: FileConfig) -> str:
 def load_config() -> FileConfig:
     """Load ``config.toml``, returning an all-``None`` config when it is missing.
 
-    Never raises for a missing file. Emits a :class:`UserWarning` naming the path
-    when the file is group- or world-readable, but still loads it.
+    Never raises for a missing file. On POSIX, emits a :class:`UserWarning` naming
+    the path when the file is group- or world-readable, but still loads it. Windows
+    access is governed by filesystem ACLs rather than POSIX mode bits.
     """
     path = config_path()
     if not path.exists():
         return FileConfig()
-    mode = path.stat().st_mode & 0o777
-    if mode & 0o077:
-        warnings.warn(
-            f"Config file {path} is group- or world-readable (mode {mode:03o}); "
-            f"run 'chmod 600 {path}' to restrict it.",
-            UserWarning,
-            stacklevel=2,
-        )
+    if os.name != "nt":
+        mode = path.stat().st_mode & 0o777
+        if mode & 0o077:
+            warnings.warn(
+                f"Config file {path} is group- or world-readable (mode {mode:03o}); "
+                f"run 'chmod 600 {path}' to restrict it.",
+                UserWarning,
+                stacklevel=2,
+            )
     with path.open("rb") as handle:
         data = tomllib.load(handle)
     return FileConfig.model_validate(data)
 
 
 def save_config(cfg: FileConfig) -> None:
-    """Write ``cfg`` to ``config.toml`` atomically with mode ``0600``.
+    """Write ``cfg`` to ``config.toml`` atomically and privately.
 
-    Writes a temp file in the same directory, ``chmod 0600``, then ``os.replace``
-    so an interrupted write never leaves a truncated config or a loosely
-    permissioned key.
+    Writes a temp file in the same directory, applies mode ``0600`` on POSIX, then
+    uses ``os.replace`` so an interrupted write never leaves a truncated config.
+    Windows protects the file through the current account's filesystem ACLs.
     """
     path = config_path()
     content = _dump_toml(cfg)
@@ -111,7 +113,8 @@ def save_config(cfg: FileConfig) -> None:
     try:
         with os.fdopen(fd, "w") as handle:
             handle.write(content)
-        tmp.chmod(0o600)
+        if os.name != "nt":
+            tmp.chmod(0o600)
         os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)

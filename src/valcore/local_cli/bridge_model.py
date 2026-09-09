@@ -7,6 +7,7 @@ in, JSON out -- no tool-call round-tripping.
 
 import asyncio
 import json
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, Protocol
@@ -170,6 +171,13 @@ class CliBridgeModel(Model):
                 instructions=full_instructions,
                 run_dir=run_dir,
             )
+            executable = shutil.which(argv[0])
+            if executable is None:
+                raise RuntimeError(
+                    f"{self._adapter.cli_name} CLI executable {argv[0]!r} was not found on "
+                    "PATH. Install it, sign in, and confirm it runs from this terminal."
+                )
+            argv[0] = executable
             proc = await asyncio.create_subprocess_exec(
                 *argv,
                 cwd=run_dir,

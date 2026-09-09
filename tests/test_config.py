@@ -55,16 +55,18 @@ def _mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
 
 
-def test_home_dir_creates_0700_and_is_idempotent(_home: Path) -> None:
+def test_home_dir_creates_state_directory_and_is_idempotent(_home: Path) -> None:
     created = home_dir()
     assert created == _home
     assert created.is_dir()
-    assert _mode(created) == 0o700
+    if os.name != "nt":
+        assert _mode(created) == 0o700
 
     # A second call must not fail or change anything.
     again = home_dir()
     assert again == created
-    assert _mode(again) == 0o700
+    if os.name != "nt":
+        assert _mode(again) == 0o700
 
 
 def test_load_config_missing_returns_all_none(_home: Path) -> None:
@@ -149,11 +151,13 @@ def test_dump_toml_omits_unset_logfire_fields() -> None:
     assert "logfire_explore_url" not in content
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission modes do not apply on Windows")
 def test_saved_file_mode_is_0600() -> None:
     save_config(FileConfig(model="gateway/openai:gpt-5"))
     assert _mode(config_path()) == 0o600
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission modes do not apply on Windows")
 def test_loose_permissions_warn_and_still_load() -> None:
     save_config(FileConfig(model="gateway/openai:gpt-5"))
     path = config_path()
