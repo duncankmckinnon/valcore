@@ -10,10 +10,13 @@ from valcore.models import (
     ExperimentRun,
     FieldType,
     LabelSchema,
+    LabelSet,
     OutputField,
     ScoreKind,
     check_dataset_compatibility,
     parse_output_fields,
+    validate_annotation,
+    validate_label_set,
     validate_version,
 )
 
@@ -308,6 +311,68 @@ def test_label_schema_rejections(kwargs: dict[str, object]) -> None:
         LabelSchema(**kwargs)
 
 
+# -- LabelSet ---------------------------------------------------------------
+
+
+def make_label_set(**overrides: object) -> LabelSet:
+    base: dict[str, object] = {
+        "dataset_id": "ds-1",
+        "name": "quality",
+        "description": "",
+        "kind": ScoreKind.CATEGORICAL,
+        "labels": [{"name": "good", "description": "meets the bar"}],
+    }
+    base.update(overrides)
+    return LabelSet(**base)
+
+
+def test_label_set_valid_categorical() -> None:
+    label_set = make_label_set()
+    validate_label_set(label_set)
+
+
+def test_label_set_valid_numeric() -> None:
+    label_set = make_label_set(kind=ScoreKind.NUMERIC, labels=None, minimum=0.0, maximum=1.0)
+    validate_label_set(label_set)
+
+
+LABEL_SET_REJECTIONS = [
+    pytest.param({"labels": None}, id="categorical-without-labels"),
+    pytest.param({"labels": []}, id="categorical-with-empty-labels"),
+    pytest.param({"minimum": 0.0}, id="categorical-with-bounds"),
+    pytest.param(
+        {"labels": [{"name": "good", "description": "a"}, {"name": "good", "description": "b"}]},
+        id="categorical-with-duplicate-label-names",
+    ),
+    pytest.param(
+        {"labels": [{"name": "good"}]},
+        id="categorical-with-malformed-label",
+    ),
+]
+
+
+@pytest.mark.parametrize("overrides", LABEL_SET_REJECTIONS)
+def test_label_set_categorical_rejections(overrides: dict[str, object]) -> None:
+    label_set = make_label_set(**overrides)
+    with pytest.raises(ContractError):
+        validate_label_set(label_set)
+
+
+NUMERIC_LABEL_SET_REJECTIONS = [
+    pytest.param({"labels": [{"name": "good", "description": "d"}]}, id="numeric-with-labels"),
+    pytest.param({"minimum": 5.0, "maximum": 1.0}, id="numeric-min-greater-than-max"),
+]
+
+
+@pytest.mark.parametrize("overrides", NUMERIC_LABEL_SET_REJECTIONS)
+def test_label_set_numeric_rejections(overrides: dict[str, object]) -> None:
+    base = {"kind": ScoreKind.NUMERIC, "labels": None, "minimum": 0.0, "maximum": 1.0}
+    base.update(overrides)
+    label_set = make_label_set(**base)
+    with pytest.raises(ContractError):
+        validate_label_set(label_set)
+
+
 def test_version_json_round_trip() -> None:
     version = make_version()
     dumped = version.model_dump()
@@ -315,6 +380,46 @@ def test_version_json_round_trip() -> None:
     validate_version(restored)
     fields = parse_output_fields(restored)
     assert [f.name for f in fields] == ["verdict"]
+
+
+# -- Annotation ---------------------------------------------------------------
+
+
+def test_validate_annotation_accepts_known_categorical_labels() -> None:
+    label_set = make_label_set(
+        labels=[{"name": "good", "description": "d"}, {"name": "bad", "description": "d"}]
+    )
+    validate_annotation(label_set, labels=["good"], value=None)
+    validate_annotation(label_set, labels=["good", "bad"], value=None)
+
+
+def test_validate_annotation_rejects_unknown_categorical_label() -> None:
+    label_set = make_label_set(labels=[{"name": "good", "description": "d"}])
+    with pytest.raises(ContractError, match="Unknown label"):
+        validate_annotation(label_set, labels=["great"], value=None)
+
+
+def test_validate_annotation_rejects_value_on_categorical_set() -> None:
+    label_set = make_label_set()
+    with pytest.raises(ContractError, match="must not set a numeric value"):
+        validate_annotation(label_set, labels=[], value=1.0)
+
+
+def test_validate_annotation_accepts_in_range_numeric_value() -> None:
+    label_set = make_label_set(kind=ScoreKind.NUMERIC, labels=None, minimum=0.0, maximum=1.0)
+    validate_annotation(label_set, labels=None, value=0.5)
+
+
+def test_validate_annotation_rejects_out_of_range_numeric_value() -> None:
+    label_set = make_label_set(kind=ScoreKind.NUMERIC, labels=None, minimum=0.0, maximum=1.0)
+    with pytest.raises(ContractError, match="outside this label set's range"):
+        validate_annotation(label_set, labels=None, value=5.0)
+
+
+def test_validate_annotation_rejects_labels_on_numeric_set() -> None:
+    label_set = make_label_set(kind=ScoreKind.NUMERIC, labels=None, minimum=0.0, maximum=1.0)
+    with pytest.raises(ContractError, match="must not set labels"):
+        validate_annotation(label_set, labels=["good"], value=0.5)
 
 
 # -- ExperimentRun ------------------------------------------------------------

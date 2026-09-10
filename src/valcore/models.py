@@ -6,8 +6,8 @@ from datetime import UTC, datetime
 from enum import Enum
 from uuid import uuid4
 
-from pydantic import BaseModel, model_validator
-from sqlalchemy import Column
+from pydantic import BaseModel, ValidationError, model_validator
+from sqlalchemy import Column, UniqueConstraint
 from sqlmodel import JSON, Field, SQLModel
 
 from valcore import settings
@@ -149,6 +149,123 @@ class LabelSchema(BaseModel):
                     f"maximum {self.maximum}."
                 )
         return self
+
+
+class AnnotationLabel(BaseModel):
+    """One label in a label set's contract: its name and the criteria for applying it."""
+
+    name: str
+    description: str
+
+
+class LabelSet(SQLModel, table=True):
+    """A named annotation contract on a dataset: a label space plus per-label descriptions.
+
+    A dataset may have any number of label sets. Unlike ``LabelSchema``, a label set carries
+    its own identity (``name``/``description``) and, for categorical sets, a description per
+    label -- the reference text shown to an annotator alongside each label option. Its label
+    space is fixed at creation; only ``name``/``description`` are ever patched afterward, so
+    changing the label space means creating a new label set rather than editing this one.
+    """
+
+    id: str = Field(default_factory=lambda: uuid4().hex, primary_key=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    dataset_id: str = Field(index=True)
+    name: str
+    description: str = ""
+    kind: ScoreKind
+    labels: list[dict] | None = Field(default=None, sa_column=Column(JSON))
+    minimum: float | None = None
+    maximum: float | None = None
+
+
+def parse_annotation_labels(label_set: LabelSet) -> list[AnnotationLabel]:
+    """Parse and validate a label set's serialized labels into AnnotationLabel specs."""
+    return [AnnotationLabel.model_validate(item) for item in (label_set.labels or [])]
+
+
+def validate_label_set(label_set: LabelSet) -> None:
+    """Raise ContractError if a label set's shape is invalid.
+
+    Mirrors ``LabelSchema``'s categorical/numeric mutual exclusion, but as a free function
+    (like ``validate_version``) rather than a pydantic model_validator: ``LabelSet`` is a
+    persisted table, constructed and re-hydrated by the store, and its shape is only ever
+    checked at the point of creation.
+    """
+    if label_set.kind is ScoreKind.CATEGORICAL:
+        if not label_set.labels:
+            raise ContractError("Categorical label set must define at least one label.")
+        if label_set.minimum is not None or label_set.maximum is not None:
+            raise ContractError("Categorical label set must not set numeric bounds.")
+        try:
+            parsed = parse_annotation_labels(label_set)
+        except ValidationError as exc:
+            raise ContractError(f"Invalid label set labels: {exc}.") from exc
+        names = [label.name for label in parsed]
+        duplicates = sorted({n for n in names if names.count(n) > 1})
+        if duplicates:
+            raise ContractError(f"Label names must be unique; duplicates: {duplicates}.")
+    else:
+        if label_set.labels is not None:
+            raise ContractError("Numeric label set must not define labels.")
+        if _bounds_inverted(label_set.minimum, label_set.maximum):
+            raise ContractError(
+                f"Numeric label set has minimum {label_set.minimum} greater than "
+                f"maximum {label_set.maximum}."
+            )
+
+
+class Annotation(SQLModel, table=True):
+    """A row's recorded judgment under one label set: labels or a value, plus a rationale.
+
+    Exactly one row exists per ``(label_set_id, dataset_row_id)`` -- annotating a row again
+    edits this record rather than creating a second one. ``suggested_labels``/
+    ``suggested_value`` and ``source`` mirror the provenance trail ``DatasetRow`` used to
+    carry (suggested vs. accepted vs. manual vs. generated); nothing in this plan writes them
+    yet -- that begins when dataset generation is rewired onto this table.
+    """
+
+    __table_args__ = (UniqueConstraint("label_set_id", "dataset_row_id", name="uq_annotation_row"),)
+
+    id: str = Field(default_factory=lambda: uuid4().hex, primary_key=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    label_set_id: str = Field(index=True)
+    dataset_row_id: str = Field(index=True)
+    labels: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    value: float | None = None
+    suggested_labels: list[str] | None = Field(default=None, sa_column=Column(JSON))
+    suggested_value: float | None = None
+    source: LabelSource | None = None
+    reasoning: str | None = None
+    description: str | None = None
+
+
+def validate_annotation(
+    label_set: LabelSet, *, labels: list[str] | None, value: float | None
+) -> None:
+    """Raise ContractError if labels/value do not fit label_set's kind and label space."""
+    if label_set.kind is ScoreKind.CATEGORICAL:
+        if value is not None:
+            raise ContractError("Categorical label set annotations must not set a numeric value.")
+        allowed = {item["name"] for item in (label_set.labels or [])}
+        unknown = sorted(set(labels or []) - allowed)
+        if unknown:
+            raise ContractError(
+                f"Unknown label(s) {unknown} for this label set; valid labels are "
+                f"{sorted(allowed)}."
+            )
+    else:
+        if labels:
+            raise ContractError("Numeric label set annotations must not set labels.")
+        if value is not None:
+            below = label_set.minimum is not None and value < label_set.minimum
+            above = label_set.maximum is not None and value > label_set.maximum
+            if below or above:
+                raise ContractError(
+                    f"Value {value} is outside this label set's range "
+                    f"[{label_set.minimum}, {label_set.maximum}]."
+                )
 
 
 class Evaluator(SQLModel, table=True):
