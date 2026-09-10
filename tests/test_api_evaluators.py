@@ -1066,6 +1066,81 @@ async def test_generate_explicit_label_schema_overrides_label_set_seed(
     assert schema.maximum == 10
 
 
+@pytest.mark.anyio
+async def test_generate_label_set_id_from_a_different_dataset_rejected(
+    app, store: Store, monkeypatch
+) -> None:
+    """A ``label_set_id`` that belongs to another dataset must not silently be used."""
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    dataset_a = store.create_dataset("ds-a", "", ["question", "answer"], {})
+    dataset_b = store.create_dataset("ds-b", "", ["question", "answer"], {})
+    other_label_set = store.create_label_set(
+        dataset_b.id,
+        "quality",
+        "",
+        ScoreKind.CATEGORICAL,
+        labels=[{"name": "good", "description": ""}, {"name": "bad", "description": ""}],
+    )
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={
+                "criteria": "grade it",
+                "dataset_id": dataset_a.id,
+                "label_set_id": other_label_set.id,
+            },
+        )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["type"] == "ContractError"
+    assert other_label_set.id in error["message"]
+    assert dataset_a.id in error["message"]
+    assert dataset_b.id in error["message"]
+    assert calls == []
+
+
+@pytest.mark.anyio
+async def test_generate_explicit_label_schema_bypasses_ambiguity_check(
+    app, store: Store, monkeypatch
+) -> None:
+    """An explicit ``label_schema`` makes label-set choice moot, even with 2+ label sets."""
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    dataset = store.create_dataset("ds", "", ["question", "answer"], {})
+    store.create_label_set(
+        dataset.id,
+        "quality",
+        "",
+        ScoreKind.CATEGORICAL,
+        labels=[{"name": "good", "description": ""}, {"name": "bad", "description": ""}],
+    )
+    store.create_label_set(dataset.id, "relevance", "", ScoreKind.NUMERIC, minimum=0, maximum=5)
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={
+                "criteria": "grade it",
+                "dataset_id": dataset.id,
+                "label_schema": {"kind": "numeric", "minimum": 1, "maximum": 10},
+            },
+        )
+
+    # No 422 ambiguity error: the explicit schema overrides whatever label set would have
+    # been chosen, so the caller was never blocked on disambiguating between them.
+    assert response.status_code == 200
+    schema = calls[0]["label_schema"]
+    assert isinstance(schema, LabelSchema)
+    assert schema.kind is ScoreKind.NUMERIC
+    assert schema.minimum == 1
+    assert schema.maximum == 10
+
+
 # -- Generate seeded on POST /{id}/generate ------------------------------------
 
 

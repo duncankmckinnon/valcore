@@ -399,7 +399,16 @@ def _resolve_seed(
         label_set = None
         if body.label_set_id is not None:
             label_set = store.get_label_set(body.label_set_id)
-        else:
+            if label_set.dataset_id != body.dataset_id:
+                raise ContractError(
+                    f"label_set_id {body.label_set_id!r} belongs to dataset "
+                    f"{label_set.dataset_id!r}, not {body.dataset_id!r}."
+                )
+        elif label_schema is None:
+            # Only resolve (and possibly disambiguate) a label set when there's no explicit
+            # label_schema to override it with -- an override makes the label set moot, so
+            # a caller supplying both should never be blocked by ambiguity between label sets
+            # they weren't going to use anyway.
             label_sets = store.list_label_sets(body.dataset_id)
             if len(label_sets) == 1:
                 label_set = label_sets[0]
