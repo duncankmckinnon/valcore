@@ -41,6 +41,7 @@ class HostedFetch(BaseModel):
     columns: list[str]
     label_schema: dict
     prepared: list[dict]
+    row_annotations: list[dict | None]
 
 
 def _import_async_client() -> Any:
@@ -123,12 +124,18 @@ async def push_dataset(
     dataset: VDataset,
     rows: list[DatasetRow],
     *,
+    label_set: Any = None,
+    annotations: list[Any] | None = None,
     api_key: str | None = None,
     name: str | None = None,
     description: str | None = None,
     on_conflict: Literal["update", "error"] = "update",
 ) -> dict:
     """Push ``dataset`` and ``rows`` to Logfire's hosted dataset store.
+
+    ``label_set``/``annotations`` supply ground truth -- typically
+    ``store.primary_label_set(dataset.id)`` and the rows' annotations under it. Omit both
+    to push with no ground truth.
 
     Uses the async datasets client so the upload does not block the event loop of the FastAPI
     handler that calls this. Returns a plain dict built from the returned ``DatasetDetail``
@@ -142,7 +149,9 @@ async def push_dataset(
     # wrap_output: the hosted API types ``expected_output`` as a dictionary and rejects a scalar
     # with ``dict_type: Input should be a valid dictionary``, so each label goes up as
     # ``{"value": label}``. Exported ``.dataset.json`` files keep the scalar form.
-    evals_dataset = dataset_to_evals(dataset, rows, evaluators=[], wrap_output=True)
+    evals_dataset = dataset_to_evals(
+        dataset, rows, evaluators=[], label_set=label_set, annotations=annotations, wrap_output=True
+    )
     try:
         async with AsyncLogfireAPIClient(api_key=resolved_key) as client:
             detail = await client.push_dataset(
@@ -189,11 +198,14 @@ async def fetch_hosted_dataset(id_or_name: str, *, api_key: str | None = None) -
         raise ContractError(str(exc)) from exc
 
     evals_dataset = _exported_to_evals(exported, id_or_name)
-    name, columns, label_schema, prepared = evals_to_dataset_fields(evals_dataset, None)
+    name, columns, label_schema, prepared, row_annotations = evals_to_dataset_fields(
+        evals_dataset, None
+    )
     return HostedFetch(
         source_name=id_or_name,
         name=name or id_or_name,
         columns=columns,
         label_schema=label_schema,
         prepared=prepared,
+        row_annotations=row_annotations,
     )

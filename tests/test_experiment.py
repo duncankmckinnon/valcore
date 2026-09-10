@@ -23,7 +23,7 @@ from pydantic_ai.models.test import TestModel
 from valcore import tracing
 from valcore.errors import ContractError
 from valcore.factory import build_output_model
-from valcore.models import LabelSource, RunKind, RunStatus, ScoreKind
+from valcore.models import RunKind, RunStatus, ScoreKind
 from valcore.runner import RunEvent, execute_run
 from valcore.store import Store, create_engine, init_db
 
@@ -193,9 +193,9 @@ def capture_evaluators(monkeypatch: pytest.MonkeyPatch) -> list:
     captured: list = []
     original = experiment_module.dataset_to_evals
 
-    def spy(dataset, rows, evaluators):
+    def spy(dataset, rows, evaluators, **kwargs):
         captured.append(evaluators)
-        return original(dataset, rows, evaluators)
+        return original(dataset, rows, evaluators, **kwargs)
 
     monkeypatch.setattr(experiment_module, "dataset_to_evals", spy)
     return captured
@@ -227,17 +227,17 @@ async def test_experiment_and_run_agree(store: Store, monkeypatch: pytest.Monkey
     experiment_scores = {r.row_id: r.score_value for r in store.list_results(run_via_experiment.id)}
     assert runner_scores == experiment_scores
 
-    # Per-row ``agreement`` is not compared here: ``PersistResults.teardown`` still derives
-    # it from ``result.expected_output``, which ``dataset_to_evals``/``_row_to_case``
-    # (spec.py, untouched by this task) build from the legacy ``DatasetRow.label`` field --
-    # unset by this test's Annotation-based ground truth, so it comes back uniformly None
-    # until Task 3 rewires ``dataset_to_evals`` onto Annotations. The metrics asserted above
-    # (computed by both engines from ``ground_truth_by_row``) are what must -- and do --
-    # already agree.
+    # Per-row ``agreement`` is now also compared: ``PersistResults.teardown`` derives it
+    # from ``result.expected_output``, which ``dataset_to_evals``/``_row_to_case`` now
+    # build from the matched LabelSet's Annotations -- the same ground truth
+    # ``runner.execute_run`` reads via ``ground_truth_by_row`` -- so the two engines must
+    # agree row-for-row, not just on the aggregate metrics asserted above.
+    runner_agreement = {r.row_id: r.agreement for r in store.list_results(run_via_runner.id)}
     experiment_agreement = {
         r.row_id: r.agreement for r in store.list_results(run_via_experiment.id)
     }
-    assert all(v is None for v in experiment_agreement.values())
+    assert runner_agreement == experiment_agreement
+    assert any(v is not None for v in experiment_agreement.values())
 
 
 @pytest.mark.anyio
@@ -272,14 +272,12 @@ async def test_experiment_and_run_agree_numeric(
     runner_agreement = {r.row_id: r.agreement for r in store.list_results(run_via_runner.id)}
     assert any(v != 0 for v in runner_agreement.values())
 
-    # Experiment-side per-row agreement is not compared here, for the same reason as
-    # test_experiment_and_run_agree above: it is still sourced from the legacy
-    # DatasetRow.label path (spec.py), unset by this test, so it is uniformly None until
-    # Task 3 rewires dataset_to_evals onto Annotations.
+    # Experiment-side agreement is now sourced from the same Annotation ground truth (see
+    # test_experiment_and_run_agree above), so it must match the runner row-for-row.
     experiment_agreement = {
         r.row_id: r.agreement for r in store.list_results(run_via_experiment.id)
     }
-    assert all(v is None for v in experiment_agreement.values())
+    assert runner_agreement == experiment_agreement
 
 
 # -- NumericDelta matches runner._agreement --------------------------------------
@@ -341,13 +339,15 @@ async def test_categorical_agreement_is_exact_match(
     assert isinstance(evaluators[0], EqualsExpected)
 
     assert result.status is RunStatus.COMPLETED
-    # Per-row ``agreement`` is not asserted here -- see the comment in
-    # test_experiment_and_run_agree for why it is uniformly None until Task 3. The
-    # aggregate accuracy below is computed from Annotation ground truth via
-    # ``ground_truth_by_row`` and is exact-match, exactly what EqualsExpected implements.
     results = {r.row_id: r for r in store.list_results(run.id)}
     for result_row in results.values():
         assert result_row.score_value == "pass"
+    # Per-row ``agreement`` is now sourced from Annotation ground truth and is exact-match,
+    # exactly what EqualsExpected implements: True where the row's label is "pass", False
+    # where it is "fail".
+    labels = ["pass", "fail", "pass", "fail", "pass"]
+    rows = store.list_rows(dataset.id)
+    assert [results[row.id].agreement for row in rows] == [label == "pass" for label in labels]
     assert result.metrics is not None
     assert result.metrics["n"] == 5
     assert result.metrics["accuracy"] == pytest.approx(3 / 5)
@@ -738,32 +738,37 @@ async def test_eval_run_needs_no_label_set(store: Store, monkeypatch: pytest.Mon
 
 
 @pytest.mark.anyio
-async def test_malformed_numeric_label_fails_run_not_stuck_running(
+async def test_agreement_computation_failure_fails_run_not_stuck_running(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A label that can't be coerced to a float breaks ``_agreement`` inside ``teardown``.
+    """A failure computing agreement inside ``teardown`` breaks the whole run.
 
     ``pydantic_evals`` explicitly propagates a lifecycle's exceptions to ``evaluate()``'s
     caller, so this must resolve to a terminal ``FAILED`` status with ``finished_at`` set
     and an ``error`` event -- not leave the run permanently ``RUNNING``.
 
-    A valid Annotation is set (0.5) so this row passes the new LabelSet-matching/ground-
-    truth gate; the legacy ``DatasetRow.label`` is *also* set, to a malformed value, since
-    ``dataset_to_evals``/``_row_to_case`` (spec.py, untouched by this task) still build each
-    case's ``expected_output`` from it -- that is what actually reproduces the crash this
-    test targets, until Task 3 rewires that path onto Annotations.
+    Before Task 3, this was reproduced with a malformed legacy ``DatasetRow.label`` value
+    that broke ``_agreement`` once ``dataset_to_evals`` built ``expected_output`` from it.
+    That route is now closed: ``Annotation.value`` is a typed ``float``, so
+    ``Store.set_annotation`` itself rejects anything that can't be coerced to one. So
+    ``_agreement`` is monkeypatched to raise directly instead. ``NumericDelta.evaluate``
+    also calls ``_agreement`` and also raises here, but pydantic-evals catches an
+    evaluator's own exception as an ``EvaluatorFailure`` rather than letting it escape --
+    only ``teardown``'s direct call is what actually crashes the run.
     """
+    import valcore.experiment as experiment_module
     from valcore.experiment import execute_experiment
 
     version = make_numeric_version(store)
-    dataset = store.create_dataset("ds", "", ["input", "output"], {})
-    rows = store.add_rows(dataset.id, [{"input": "in0", "output": "out0"}])
-    label_set = store.create_label_set(
-        dataset.id, "score", "", ScoreKind.NUMERIC, minimum=None, maximum=None
+    dataset = make_dataset(
+        store, [0.5], columns=["input", "output"], label_set_kind=ScoreKind.NUMERIC
     )
-    store.set_annotation(label_set.id, rows[0].id, value=0.5)
-    store.set_label(rows[0].id, {"value": "not-a-number"}, LabelSource.MANUAL)
     run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=1)
+
+    def boom(score_kind, predicted, label):
+        raise ValueError("cannot compute agreement")
+
+    monkeypatch.setattr(experiment_module, "_agreement", boom)
 
     events: list[RunEvent] = []
 
@@ -888,28 +893,26 @@ class TestExperimentSpans:
     async def test_evaluate_failure_still_marks_the_run_failed(
         self, store: Store, traced, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A malformed label breaks ``_agreement`` inside ``teardown``, which
-        ``pydantic_evals`` propagates out of ``evaluate()`` itself -- the run must still end
-        ``FAILED`` rather than stuck ``RUNNING``.
-
-        As in ``test_malformed_numeric_label_fails_run_not_stuck_running`` above, a valid
-        Annotation is set so this row passes the new LabelSet-matching/ground-truth gate,
-        and the legacy ``DatasetRow.label`` is also set (malformed) since that is still what
-        ``dataset_to_evals`` (spec.py, untouched by this task) builds ``expected_output``
-        from.
+        """A failure computing agreement inside ``teardown``, which ``pydantic_evals``
+        propagates out of ``evaluate()`` itself, must still end the run ``FAILED`` rather
+        than stuck ``RUNNING``. See
+        ``test_agreement_computation_failure_fails_run_not_stuck_running`` for why
+        ``_agreement`` (rather than a malformed label, no longer persistable through the
+        typed ``Annotation.value`` field) is what's monkeypatched here.
         """
+        import valcore.experiment as experiment_module
         from valcore.experiment import execute_experiment
 
         version = make_numeric_version(store)
-        dataset = store.create_dataset("ds", "", ["input", "output"], {})
-        rows = store.add_rows(dataset.id, [{"input": "in0", "output": "out0"}])
-        label_set = store.create_label_set(
-            dataset.id, "score", "", ScoreKind.NUMERIC, minimum=None, maximum=None
+        dataset = make_dataset(
+            store, [0.5], columns=["input", "output"], label_set_kind=ScoreKind.NUMERIC
         )
-        store.set_annotation(label_set.id, rows[0].id, value=0.5)
-        store.set_label(rows[0].id, {"value": "not-a-number"}, LabelSource.MANUAL)
         run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=1)
 
+        def boom(score_kind, predicted, label):
+            raise ValueError("cannot compute agreement")
+
+        monkeypatch.setattr(experiment_module, "_agreement", boom)
         patch_build_agent(monkeypatch, constant_numeric_agent(version, 1.0))
         result = await execute_experiment(store, run.id)
 

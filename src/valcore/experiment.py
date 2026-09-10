@@ -266,7 +266,9 @@ async def execute_experiment(
                 EqualsExpected() if version.score_kind is ScoreKind.CATEGORICAL else NumericDelta()
             )
 
-        evals_dataset = dataset_to_evals(dataset, rows, evaluators)
+        evals_dataset = dataset_to_evals(
+            dataset, rows, evaluators, label_set=matched_label_set, annotations=annotations
+        )
         task = _make_task(version, agent)
         rows_by_id = {row.id: row for row in rows}
 
