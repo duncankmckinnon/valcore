@@ -869,7 +869,15 @@ def test_logfire_push_prints_id_name_and_case_count_never_a_url(
     runner, store, db_path, monkeypatch
 ):
     async def fake_push_dataset(
-        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+        dataset,
+        rows,
+        *,
+        label_set=None,
+        annotations=None,
+        api_key=None,
+        name=None,
+        description=None,
+        on_conflict="update",
     ):
         return {
             "id": "abc-123",
@@ -892,7 +900,15 @@ def test_logfire_push_resolves_dataset_and_passes_its_rows(runner, store, db_pat
     captured = {}
 
     async def fake_push_dataset(
-        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+        dataset,
+        rows,
+        *,
+        label_set=None,
+        annotations=None,
+        api_key=None,
+        name=None,
+        description=None,
+        on_conflict="update",
     ):
         captured["dataset_name"] = dataset.name
         captured["row_count"] = len(rows)
@@ -904,11 +920,54 @@ def test_logfire_push_resolves_dataset_and_passes_its_rows(runner, store, db_pat
     assert captured == {"dataset_name": "cases", "row_count": 4}
 
 
+def test_logfire_push_forwards_ground_truth_from_the_datasets_label_set(
+    runner, store, db_path, monkeypatch
+):
+    """Finding 1 regression: the CLI's ``logfire push`` must forward ground truth.
+
+    The ``cases`` fixture dataset carries a confirmed ``quality`` label set (see ``_seed``),
+    so a correct push must resolve and pass it through rather than dropping it silently.
+    """
+    captured = {}
+
+    async def fake_push_dataset(
+        dataset,
+        rows,
+        *,
+        label_set=None,
+        annotations=None,
+        api_key=None,
+        name=None,
+        description=None,
+        on_conflict="update",
+    ):
+        captured["label_set"] = label_set
+        captured["annotations"] = annotations
+        return {"id": "x", "name": dataset.name, "case_count": len(rows), "output_schema": None}
+
+    monkeypatch.setattr("valcore.logfire_io.push_dataset", fake_push_dataset)
+    result = _invoke(runner, db_path, "logfire", "push", "cases")
+    assert result.exit_code == 0
+    assert captured["label_set"] is not None
+    assert captured["label_set"].name == "quality"
+    assert captured["annotations"] is not None
+    confirmed = [a for a in captured["annotations"] if a.labels]
+    assert len(confirmed) == 4
+
+
 def test_logfire_push_defaults_have_no_name_or_description(runner, store, db_path, monkeypatch):
     calls = {}
 
     async def fake_push_dataset(
-        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+        dataset,
+        rows,
+        *,
+        label_set=None,
+        annotations=None,
+        api_key=None,
+        name=None,
+        description=None,
+        on_conflict="update",
     ):
         calls.update(name=name, description=description, on_conflict=on_conflict)
         return {"id": "x", "name": "cases", "case_count": len(rows), "output_schema": None}
@@ -925,7 +984,15 @@ def test_logfire_push_passes_name_description_and_on_conflict_through(
     calls = {}
 
     async def fake_push_dataset(
-        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+        dataset,
+        rows,
+        *,
+        label_set=None,
+        annotations=None,
+        api_key=None,
+        name=None,
+        description=None,
+        on_conflict="update",
     ):
         calls.update(name=name, description=description, on_conflict=on_conflict)
         return {"id": "x", "name": name, "case_count": len(rows), "output_schema": None}

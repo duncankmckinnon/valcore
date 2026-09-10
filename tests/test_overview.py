@@ -172,6 +172,29 @@ def test_overview_sums_rows_across_datasets(store: Store) -> None:
     assert _field(overview, "labeled_rows") == 3
 
 
+def test_overview_labeled_rows_excludes_unconfirmed_suggestions(store: Store) -> None:
+    """Finding 3 regression: a suggestion-only annotation must not count as "labeled".
+
+    ``Store.overview`` previously counted raw ``Annotation`` row existence, which includes
+    annotations that carry only ``suggested_labels`` (e.g. a freshly generated, unreviewed
+    dataset) and no confirmed ``labels``/``value`` -- inflating ``labeled_rows`` to look
+    fully labeled when nothing has actually been confirmed.
+    """
+    dataset = store.create_dataset("d", "", ["question"])
+    rows = store.add_rows(dataset.id, [{"question": "a"}, {"question": "b"}])
+    label_set = _categorical_label_set(store, dataset.id)
+
+    # Row 0: suggestion only, never confirmed -- must not count.
+    store.set_annotation(
+        label_set, rows[0].id, suggested_labels=["good"], source=LabelSource.GENERATED
+    )
+    assert _field(store.overview(), "labeled_rows") == 0
+
+    # Row 1: a real confirmed label -- now exactly one row counts.
+    store.set_annotation(label_set, rows[1].id, labels=["bad"], source=LabelSource.MANUAL)
+    assert _field(store.overview(), "labeled_rows") == 1
+
+
 # -- Store.overview: best_accuracy -------------------------------------------
 
 
@@ -401,6 +424,28 @@ def test_list_datasets_reports_row_and_labeled_counts(store: Store) -> None:
 
     assert _field(by_id[partial.id], "row_count") == 3
     assert _field(by_id[partial.id], "labeled_count") == 1
+
+
+def test_list_datasets_labeled_count_excludes_unconfirmed_suggestions(store: Store) -> None:
+    """Finding 3 regression: ``list_datasets``'s ``labeled_count`` must match ``dataset_stats``.
+
+    Previously it counted raw ``Annotation`` existence rather than confirmed ground truth
+    (via ``annotation_ground_truth``), so a freshly generated, unreviewed dataset showed
+    100% "labeled" on the dataset list/Overview pages but 0% in its own stats.
+    """
+    dataset = store.create_dataset("d", "", ["question"])
+    rows = store.add_rows(dataset.id, [{"question": "a"}, {"question": "b"}])
+    label_set = _categorical_label_set(store, dataset.id)
+
+    # Suggestion only, never confirmed -- must not count.
+    store.set_annotation(
+        label_set, rows[0].id, suggested_labels=["good"], source=LabelSource.GENERATED
+    )
+    assert _field(_datasets_by_id(store)[dataset.id], "labeled_count") == 0
+
+    # A real confirmed label -- now exactly one row counts.
+    store.set_annotation(label_set, rows[1].id, labels=["bad"], source=LabelSource.MANUAL)
+    assert _field(_datasets_by_id(store)[dataset.id], "labeled_count") == 1
 
 
 def test_list_datasets_keeps_existing_fields(store: Store) -> None:

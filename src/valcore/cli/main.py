@@ -820,10 +820,17 @@ def logfire_push(
     store = _store(ctx)
     ds = resolve_dataset(store, dataset)
     rows = store.list_rows(ds.id)
+    label_set, annotations = _primary_ground_truth(store, ds.id, rows)
 
     result = asyncio.run(
         logfire_io.push_dataset(
-            ds, rows, name=name, description=description, on_conflict=on_conflict
+            ds,
+            rows,
+            label_set=label_set,
+            annotations=annotations,
+            name=name,
+            description=description,
+            on_conflict=on_conflict,
         )
     )
     emit(result, as_json=False, columns=["id", "name", "case_count"])

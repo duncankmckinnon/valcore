@@ -149,14 +149,18 @@ argument/env/file/default order.
 | `capabilities` | `CodeMode`, `SubAgents`, `Planning`, `FileSystem`, `Shell`. Ignored for a local CLI model. |
 | `tools` | Registry tools the rubric actually needs. Rejected with a local CLI model. |
 
-**Dataset** — `columns`, a `label_schema`, and rows. Each row has `data` keyed by column,
-and an **optional** `label`. Unlabeled datasets are fine.
+**Dataset** — `columns` and rows. Each row has `data` keyed by column. Ground truth lives
+separately: a dataset can have any number of **label sets** (named annotation contracts,
+categorical or numeric), each with its own per-row **annotations**. A dataset with no
+label sets is fine — it just cannot back a `validation` run.
 
 **Run** — an evaluator version over a dataset. Two kinds:
 
 - `eval` — score every row. No labels needed.
-- `validation` — score every row *and* compare against its label, measuring whether the
-  judge agrees with you. Every row must be labeled or the run is rejected.
+- `validation` — score every row that has a valid label under the matching label set, and
+  compare against it, measuring whether the judge agrees with you. Rows without a valid
+  label are skipped, not rejected — the run scores whatever subset has ground truth, and
+  only fails outright if none do.
 
 ## Compatibility rules
 
@@ -164,18 +168,24 @@ This is where runs most often fail to start. A run requires:
 
 1. **Columns**: `required_columns` must be a **subset** of the dataset's columns. Extra
    dataset columns are fine — the judge ignores them.
-2. **Label kind**: if the dataset declares a label schema, its kind must equal the
+2. **Label kind**: `validation` needs a label set on the dataset whose kind equals the
    evaluator's `score_kind`.
-3. **Label set**: for categorical scoring, the dataset's labels and the evaluator's
-   `score_labels` must be **exactly equal** — not a subset in either direction.
+3. **Label set**: for categorical scoring, one of the dataset's label sets' labels and the
+   evaluator's `score_labels` must be **exactly equal** — not a subset in either direction.
+   That label set is the one used as ground truth.
 
-A dataset with an empty label schema skips checks 2 and 3 — with no label space declared,
-there is nothing to reconcile with the score space. It still must satisfy check 1: the
-evaluator's `required_columns` must be present. Such a dataset runs against any evaluator
-whose columns it covers; it just cannot back a `validation` run, which needs ground truth.
+A dataset with **no label sets at all** skips checks 2 and 3 — with no label space
+declared, there is nothing to reconcile with the score space. It still must satisfy
+check 1: the evaluator's `required_columns` must be present. Such a dataset runs against
+any evaluator whose columns it covers; it just cannot back a `validation` run (no label
+set exists to match). A dataset that **has** label sets, none of which match the
+evaluator's score contract, fails checks 2/3 outright — a real mismatch, not merely "no
+ground truth declared."
 
-Labels are therefore **optional**. An `eval` run scores unlabeled rows fine — labels are
-required only for a `validation` run, which measures whether the judge agrees with you.
+Labels are therefore **optional** at the dataset level. An `eval` run needs no label set
+at all — a label set is required only for a validation run, and even then not every row
+need be labeled under it. It scores whatever subset has valid ground truth, failing only
+if none do.
 
 ## The workflow
 
@@ -286,5 +296,5 @@ local CLI model is refused with a `ContractError`.
 - The active version is used whenever you do not name one explicitly.
 - A version referenced by a run cannot be deleted; that is deliberate, so run history
   stays interpretable.
-- Editing a dataset's shape migrates existing rows. A destructive change reports how many
-  rows it would damage and refuses unless forced.
+- Editing a dataset's shape (renaming or changing columns) remaps existing rows' data
+  automatically.

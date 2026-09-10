@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from valcore import config
 from valcore.api.deps import get_store
@@ -353,7 +353,13 @@ def _prepare_row(
     if label_column is not None and record.get(label_column) is not None:
         value = record[label_column]
         if (label_schema or {}).get("kind") == "numeric" and isinstance(value, str):
-            value = float(value)
+            try:
+                value = float(value)
+            except ValueError as exc:
+                raise ContractError(
+                    f"label_column {label_column!r} has a non-numeric value {value!r} "
+                    "for a numeric label schema."
+                ) from exc
         fields = {"labels": [value]} if isinstance(value, str) else {"value": value}
         return prepared, {**fields, "source": LabelSource.MANUAL}
     return prepared, None
@@ -450,6 +456,9 @@ async def upload_dataset(
     else:
         raise ContractError("Unsupported file type; upload a .csv or .jsonl file.")
 
+    if label_column is not None and not schema_dict:
+        raise ContractError("label_column requires a label_schema.")
+
     if not prepared:
         raise ContractError("File contains no data rows.")
 
@@ -460,7 +469,7 @@ async def upload_dataset(
             dataset.id,
             name="Imported labels",
             description="",
-            **label_set_fields_from_schema(LabelSchema.model_validate(schema_dict)),
+            **label_set_fields_from_schema(_validate_label_schema(schema_dict)),
         )
         for row, fields in zip(rows, row_annotations):
             if fields is not None:
@@ -507,9 +516,19 @@ def _parse_label_schema(raw: str | None) -> dict:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise ContractError(f"Invalid label_schema JSON: {exc}.") from exc
+    return _validate_label_schema(parsed).model_dump(mode="json")
+
+
+def _validate_label_schema(data: dict) -> LabelSchema:
+    """Validate a raw label-schema dict, wrapping a pydantic ``ValidationError`` as ``ContractError``.
+
+    ``LabelSchema.model_validate`` is also called directly against schemas that arrive from
+    elsewhere (an uploaded eval package, a hosted Logfire fetch) rather than through this
+    form field, so this wrapping lives in its own helper both call sites can share.
+    """
     try:
-        return LabelSchema.model_validate(parsed).model_dump(mode="json")
-    except ValueError as exc:
+        return LabelSchema.model_validate(data)
+    except ValidationError as exc:
         raise ContractError(f"Invalid label_schema: {exc}.") from exc
 
 
@@ -734,7 +753,7 @@ async def create_dataset_from_logfire_hosted(
             dataset.id,
             name="Imported labels",
             description="",
-            **label_set_fields_from_schema(LabelSchema.model_validate(result.label_schema)),
+            **label_set_fields_from_schema(_validate_label_schema(result.label_schema)),
         )
         for row, fields in zip(rows, result.row_annotations):
             if fields is not None:
@@ -792,6 +811,11 @@ async def pull_more_from_logfire(id: str, body: RowsLogfirePull, store: StoreDep
         )
 
     rows = store.add_prepared_rows(dataset.id, result.prepared)
+    label_set = store.primary_label_set(dataset.id)
+    if label_set is not None:
+        for row, fields in zip(rows, result.row_annotations):
+            if fields is not None:
+                store.set_annotation(label_set.id, row.id, **fields)
     # Record the ask that actually ran, so the next top-up repeats it rather than the
     # original creation call.
     store.set_logfire_pull(
@@ -848,12 +872,18 @@ async def pull_more_from_logfire_hosted(id: str, store: StoreDep) -> list[RowOut
         )
 
     existing = {_row_content_key(row.data) for row in store.list_rows(dataset.id)}
-    new_rows = [
-        prepared
-        for prepared in result.prepared
+    new_pairs = [
+        (prepared, annotation_fields)
+        for prepared, annotation_fields in zip(result.prepared, result.row_annotations)
         if _row_content_key(prepared.get("data", {})) not in existing
     ]
-    rows = store.add_prepared_rows(dataset.id, new_rows) if new_rows else []
+    new_rows_data = [prepared for prepared, _ in new_pairs]
+    rows = store.add_prepared_rows(dataset.id, new_rows_data) if new_rows_data else []
+    label_set = store.primary_label_set(dataset.id)
+    if label_set is not None:
+        for row, (_, fields) in zip(rows, new_pairs):
+            if fields is not None:
+                store.set_annotation(label_set.id, row.id, **fields)
     return [RowOut.model_validate(row) for row in rows]
 
 
@@ -1068,9 +1098,12 @@ async def push_dataset_to_logfire(id: str, body: LogfirePushRequest, store: Stor
     """Push a dataset and its rows to Logfire's hosted dataset store."""
     dataset = store.get_dataset(id)
     rows = store.list_rows(id)
+    label_set, annotations = _primary_ground_truth(store, id, rows)
     return await push_dataset(
         dataset,
         rows,
+        label_set=label_set,
+        annotations=annotations,
         name=body.name,
         description=body.description,
         on_conflict=body.on_conflict,

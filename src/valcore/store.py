@@ -36,6 +36,7 @@ from valcore.models import (
     RunResult,
     RunStatus,
     ScoreKind,
+    annotation_ground_truth,
     validate_annotation,
     validate_label_set,
     validate_version,
@@ -339,15 +340,16 @@ class Store:
             for dataset in datasets:
                 row_count = row_counts.get(dataset.id, 0)
                 primary = label_sets_by_dataset.get(dataset.id)
-                labeled_count = (
-                    session.exec(
-                        select(func.count())
-                        .select_from(Annotation)
-                        .where(Annotation.label_set_id == primary.id)
-                    ).one()
-                    if primary is not None
-                    else 0
-                )
+                labeled_count = 0
+                if primary is not None:
+                    primary_annotations = session.exec(
+                        select(Annotation).where(Annotation.label_set_id == primary.id)
+                    ).all()
+                    labeled_count = sum(
+                        1
+                        for annotation in primary_annotations
+                        if annotation_ground_truth(primary, annotation) is not None
+                    )
                 summaries.append(
                     DatasetSummary(
                         id=dataset.id,
@@ -970,11 +972,14 @@ class Store:
                 if label_set.dataset_id in _seen_datasets:
                     continue
                 _seen_datasets.add(label_set.dataset_id)
-                labeled_rows += session.exec(
-                    select(func.count())
-                    .select_from(Annotation)
-                    .where(Annotation.label_set_id == label_set.id)
-                ).one()
+                annotations = session.exec(
+                    select(Annotation).where(Annotation.label_set_id == label_set.id)
+                ).all()
+                labeled_rows += sum(
+                    1
+                    for annotation in annotations
+                    if annotation_ground_truth(label_set, annotation) is not None
+                )
 
             completed = session.exec(
                 select(Run, Dataset.name)
