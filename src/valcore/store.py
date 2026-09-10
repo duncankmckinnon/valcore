@@ -38,6 +38,7 @@ from valcore.models import (
     RunResult,
     RunStatus,
     ScoreKind,
+    validate_annotation,
     validate_label_set,
     validate_version,
 )
@@ -680,6 +681,108 @@ class Store:
             for annotation in annotations:
                 session.delete(annotation)
             session.delete(label_set)
+
+    # -- Annotations ----------------------------------------------------------
+
+    def set_annotation(
+        self,
+        label_set_id: str,
+        dataset_row_id: str,
+        *,
+        labels: list[str] | None = None,
+        value: float | None = None,
+        description: str | None = None,
+        source: LabelSource | None = None,
+    ) -> Annotation:
+        """Create or update the single annotation for (label_set_id, dataset_row_id).
+
+        A full replace of ``labels``/``value``/``description``, not a merge -- mirroring
+        ``set_label``'s replace semantics for the equivalent single-label case today.
+        ``suggested_labels``/``suggested_value`` are untouched here; nothing in this plan
+        writes them yet.
+        """
+        with session_scope(self.engine) as session:
+            label_set = _require(session, LabelSet, label_set_id)
+            _require(session, DatasetRow, dataset_row_id)
+            validate_annotation(label_set, labels=labels, value=value)
+            existing = session.exec(
+                select(Annotation).where(
+                    Annotation.label_set_id == label_set_id,
+                    Annotation.dataset_row_id == dataset_row_id,
+                )
+            ).first()
+            now = datetime.now(UTC)
+            if existing is None:
+                annotation = Annotation(
+                    label_set_id=label_set_id,
+                    dataset_row_id=dataset_row_id,
+                    labels=labels or [],
+                    value=value,
+                    description=description,
+                    source=source,
+                    updated_at=now,
+                )
+                session.add(annotation)
+                return annotation
+            existing.labels = labels or []
+            existing.value = value
+            existing.description = description
+            existing.source = source
+            existing.updated_at = now
+            session.add(existing)
+            return existing
+
+    def get_annotation(self, label_set_id: str, dataset_row_id: str) -> Annotation | None:
+        """Return the annotation for (label_set_id, dataset_row_id), or None if unset."""
+        with session_scope(self.engine) as session:
+            return session.exec(
+                select(Annotation).where(
+                    Annotation.label_set_id == label_set_id,
+                    Annotation.dataset_row_id == dataset_row_id,
+                )
+            ).first()
+
+    def clear_annotation(self, label_set_id: str, dataset_row_id: str) -> None:
+        """Delete the annotation for (label_set_id, dataset_row_id), if any."""
+        with session_scope(self.engine) as session:
+            existing = session.exec(
+                select(Annotation).where(
+                    Annotation.label_set_id == label_set_id,
+                    Annotation.dataset_row_id == dataset_row_id,
+                )
+            ).first()
+            if existing is not None:
+                session.delete(existing)
+
+    def list_annotations_for_rows(self, label_set_id: str, row_ids: list[str]) -> list[Annotation]:
+        """Return every annotation for label_set_id restricted to the given row ids."""
+        if not row_ids:
+            return []
+        with session_scope(self.engine) as session:
+            return list(
+                session.exec(
+                    select(Annotation).where(
+                        Annotation.label_set_id == label_set_id,
+                        Annotation.dataset_row_id.in_(row_ids),
+                    )
+                )
+            )
+
+    def annotation_progress(self, label_set_id: str) -> tuple[int, int]:
+        """Return ``(annotated, total)`` row counts for a label set's dataset."""
+        with session_scope(self.engine) as session:
+            label_set = _require(session, LabelSet, label_set_id)
+            total = session.exec(
+                select(func.count())
+                .select_from(DatasetRow)
+                .where(DatasetRow.dataset_id == label_set.dataset_id)
+            ).one()
+            annotated = session.exec(
+                select(func.count())
+                .select_from(Annotation)
+                .where(Annotation.label_set_id == label_set_id)
+            ).one()
+            return annotated, total
 
     # -- Runs -----------------------------------------------------------------
 

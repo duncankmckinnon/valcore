@@ -19,6 +19,7 @@ from valcore.models import (
     DatasetRow,
     EvaluatorVersion,
     ExperimentRun,
+    LabelSet,
     LabelSource,
     Run,
     RunKind,
@@ -356,6 +357,106 @@ def test_delete_label_set_removes_it(store: Store) -> None:
     store.delete_label_set(label_set.id)
     with pytest.raises(NotFoundError):
         store.get_label_set(label_set.id)
+
+
+# -- Annotations ---------------------------------------------------------
+
+
+def _categorical_label_set(store: Store, dataset_id: str) -> LabelSet:
+    return store.create_label_set(
+        dataset_id,
+        name="quality",
+        description="",
+        kind=ScoreKind.CATEGORICAL,
+        labels=[{"name": "good", "description": "d"}, {"name": "bad", "description": "d"}],
+    )
+
+
+def test_set_annotation_creates_then_updates_in_place(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"], {})
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = _categorical_label_set(store, dataset.id)
+
+    created = store.set_annotation(
+        label_set.id,
+        rows[0].id,
+        labels=["good"],
+        description="looks right",
+        source=LabelSource.MANUAL,
+    )
+    assert created.labels == ["good"]
+    assert created.description == "looks right"
+    assert created.source is LabelSource.MANUAL
+
+    updated = store.set_annotation(
+        label_set.id, rows[0].id, labels=["good", "bad"], description="revised"
+    )
+    assert updated.id == created.id
+    assert updated.labels == ["good", "bad"]
+    assert updated.description == "revised"
+
+    all_annotations = store.list_annotations_for_rows(label_set.id, [rows[0].id])
+    assert len(all_annotations) == 1
+
+
+def test_set_annotation_rejects_invalid_labels(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"], {})
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = _categorical_label_set(store, dataset.id)
+    with pytest.raises(ContractError):
+        store.set_annotation(label_set.id, rows[0].id, labels=["unknown"])
+
+
+def test_get_annotation_returns_none_when_absent(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"], {})
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = _categorical_label_set(store, dataset.id)
+    assert store.get_annotation(label_set.id, rows[0].id) is None
+
+
+def test_clear_annotation_removes_it(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"], {})
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = _categorical_label_set(store, dataset.id)
+    store.set_annotation(label_set.id, rows[0].id, labels=["good"])
+    store.clear_annotation(label_set.id, rows[0].id)
+    assert store.get_annotation(label_set.id, rows[0].id) is None
+
+
+def test_list_annotations_for_rows_filters_by_row_ids(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"], {})
+    rows = store.add_rows(dataset.id, [{"q": "1"}, {"q": "2"}])
+    label_set = _categorical_label_set(store, dataset.id)
+    store.set_annotation(label_set.id, rows[0].id, labels=["good"])
+    store.set_annotation(label_set.id, rows[1].id, labels=["bad"])
+    only_first = store.list_annotations_for_rows(label_set.id, [rows[0].id])
+    assert [a.dataset_row_id for a in only_first] == [rows[0].id]
+
+
+def test_list_annotations_for_rows_empty_ids_returns_empty(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"], {})
+    label_set = _categorical_label_set(store, dataset.id)
+    assert store.list_annotations_for_rows(label_set.id, []) == []
+
+
+def test_annotation_progress_counts_annotated_and_total(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"], {})
+    rows = store.add_rows(dataset.id, [{"q": "1"}, {"q": "2"}, {"q": "3"}])
+    label_set = _categorical_label_set(store, dataset.id)
+    store.set_annotation(label_set.id, rows[0].id, labels=["good"])
+    annotated, total = store.annotation_progress(label_set.id)
+    assert (annotated, total) == (1, 3)
+
+
+def test_delete_label_set_cascades_annotations(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"], {})
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = _categorical_label_set(store, dataset.id)
+    store.set_annotation(label_set.id, rows[0].id, labels=["good"])
+    store.delete_label_set(label_set.id)
+    with pytest.raises(NotFoundError):
+        store.get_label_set(label_set.id)
+    assert store.get_annotation(label_set.id, rows[0].id) is None
 
 
 # -- Runs --------------------------------------------------------------------
