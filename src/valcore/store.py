@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypeVar
 
-from sqlalchemy import case, event
+from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, func, select
 from sqlmodel import create_engine as _sqlmodel_create_engine
@@ -117,7 +117,6 @@ class DatasetSummary:
     name: str
     description: str
     columns: list[str]
-    label_schema: dict
     row_count: int
     labeled_count: int
 
@@ -148,18 +147,6 @@ class Overview:
     labeled_rows: int
     best_accuracy: float | None
     latest_run: LatestRun | None
-
-
-def _labeled_rows_expr() -> object:
-    """A grouped count of rows carrying a real label.
-
-    An unlabeled row persists the JSON text ``'null'`` rather than SQL ``NULL``, so a plain
-    ``COUNT(label)`` would count it. Counting only rows whose JSON type is not ``null`` keeps
-    the SQL count in step with the Python ``label is not None`` check used elsewhere, and
-    still reports ``0`` for a dataset with no rows (a ``LEFT JOIN`` yields SQL ``NULL`` there,
-    whose ``json_type`` is ``NULL`` and so is excluded).
-    """
-    return func.count(case((func.json_type(DatasetRow.label) != "null", DatasetRow.id)))
 
 
 def _read_accuracy(metrics: dict | None) -> float | None:
@@ -336,34 +323,47 @@ class Store:
     def list_datasets(self) -> list[DatasetSummary]:
         """Return every dataset ordered by creation time, each with its row/label counts.
 
-        The counts come from one grouped ``LEFT JOIN`` against the rows table, not a query
-        per dataset: a dataset with no rows still appears, reporting ``0``/``0`` rather than
-        being dropped by an inner join. ``labeled_count`` counts rows whose ``label`` is set.
+        ``labeled_count`` comes from the dataset's primary (oldest) label set's annotations
+        -- a different table from the rows themselves, so unlike the row count it cannot be
+        filled by one grouped join and is resolved per dataset instead.
         """
         with session_scope(self.engine) as session:
-            grouped = session.exec(
-                select(
-                    Dataset,
-                    func.count(DatasetRow.id),
-                    _labeled_rows_expr(),
+            datasets = list(session.exec(select(Dataset).order_by(Dataset.created_at)))
+            row_counts = dict(
+                session.exec(
+                    select(DatasetRow.dataset_id, func.count(DatasetRow.id)).group_by(
+                        DatasetRow.dataset_id
+                    )
+                ).all()
+            )
+            label_sets_by_dataset: dict[str, LabelSet] = {}
+            for label_set in session.exec(select(LabelSet).order_by(LabelSet.created_at)):
+                label_sets_by_dataset.setdefault(label_set.dataset_id, label_set)
+            summaries = []
+            for dataset in datasets:
+                row_count = row_counts.get(dataset.id, 0)
+                primary = label_sets_by_dataset.get(dataset.id)
+                labeled_count = (
+                    session.exec(
+                        select(func.count())
+                        .select_from(Annotation)
+                        .where(Annotation.label_set_id == primary.id)
+                    ).one()
+                    if primary is not None
+                    else 0
                 )
-                .outerjoin(DatasetRow, DatasetRow.dataset_id == Dataset.id)
-                .group_by(Dataset.id)
-                .order_by(Dataset.created_at)
-            ).all()
-            return [
-                DatasetSummary(
-                    id=dataset.id,
-                    created_at=dataset.created_at,
-                    name=dataset.name,
-                    description=dataset.description,
-                    columns=dataset.columns,
-                    label_schema=dataset.label_schema,
-                    row_count=row_count,
-                    labeled_count=labeled_count,
+                summaries.append(
+                    DatasetSummary(
+                        id=dataset.id,
+                        created_at=dataset.created_at,
+                        name=dataset.name,
+                        description=dataset.description,
+                        columns=dataset.columns,
+                        row_count=row_count,
+                        labeled_count=labeled_count,
+                    )
                 )
-                for dataset, row_count, labeled_count in grouped
-            ]
+            return summaries
 
     def update_dataset(
         self,
@@ -592,45 +592,6 @@ class Store:
             for annotation in annotations:
                 session.delete(annotation)
             session.delete(row)
-
-    def set_label(
-        self,
-        row_id: str,
-        label: dict,
-        source: LabelSource,
-        note: str | None = None,
-    ) -> DatasetRow:
-        """Assign a hand- or machine-provided label to a dataset row."""
-        with session_scope(self.engine) as session:
-            row = _require(session, DatasetRow, row_id)
-            row.label = label
-            row.label_source = source
-            row.note = note
-            session.add(row)
-            return row
-
-    def labeled_count(self, dataset_id: str) -> tuple[int, int]:
-        """Return ``(labeled, total)`` row counts for a dataset."""
-        with session_scope(self.engine) as session:
-            labels = session.exec(
-                select(DatasetRow.label).where(DatasetRow.dataset_id == dataset_id)
-            ).all()
-            labeled = sum(1 for label in labels if label is not None)
-            return labeled, len(labels)
-
-    def label_distribution(self, dataset_id: str) -> dict[str, int]:
-        """Return a count of labeled rows keyed by their string label value."""
-        with session_scope(self.engine) as session:
-            labels = session.exec(
-                select(DatasetRow.label).where(DatasetRow.dataset_id == dataset_id)
-            ).all()
-            distribution: dict[str, int] = {}
-            for label in labels:
-                if label is None:
-                    continue
-                key = str(label.get("value"))
-                distribution[key] = distribution.get(key, 0) + 1
-            return distribution
 
     # -- Label sets -------------------------------------------------------------
 
@@ -978,20 +939,33 @@ class Store:
     def overview(self) -> Overview:
         """Return store-wide aggregate counts for the Overview page.
 
-        Entity and row counts are computed by grouped aggregate SQL rather than by looping
-        datasets, avoiding an N+1. Accuracy cannot be aggregated in SQL because it lives in
-        the untyped ``Run.metrics`` JSON, so completed runs are read back and their accuracy
-        parsed defensively in Python — mirroring ``labeled_count`` and ``label_distribution``.
-        Only runs in the completed terminal state contribute to ``best_accuracy`` and are
-        eligible to be the ``latest_run``.
+        Entity and total-row counts are computed by grouped aggregate SQL. ``labeled_rows``
+        cannot be: it comes from each dataset's primary (oldest) label set's annotations, a
+        different table from the rows themselves, so it is summed one label set at a time
+        rather than by a single grouped join -- mirroring ``list_datasets``/``dataset_stats``.
+        Accuracy cannot be aggregated in SQL either, because it lives in the untyped
+        ``Run.metrics`` JSON, so completed runs are read back and their accuracy parsed
+        defensively in Python. Only runs in the completed terminal state contribute to
+        ``best_accuracy`` and are eligible to be the ``latest_run``.
         """
         with session_scope(self.engine) as session:
             evaluator_count = session.exec(select(func.count()).select_from(Evaluator)).one()
             dataset_count = session.exec(select(func.count()).select_from(Dataset)).one()
             run_count = session.exec(select(func.count()).select_from(Run)).one()
-            total_rows, labeled_rows = session.exec(
-                select(func.count(DatasetRow.id), _labeled_rows_expr())
-            ).one()
+            total_rows = session.exec(select(func.count()).select_from(DatasetRow)).one()
+            labeled_rows = 0
+            _seen_datasets: set[str] = set()
+            for label_set in session.exec(select(LabelSet).order_by(LabelSet.created_at)):
+                # Only the first (primary) label set per dataset counts, mirroring
+                # list_datasets/dataset_stats.
+                if label_set.dataset_id in _seen_datasets:
+                    continue
+                _seen_datasets.add(label_set.dataset_id)
+                labeled_rows += session.exec(
+                    select(func.count())
+                    .select_from(Annotation)
+                    .where(Annotation.label_set_id == label_set.id)
+                ).one()
 
             completed = session.exec(
                 select(Run, Dataset.name)

@@ -140,18 +140,32 @@ def test_overview_counts_entities(store: Store) -> None:
 # -- Store.overview: row sums ------------------------------------------------
 
 
+def _categorical_label_set(store: Store, dataset_id: str) -> str:
+    """Create a categorical label set matching ``CATEGORICAL_SCHEMA`` and return its id."""
+    label_set = store.create_label_set(
+        dataset_id,
+        name="Labels",
+        description="",
+        kind=ScoreKind.CATEGORICAL,
+        labels=[{"name": "good", "description": ""}, {"name": "bad", "description": ""}],
+    )
+    return label_set.id
+
+
 def test_overview_sums_rows_across_datasets(store: Store) -> None:
     d1 = store.create_dataset("d1", "", ["question"], CATEGORICAL_SCHEMA)
     d2 = store.create_dataset("d2", "", ["question"], CATEGORICAL_SCHEMA)
 
     # d1: 3 rows, 2 labeled.
     r1 = store.add_rows(d1.id, [{"question": "a"}, {"question": "b"}, {"question": "c"}])
-    store.set_label(r1[0].id, {"value": "good"}, LabelSource.MANUAL)
-    store.set_label(r1[1].id, {"value": "bad"}, LabelSource.MANUAL)
+    label_set_1 = _categorical_label_set(store, d1.id)
+    store.set_annotation(label_set_1, r1[0].id, labels=["good"], source=LabelSource.MANUAL)
+    store.set_annotation(label_set_1, r1[1].id, labels=["bad"], source=LabelSource.MANUAL)
 
     # d2: 2 rows, 1 labeled.
     r2 = store.add_rows(d2.id, [{"question": "d"}, {"question": "e"}])
-    store.set_label(r2[0].id, {"value": "good"}, LabelSource.MANUAL)
+    label_set_2 = _categorical_label_set(store, d2.id)
+    store.set_annotation(label_set_2, r2[0].id, labels=["good"], source=LabelSource.MANUAL)
 
     overview = store.overview()
     assert _field(overview, "total_rows") == 5
@@ -364,13 +378,17 @@ def test_list_datasets_reports_row_and_labeled_counts(store: Store) -> None:
     partial = store.create_dataset("partial", "", ["question"], CATEGORICAL_SCHEMA)
 
     full_rows = store.add_rows(full.id, [{"question": "a"}, {"question": "b"}])
+    full_label_set = _categorical_label_set(store, full.id)
     for row in full_rows:
-        store.set_label(row.id, {"value": "good"}, LabelSource.MANUAL)
+        store.set_annotation(full_label_set, row.id, labels=["good"], source=LabelSource.MANUAL)
 
     partial_rows = store.add_rows(
         partial.id, [{"question": "c"}, {"question": "d"}, {"question": "e"}]
     )
-    store.set_label(partial_rows[0].id, {"value": "bad"}, LabelSource.MANUAL)
+    partial_label_set = _categorical_label_set(store, partial.id)
+    store.set_annotation(
+        partial_label_set, partial_rows[0].id, labels=["bad"], source=LabelSource.MANUAL
+    )
 
     by_id = _datasets_by_id(store)
 
@@ -416,7 +434,8 @@ async def test_get_overview_populated_shape(client: httpx.AsyncClient, store: St
     d2 = store.create_dataset("scored", "", ["question"], CATEGORICAL_SCHEMA)
 
     rows = store.add_rows(d1.id, [{"question": "a"}, {"question": "b"}])
-    store.set_label(rows[0].id, {"value": "good"}, LabelSource.MANUAL)
+    label_set = _categorical_label_set(store, d1.id)
+    store.set_annotation(label_set, rows[0].id, labels=["good"], source=LabelSource.MANUAL)
 
     _finish_run(
         store,
@@ -455,7 +474,8 @@ async def test_get_datasets_includes_counts(client: httpx.AsyncClient, store: St
     partial = store.create_dataset("partial", "", ["question"], CATEGORICAL_SCHEMA)
 
     rows = store.add_rows(partial.id, [{"question": "a"}, {"question": "b"}])
-    store.set_label(rows[0].id, {"value": "good"}, LabelSource.MANUAL)
+    label_set = _categorical_label_set(store, partial.id)
+    store.set_annotation(label_set, rows[0].id, labels=["good"], source=LabelSource.MANUAL)
 
     resp = await client.get("/api/datasets")
     assert resp.status_code == 200, resp.text
@@ -469,7 +489,6 @@ async def test_get_datasets_includes_counts(client: httpx.AsyncClient, store: St
     # Existing fields survive unchanged so current callers are unaffected.
     assert by_id[empty.id]["name"] == "empty"
     assert by_id[empty.id]["columns"] == ["question"]
-    assert by_id[empty.id]["label_schema"] == CATEGORICAL_SCHEMA
 
 
 @pytest.mark.anyio
@@ -479,7 +498,8 @@ async def test_get_dataset_detail_omits_counts(client: httpx.AsyncClient, store:
     # report a fabricated zero for a dataset that actually has rows.
     dataset = store.create_dataset("has-rows", "", ["question"], CATEGORICAL_SCHEMA)
     rows = store.add_rows(dataset.id, [{"question": "a"}, {"question": "b"}])
-    store.set_label(rows[0].id, {"value": "good"}, LabelSource.MANUAL)
+    label_set = _categorical_label_set(store, dataset.id)
+    store.set_annotation(label_set, rows[0].id, labels=["good"], source=LabelSource.MANUAL)
 
     resp = await client.get(f"/api/datasets/{dataset.id}")
     assert resp.status_code == 200, resp.text

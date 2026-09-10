@@ -22,10 +22,10 @@ from valcore.models import (
     LabelSchema,
     LabelSource,
     ScoreKind,
+    annotation_ground_truth,
     label_schema_from_label_set,
     label_set_fields_from_schema,
 )
-from valcore.schema_migration import label_matches_schema
 from valcore.seeding import dataset_shape_from_version
 from valcore.settings import get_settings, is_local_cli_model
 from valcore.store import Store
@@ -198,16 +198,6 @@ class LogfirePushRequest(BaseModel):
     on_conflict: Literal["update", "error"] = "update"
 
 
-class RowPatch(BaseModel):
-    """Request body to relabel or annotate a single row."""
-
-    label: str | float | None = None
-    note: str | None = None
-    accept_suggestion: bool = False
-    clear_label: bool = False
-    data: dict | None = None
-
-
 class DatasetUpdate(BaseModel):
     """Partial update for a dataset's metadata and shape."""
 
@@ -229,7 +219,6 @@ class DatasetOut(BaseModel):
     name: str
     description: str
     columns: list[str]
-    label_schema: dict
 
 
 class DatasetSummaryOut(DatasetOut):
@@ -274,7 +263,7 @@ class DatasetGenerationOut(BaseModel):
 
 
 class RowOut(BaseModel):
-    """A dataset row with its labels as returned to the client."""
+    """A dataset row as returned to the client."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -282,11 +271,6 @@ class RowOut(BaseModel):
     dataset_id: str
     idx: int
     data: dict
-    label: dict | None
-    suggested_label: dict | None
-    label_reasoning: str | None
-    label_source: LabelSource | None
-    note: str | None
 
 
 class RowsPage(BaseModel):
@@ -963,56 +947,13 @@ async def list_dataset_rows(
     """Return a paginated slice of a dataset's rows."""
     store.get_dataset(id)
     rows = store.list_rows(id, limit=limit, offset=offset)
-    _, total = store.labeled_count(id)
+    total = len(store.list_rows(id))
     return RowsPage(
         rows=[RowOut.model_validate(row) for row in rows],
         total=total,
         limit=limit,
         offset=offset,
     )
-
-
-@router.patch("/rows/{row_id}")
-async def patch_row(row_id: str, body: RowPatch, store: StoreDep) -> RowOut:
-    """Relabel or annotate a single dataset row."""
-    row = store.get_row(row_id)
-    updates: dict = {}
-
-    if body.accept_suggestion:
-        if row.suggested_label is None:
-            raise ContractError("Row has no suggested label to accept.")
-        updates["label"] = row.suggested_label
-        updates["label_source"] = LabelSource.ACCEPTED
-
-    # A null ``label`` is indistinguishable from an omitted one, so clearing needs an
-    # explicit flag rather than relying on ``label=None``.
-    if body.clear_label:
-        updates["label"] = None
-        updates["label_source"] = None
-
-    if body.label is not None:
-        dataset = store.get_dataset(row.dataset_id)
-        schema = LabelSchema.model_validate(dataset.label_schema)
-        if not label_matches_schema(body.label, schema):
-            raise ContractError(
-                f"Label {body.label!r} is not valid for this dataset's label schema."
-            )
-        updates["label"] = {"value": body.label}
-        updates["label_source"] = LabelSource.MANUAL
-
-    if body.data is not None:
-        dataset = store.get_dataset(row.dataset_id)
-        unknown = [key for key in body.data if key not in dataset.columns]
-        if unknown:
-            raise ContractError(f"Unknown columns for this dataset: {unknown}.")
-        updates["data"] = {**row.data, **body.data}
-
-    if body.note is not None:
-        updates["note"] = body.note
-
-    if not updates:
-        return RowOut.model_validate(row)
-    return RowOut.model_validate(store.update_row(row_id, **updates))
 
 
 @router.delete("/rows/{row_id}", status_code=204)
@@ -1023,14 +964,28 @@ async def delete_row(row_id: str, store: StoreDep) -> None:
 
 @router.get("/{id}/stats")
 async def dataset_stats(id: str, store: StoreDep) -> StatsOut:
-    """Return labeling progress for a dataset."""
+    """Return labeling progress for a dataset, from its primary label set (if any)."""
     store.get_dataset(id)
-    labeled, total = store.labeled_count(id)
+    label_set = store.primary_label_set(id)
+    if label_set is None:
+        total = len(store.list_rows(id))
+        return StatsOut(total=total, labeled=0, unlabeled=total, label_distribution={})
+    _, total = store.annotation_progress(label_set.id)
+    rows = store.list_rows(id)
+    annotations = store.list_annotations_for_rows(label_set.id, [row.id for row in rows])
+    distribution: dict[str, int] = {}
+    for annotation in annotations:
+        value = annotation_ground_truth(label_set, annotation)
+        if value is None:
+            continue
+        key = str(value)
+        distribution[key] = distribution.get(key, 0) + 1
+    labeled = sum(distribution.values())
     return StatsOut(
         total=total,
         labeled=labeled,
         unlabeled=total - labeled,
-        label_distribution=store.label_distribution(id),
+        label_distribution=distribution,
     )
 
 

@@ -66,8 +66,9 @@ async def test_csv_upload_without_label_column(client: httpx.AsyncClient) -> Non
     ds_id = body["dataset"]["id"]
     rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
     assert rows[0]["data"] == {"question": "What is 2+2?", "answer": "4"}
-    assert rows[0]["label"] is None
-    assert rows[0]["label_source"] is None
+    # RowOut carries no label fields at all -- ground truth lives on LabelSet/Annotation.
+    assert "label" not in rows[0]
+    assert "label_source" not in rows[0]
 
 
 @pytest.mark.anyio
@@ -482,8 +483,6 @@ async def test_generate_from_version_without_labels_leaves_no_ground_truth(
     body = resp.json()
     ds_id = body["dataset"]["id"]
 
-    # An empty label schema is the legal "no ground truth" state.
-    assert body["dataset"]["label_schema"] == {}
     # The generator is told there is no label space to fill.
     assert calls[0]["label_schema"] is None
 
@@ -636,99 +635,94 @@ def _seed_rows(store: Store, label_schema: dict, prepared: list[dict]) -> tuple[
     return ds.id, [r.id for r in rows]
 
 
-@pytest.mark.anyio
-async def test_accept_suggestion_sets_accepted_and_copies_value(
-    client: httpx.AsyncClient, store: Store
-) -> None:
-    _, row_ids = _seed_rows(
-        store,
-        CATEGORICAL_SCHEMA,
-        [
-            {
-                "data": {"prompt": "p"},
-                "suggested_label": {"value": "good"},
-                "label_reasoning": "r",
-                "label_source": LabelSource.GENERATED,
-            }
-        ],
+def _seed_rows_with_label_set(
+    store: Store, prepared: list[dict], *, numeric: bool = False
+) -> tuple[str, str, list[str]]:
+    """Create a dataset with a matching label set and prepared rows.
+
+    Ground truth now lives on a ``LabelSet``/``Annotation`` pair, not on ``DatasetRow``, so
+    labeling tests need a real label set to annotate against. Returns
+    ``(dataset_id, label_set_id, row_ids)``.
+    """
+    ds = store.create_dataset(name="seed", description="", columns=["prompt"], label_schema={})
+    rows = store.add_prepared_rows(ds.id, prepared)
+    label_set = (
+        store.create_label_set(
+            ds.id, name="Labels", description="", kind=ScoreKind.NUMERIC, minimum=0, maximum=5
+        )
+        if numeric
+        else store.create_label_set(
+            ds.id,
+            name="Labels",
+            description="",
+            kind=ScoreKind.CATEGORICAL,
+            labels=[{"name": "good", "description": ""}, {"name": "bad", "description": ""}],
+        )
     )
-    resp = await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"accept_suggestion": True})
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["label"] == {"value": "good"}
-    assert body["label_source"] == LabelSource.ACCEPTED.value
+    return ds.id, label_set.id, [r.id for r in rows]
 
 
 @pytest.mark.anyio
-async def test_accept_suggestion_without_suggestion_is_422(
+async def test_put_annotation_manual_label_sets_source_manual(
     client: httpx.AsyncClient, store: Store
 ) -> None:
-    _, row_ids = _seed_rows(store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p"}}])
-    resp = await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"accept_suggestion": True})
-    assert resp.status_code == 422
-
-
-@pytest.mark.anyio
-async def test_explicit_label_sets_manual(client: httpx.AsyncClient, store: Store) -> None:
-    _, row_ids = _seed_rows(store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p"}}])
-    resp = await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"label": "bad"})
+    _, label_set_id, row_ids = _seed_rows_with_label_set(store, [{"data": {"prompt": "p"}}])
+    resp = await client.put(
+        f"/api/label-sets/{label_set_id}/rows/{row_ids[0]}/annotation",
+        json={"labels": ["bad"]},
+    )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["label"] == {"value": "bad"}
-    assert body["label_source"] == LabelSource.MANUAL.value
+    assert body["labels"] == ["bad"]
+    assert body["source"] == LabelSource.MANUAL.value
 
 
 @pytest.mark.anyio
-async def test_explicit_numeric_label_sets_manual(client: httpx.AsyncClient, store: Store) -> None:
-    _, row_ids = _seed_rows(store, NUMERIC_SCHEMA, [{"data": {"prompt": "p"}}])
-    resp = await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"label": 3})
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["label"] == {"value": 3}
-    assert body["label_source"] == LabelSource.MANUAL.value
-
-
-@pytest.mark.anyio
-async def test_out_of_schema_categorical_label_is_422(
+async def test_put_annotation_manual_numeric_value_sets_source_manual(
     client: httpx.AsyncClient, store: Store
 ) -> None:
-    _, row_ids = _seed_rows(store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p"}}])
-    resp = await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"label": "maybe"})
-    assert resp.status_code == 422
-
-
-@pytest.mark.anyio
-async def test_out_of_schema_numeric_label_is_422(client: httpx.AsyncClient, store: Store) -> None:
-    _, row_ids = _seed_rows(store, NUMERIC_SCHEMA, [{"data": {"prompt": "p"}}])
-    resp = await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"label": 99})
-    assert resp.status_code == 422
-
-
-@pytest.mark.anyio
-async def test_patch_note_only_leaves_label_untouched(
-    client: httpx.AsyncClient, store: Store
-) -> None:
-    _, row_ids = _seed_rows(store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p"}}])
-    resp = await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"note": "hmm"})
+    _, label_set_id, row_ids = _seed_rows_with_label_set(
+        store, [{"data": {"prompt": "p"}}], numeric=True
+    )
+    resp = await client.put(
+        f"/api/label-sets/{label_set_id}/rows/{row_ids[0]}/annotation",
+        json={"value": 3},
+    )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["note"] == "hmm"
-    assert body["label"] is None
-    assert body["label_source"] is None
+    assert body["value"] == 3
+    assert body["source"] == LabelSource.MANUAL.value
 
 
 @pytest.mark.anyio
-async def test_clear_label_removes_label_and_source(
+async def test_put_annotation_description_only_leaves_labels_unset(
     client: httpx.AsyncClient, store: Store
 ) -> None:
-    _, row_ids = _seed_rows(store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p"}}])
-    await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"label": "good"})
-
-    resp = await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"clear_label": True})
+    # ``description`` is the annotation's note; setting it alone must not confirm a label.
+    _, label_set_id, row_ids = _seed_rows_with_label_set(store, [{"data": {"prompt": "p"}}])
+    resp = await client.put(
+        f"/api/label-sets/{label_set_id}/rows/{row_ids[0]}/annotation",
+        json={"description": "hmm"},
+    )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["label"] is None
-    assert body["label_source"] is None
+    assert body["description"] == "hmm"
+    assert body["labels"] == []
+    assert body["value"] is None
+
+
+@pytest.mark.anyio
+async def test_delete_annotation_clears_the_label(client: httpx.AsyncClient, store: Store) -> None:
+    _, label_set_id, row_ids = _seed_rows_with_label_set(store, [{"data": {"prompt": "p"}}])
+    await client.put(
+        f"/api/label-sets/{label_set_id}/rows/{row_ids[0]}/annotation", json={"labels": ["good"]}
+    )
+
+    resp = await client.delete(f"/api/label-sets/{label_set_id}/rows/{row_ids[0]}/annotation")
+    assert resp.status_code == 204, resp.text
+    assert (
+        await client.get(f"/api/label-sets/{label_set_id}/rows/{row_ids[0]}/annotation")
+    ).json() is None
 
 
 # -- Pagination --------------------------------------------------------------
@@ -754,13 +748,19 @@ async def test_pagination_returns_the_right_slice(client: httpx.AsyncClient, sto
 
 @pytest.mark.anyio
 async def test_stats_counts_are_correct(client: httpx.AsyncClient, store: Store) -> None:
-    ds_id, row_ids = _seed_rows(
-        store, CATEGORICAL_SCHEMA, [{"data": {"prompt": f"p{i}"}} for i in range(4)]
+    ds_id, label_set_id, row_ids = _seed_rows_with_label_set(
+        store, [{"data": {"prompt": f"p{i}"}} for i in range(4)]
     )
     # Label three of four rows: two "good", one "bad".
-    await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"label": "good"})
-    await client.patch(f"/api/datasets/rows/{row_ids[1]}", json={"label": "good"})
-    await client.patch(f"/api/datasets/rows/{row_ids[2]}", json={"label": "bad"})
+    await client.put(
+        f"/api/label-sets/{label_set_id}/rows/{row_ids[0]}/annotation", json={"labels": ["good"]}
+    )
+    await client.put(
+        f"/api/label-sets/{label_set_id}/rows/{row_ids[1]}/annotation", json={"labels": ["good"]}
+    )
+    await client.put(
+        f"/api/label-sets/{label_set_id}/rows/{row_ids[2]}/annotation", json={"labels": ["bad"]}
+    )
 
     resp = await client.get(f"/api/datasets/{ds_id}/stats")
     assert resp.status_code == 200, resp.text
@@ -769,6 +769,22 @@ async def test_stats_counts_are_correct(client: httpx.AsyncClient, store: Store)
     assert body["labeled"] == 3
     assert body["unlabeled"] == 1
     assert body["label_distribution"] == {"good": 2, "bad": 1}
+
+
+@pytest.mark.anyio
+async def test_stats_with_no_label_set_reports_all_unlabeled(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    # A dataset with no label set at all is the legal "no ground truth" state.
+    ds_id, _ = _seed_rows(store, {}, [{"data": {"prompt": f"p{i}"}} for i in range(3)])
+
+    resp = await client.get(f"/api/datasets/{ds_id}/stats")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total"] == 3
+    assert body["labeled"] == 0
+    assert body["unlabeled"] == 3
+    assert body["label_distribution"] == {}
 
 
 # -- CRUD --------------------------------------------------------------------
@@ -817,7 +833,6 @@ async def test_create_dataset_without_label_schema_has_no_label_sets(
     )
     assert created.status_code == 200, created.text
     ds_id = created.json()["id"]
-    assert created.json()["label_schema"] == {}
 
     label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
     assert label_sets == []
@@ -945,10 +960,12 @@ async def test_patch_dataset_narrowing_schema_with_labels_is_409(
         CATEGORICAL_SCHEMA,
         [{"data": {"prompt": "p0"}}, {"data": {"prompt": "p1"}}, {"data": {"prompt": "p2"}}],
     )
-    # Two rows labeled "bad" would fall outside a schema narrowed to just "good".
-    await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"label": "good"})
-    await client.patch(f"/api/datasets/rows/{row_ids[1]}", json={"label": "bad"})
-    await client.patch(f"/api/datasets/rows/{row_ids[2]}", json={"label": "bad"})
+    # Two rows labeled "bad" would fall outside a schema narrowed to just "good". This
+    # legacy DatasetRow.label narrowing (Store.update_dataset) is untouched by this task,
+    # so the setup writes the field directly rather than through the removed patch_row route.
+    store.update_row(row_ids[0], label={"value": "good"}, label_source=LabelSource.MANUAL)
+    store.update_row(row_ids[1], label={"value": "bad"}, label_source=LabelSource.MANUAL)
+    store.update_row(row_ids[2], label={"value": "bad"}, label_source=LabelSource.MANUAL)
 
     narrowed = {"kind": "categorical", "labels": ["good"]}
     resp = await client.patch(f"/api/datasets/{ds_id}", json={"label_schema": narrowed})
@@ -958,10 +975,13 @@ async def test_patch_dataset_narrowing_schema_with_labels_is_409(
     assert error["detail"]["invalid_label_count"] == 2
 
     # Nothing changed: the schema and the "bad" labels are still present.
-    ds = (await client.get(f"/api/datasets/{ds_id}")).json()
-    assert ds["label_schema"]["labels"] == ["good", "bad"]
-    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
-    assert [r["label"] for r in rows] == [{"value": "good"}, {"value": "bad"}, {"value": "bad"}]
+    assert store.get_dataset(ds_id).label_schema["labels"] == ["good", "bad"]
+    persisted = [store.get_row(row_id) for row_id in row_ids]
+    assert [r.label for r in persisted] == [
+        {"value": "good"},
+        {"value": "bad"},
+        {"value": "bad"},
+    ]
 
 
 @pytest.mark.anyio
@@ -973,92 +993,20 @@ async def test_patch_dataset_narrowing_schema_with_force_clears_invalid(
         CATEGORICAL_SCHEMA,
         [{"data": {"prompt": "p0"}}, {"data": {"prompt": "p1"}}],
     )
-    await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"label": "good"})
-    await client.patch(f"/api/datasets/rows/{row_ids[1]}", json={"label": "bad"})
+    store.update_row(row_ids[0], label={"value": "good"}, label_source=LabelSource.MANUAL)
+    store.update_row(row_ids[1], label={"value": "bad"}, label_source=LabelSource.MANUAL)
 
     narrowed = {"kind": "categorical", "labels": ["good"]}
     resp = await client.patch(
         f"/api/datasets/{ds_id}", json={"label_schema": narrowed, "force": True}
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["label_schema"]["labels"] == ["good"]
+    assert store.get_dataset(ds_id).label_schema["labels"] == ["good"]
 
-    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
-    assert rows[0]["label"] == {"value": "good"}
-    assert rows[1]["label"] is None
-    assert rows[1]["label_source"] is None
-
-
-# -- Row data edits (PATCH /rows/{row_id}) -----------------------------------
-
-
-@pytest.mark.anyio
-async def test_patch_row_data_merges_leaving_other_columns(
-    client: httpx.AsyncClient, store: Store
-) -> None:
-    ds = store.create_dataset(
-        name="qa", description="", columns=["question", "answer"], label_schema=CATEGORICAL_SCHEMA
-    )
-    rows = store.add_prepared_rows(ds.id, [{"data": {"question": "q", "answer": "a"}}])
-    row_id = rows[0].id
-
-    resp = await client.patch(f"/api/datasets/rows/{row_id}", json={"data": {"question": "new"}})
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["data"] == {"question": "new", "answer": "a"}
-
-
-@pytest.mark.anyio
-async def test_patch_row_data_unknown_column_is_422_and_leaves_row(
-    client: httpx.AsyncClient, store: Store
-) -> None:
-    ds = store.create_dataset(
-        name="qa", description="", columns=["question"], label_schema=CATEGORICAL_SCHEMA
-    )
-    rows = store.add_prepared_rows(ds.id, [{"data": {"question": "q"}}])
-    row_id = rows[0].id
-
-    resp = await client.patch(f"/api/datasets/rows/{row_id}", json={"data": {"bogus": "x"}})
-    assert resp.status_code == 422, resp.text
-    assert resp.json()["error"]["type"] == "ContractError"
-
-    unchanged = (await client.get(f"/api/datasets/{ds.id}/rows")).json()["rows"]
-    assert unchanged[0]["data"] == {"question": "q"}
-
-
-@pytest.mark.anyio
-async def test_patch_row_applies_data_and_note_together(
-    client: httpx.AsyncClient, store: Store
-) -> None:
-    ds = store.create_dataset(
-        name="qa", description="", columns=["question"], label_schema=CATEGORICAL_SCHEMA
-    )
-    rows = store.add_prepared_rows(ds.id, [{"data": {"question": "q"}}])
-    row_id = rows[0].id
-
-    resp = await client.patch(
-        f"/api/datasets/rows/{row_id}", json={"data": {"question": "new"}, "note": "checked"}
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["data"] == {"question": "new"}
-    assert body["note"] == "checked"
-
-
-@pytest.mark.anyio
-async def test_patch_row_empty_data_preserves_note_in_same_request(
-    client: httpx.AsyncClient, store: Store
-) -> None:
-    ds = store.create_dataset(
-        name="qa", description="", columns=["question"], label_schema=CATEGORICAL_SCHEMA
-    )
-    rows = store.add_prepared_rows(ds.id, [{"data": {"question": "q"}}])
-    row_id = rows[0].id
-
-    resp = await client.patch(f"/api/datasets/rows/{row_id}", json={"data": {}, "note": "kept"})
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["data"] == {"question": "q"}
-    assert body["note"] == "kept"
+    persisted = [store.get_row(row_id) for row_id in row_ids]
+    assert persisted[0].label == {"value": "good"}
+    assert persisted[1].label is None
+    assert persisted[1].label_source is None
 
 
 # -- Row deletion (DELETE /rows/{row_id}) ------------------------------------
@@ -1593,8 +1541,8 @@ async def test_generate_rows_without_a_label_space_leaves_labels_unset(
     )
     ds_id = created.json()["dataset"]["id"]
 
-    appended = (await client.post(f"/api/datasets/{ds_id}/generate-rows", json={"count": 1})).json()
-    assert appended[0]["suggested_label"] is None
+    resp = await client.post(f"/api/datasets/{ds_id}/generate-rows", json={"count": 1})
+    assert resp.status_code == 200, resp.text
 
     # No label set exists at all when the dataset has no label space.
     label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
@@ -2691,11 +2639,13 @@ async def test_hosted_fetch_union_with_nothing_new_is_a_noop(
 
 @pytest.mark.anyio
 async def test_hosted_fetch_union_never_touches_an_edited_existing_row(
-    client: httpx.AsyncClient, monkeypatch
+    client: httpx.AsyncClient, store: Store, monkeypatch
 ) -> None:
     ds_id = await _create_from_logfire_hosted(client, monkeypatch, [{"data": {"question": "Q1"}}])
     rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
-    await client.patch(f"/api/datasets/rows/{rows[0]['id']}", json={"note": "keep me"})
+    # "note" is no longer settable via the API (RowOut/patch_row are gone), so this
+    # edits the row directly through the store, exercising the same real field.
+    store.update_row(rows[0]["id"], note="keep me")
 
     async def fake_refetch(id_or_name, *, api_key=None):
         from valcore.logfire_io import HostedFetch
@@ -2716,7 +2666,7 @@ async def test_hosted_fetch_union_never_touches_an_edited_existing_row(
 
     rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
     assert len(rows) == 1
-    assert rows[0]["note"] == "keep me"
+    assert store.get_row(rows[0]["id"]).note == "keep me"
 
 
 @pytest.mark.anyio

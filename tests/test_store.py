@@ -255,32 +255,6 @@ def test_add_rows_missing_dataset_raises(store: Store) -> None:
         store.add_rows("nope", [{"question": "a"}])
 
 
-def test_set_label_and_labeled_count(store: Store) -> None:
-    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
-    rows = store.add_rows(ds.id, [{"question": "a"}, {"question": "b"}, {"question": "c"}])
-
-    assert store.labeled_count(ds.id) == (0, 3)
-
-    labeled = store.set_label(rows[0].id, {"verdict": "pass"}, LabelSource.MANUAL, note="ok")
-    assert labeled.label == {"verdict": "pass"}
-    assert labeled.label_source is LabelSource.MANUAL
-    assert labeled.note == "ok"
-    assert store.labeled_count(ds.id) == (1, 3)
-
-    store.set_label(rows[1].id, {"verdict": "fail"}, LabelSource.ACCEPTED)
-    assert store.labeled_count(ds.id) == (2, 3)
-
-
-def test_labeled_count_empty_dataset(store: Store) -> None:
-    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
-    assert store.labeled_count(ds.id) == (0, 0)
-
-
-def test_set_label_missing_row_raises(store: Store) -> None:
-    with pytest.raises(NotFoundError):
-        store.set_label("nope", {"verdict": "pass"}, LabelSource.MANUAL)
-
-
 # -- Label sets ----------------------------------------------------------
 
 
@@ -932,7 +906,7 @@ def test_update_dataset_unknown_rename_key_raises(store: Store) -> None:
 def test_update_dataset_rename_untouched_by_schema_keeps_labels(store: Store) -> None:
     ds = store.create_dataset("d", "", ["question", "answer"], LABEL_SCHEMA)
     rows = store.add_rows(ds.id, [{"question": "q1", "answer": "a1"}])
-    store.set_label(rows[0].id, {"value": "pass"}, LabelSource.MANUAL)
+    store.update_row(rows[0].id, label={"value": "pass"}, label_source=LabelSource.MANUAL)
 
     store.update_dataset(ds.id, column_renames={"question": "prompt"})
 
@@ -955,9 +929,9 @@ def _narrowing_dataset(store: Store) -> tuple[str, list[DatasetRow]]:
     schema = {"kind": "categorical", "labels": ["pass", "fail", "maybe"]}
     ds = store.create_dataset("d", "", ["question"], schema)
     rows = store.add_rows(ds.id, [{"question": "q1"}, {"question": "q2"}, {"question": "q3"}])
-    store.set_label(rows[0].id, {"value": "pass"}, LabelSource.MANUAL)
-    store.set_label(rows[1].id, {"value": "fail"}, LabelSource.ACCEPTED)
-    store.set_label(rows[2].id, {"value": "maybe"}, LabelSource.MANUAL)
+    store.update_row(rows[0].id, label={"value": "pass"}, label_source=LabelSource.MANUAL)
+    store.update_row(rows[1].id, label={"value": "fail"}, label_source=LabelSource.ACCEPTED)
+    store.update_row(rows[2].id, label={"value": "maybe"}, label_source=LabelSource.MANUAL)
     return ds.id, rows
 
 
