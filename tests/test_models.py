@@ -14,6 +14,7 @@ from valcore.models import (
     OutputField,
     ScoreKind,
     check_dataset_compatibility,
+    find_matching_label_set,
     parse_output_fields,
     validate_annotation,
     validate_label_set,
@@ -420,6 +421,80 @@ def test_validate_annotation_rejects_labels_on_numeric_set() -> None:
     label_set = make_label_set(kind=ScoreKind.NUMERIC, labels=None, minimum=0.0, maximum=1.0)
     with pytest.raises(ContractError, match="must not set labels"):
         validate_annotation(label_set, labels=["good"], value=0.5)
+
+
+# -- find_matching_label_set --------------------------------------------------
+
+
+def _label_set(id_suffix: str, **overrides: object) -> LabelSet:
+    label_set = make_label_set(**overrides)
+    label_set.id = f"ls-{id_suffix}"
+    return label_set
+
+
+def test_find_matching_label_set_exact_categorical_match() -> None:
+    target = _label_set(
+        "match", labels=[{"name": "good", "description": "d"}, {"name": "bad", "description": "d"}]
+    )
+    other = _label_set("other", labels=[{"name": "x", "description": "d"}])
+    found = find_matching_label_set(
+        [other, target], score_kind=ScoreKind.CATEGORICAL, score_labels=["good", "bad"]
+    )
+    assert found is target
+
+
+def test_find_matching_label_set_label_names_must_match_exactly() -> None:
+    label_set = _label_set("a", labels=[{"name": "good", "description": "d"}])
+    found = find_matching_label_set(
+        [label_set], score_kind=ScoreKind.CATEGORICAL, score_labels=["good", "bad"]
+    )
+    assert found is None
+
+
+def test_find_matching_label_set_kind_mismatch_returns_none() -> None:
+    label_set = _label_set("a", kind=ScoreKind.NUMERIC, labels=None, minimum=0.0, maximum=1.0)
+    found = find_matching_label_set(
+        [label_set], score_kind=ScoreKind.CATEGORICAL, score_labels=["good"]
+    )
+    assert found is None
+
+
+def test_find_matching_label_set_exact_numeric_match() -> None:
+    target = _label_set("a", kind=ScoreKind.NUMERIC, labels=None, minimum=0.0, maximum=1.0)
+    found = find_matching_label_set(
+        [target],
+        score_kind=ScoreKind.NUMERIC,
+        score_labels=None,
+        score_minimum=0.0,
+        score_maximum=1.0,
+    )
+    assert found is target
+
+
+def test_find_matching_label_set_numeric_bounds_must_match_exactly() -> None:
+    label_set = _label_set("a", kind=ScoreKind.NUMERIC, labels=None, minimum=0.0, maximum=1.0)
+    found = find_matching_label_set(
+        [label_set],
+        score_kind=ScoreKind.NUMERIC,
+        score_labels=None,
+        score_minimum=0.0,
+        score_maximum=5.0,
+    )
+    assert found is None
+
+
+def test_find_matching_label_set_multiple_matches_returns_most_recent() -> None:
+    first = _label_set("first", labels=[{"name": "good", "description": "d"}])
+    second = _label_set("second", labels=[{"name": "good", "description": "d"}])
+    found = find_matching_label_set(
+        [first, second], score_kind=ScoreKind.CATEGORICAL, score_labels=["good"]
+    )
+    assert found is second
+
+
+def test_find_matching_label_set_no_label_sets_returns_none() -> None:
+    found = find_matching_label_set([], score_kind=ScoreKind.CATEGORICAL, score_labels=["good"])
+    assert found is None
 
 
 # -- ExperimentRun ------------------------------------------------------------

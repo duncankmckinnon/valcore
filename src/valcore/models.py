@@ -268,6 +268,39 @@ def validate_annotation(
                 )
 
 
+def find_matching_label_set(
+    label_sets: list[LabelSet],
+    *,
+    score_kind: ScoreKind,
+    score_labels: list[str] | None,
+    score_minimum: float | None = None,
+    score_maximum: float | None = None,
+) -> LabelSet | None:
+    """Return the label set whose shape exactly matches an evaluator's score contract.
+
+    Matches on ``kind`` plus categorical label-name equality or numeric bound equality --
+    the same comparison ``check_dataset_compatibility`` performs today against a single
+    embedded schema, generalized to search across a dataset's label sets. ``label_sets`` is
+    expected in creation order (as ``Store.list_label_sets`` returns them); when more than
+    one label set matches exactly, the last one encountered -- the most recently created --
+    wins, since disambiguating by name would need a UI control this plan does not add.
+    Returns None when no label set matches, meaning only an EVAL run is possible.
+    """
+    match: LabelSet | None = None
+    for label_set in label_sets:
+        if label_set.kind is not score_kind:
+            continue
+        if score_kind is ScoreKind.CATEGORICAL:
+            names = {item["name"] for item in (label_set.labels or [])}
+            if names != set(score_labels or []):
+                continue
+        else:
+            if label_set.minimum != score_minimum or label_set.maximum != score_maximum:
+                continue
+        match = label_set
+    return match
+
+
 class Evaluator(SQLModel, table=True):
     """A named evaluator with a pointer to its currently active version."""
 
