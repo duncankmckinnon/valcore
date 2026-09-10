@@ -13,6 +13,7 @@ from valcore.models import (
     LabelSchema,
     LabelSet,
     OutputField,
+    RunKind,
     ScoreKind,
     annotation_ground_truth,
     check_dataset_compatibility,
@@ -189,65 +190,65 @@ def test_numeric_score_field_wrong_type_rejected() -> None:
 
 
 def make_dataset(**overrides: object) -> Dataset:
-    """Build a dataset compatible with make_version(), applying any overrides."""
-    base: dict[str, object] = {
-        "name": "ds",
-        "columns": ["question", "answer"],
-        "label_schema": {"kind": "categorical", "labels": ["pass", "fail"]},
-    }
+    base: dict[str, object] = {"name": "ds", "columns": ["question", "answer"]}
     base.update(overrides)
     return Dataset(**base)
 
 
-def test_compatible_dataset_passes() -> None:
-    check_dataset_compatibility(make_version(), make_dataset())
+def _matching_label_set(**overrides: object) -> LabelSet:
+    base: dict[str, object] = {
+        "dataset_id": "ds-1",
+        "name": "quality",
+        "description": "",
+        "kind": ScoreKind.CATEGORICAL,
+        "labels": [{"name": "pass", "description": "d"}, {"name": "fail", "description": "d"}],
+    }
+    base.update(overrides)
+    return LabelSet(**base)
 
 
-def test_empty_label_schema_passes_categorical() -> None:
-    # A dataset that declares no ground truth has nothing to disagree about, so it is
-    # compatible with a categorical evaluator regardless of the evaluator's label space.
-    dataset = make_dataset(label_schema={})
-    check_dataset_compatibility(make_version(), dataset)
+def test_compatible_dataset_returns_matching_label_set() -> None:
+    dataset = make_dataset()
+    label_set = _matching_label_set()
+    result = check_dataset_compatibility(make_version(), dataset, [label_set])
+    assert result is label_set
 
 
-def test_empty_label_schema_passes_numeric() -> None:
-    dataset = make_dataset(label_schema={})
-    check_dataset_compatibility(make_numeric_version(), dataset)
+def test_no_label_sets_passes_for_eval_kind() -> None:
+    dataset = make_dataset()
+    result = check_dataset_compatibility(make_version(), dataset, [], kind=RunKind.EVAL)
+    assert result is None
 
 
-def test_empty_label_schema_does_not_raise_validation_error() -> None:
-    # Regression: an unlabeled uploaded dataset stores ``{}`` for its label schema, which
-    # LabelSchema.model_validate cannot parse; the empty schema must short-circuit before
-    # that call so no bare pydantic ValidationError escapes the compatibility check.
-    dataset = make_dataset(label_schema={})
-    try:
-        check_dataset_compatibility(make_version(), dataset)
-    except ValidationError as exc:  # pragma: no cover - fails loudly if the guard is missing
-        pytest.fail(f"empty label_schema leaked a pydantic ValidationError: {exc}")
+def test_no_matching_label_set_fails_for_validation_kind() -> None:
+    dataset = make_dataset()
+    with pytest.raises(ContractError, match="No label set"):
+        check_dataset_compatibility(make_version(), dataset, [], kind=RunKind.VALIDATION)
 
 
 def test_dataset_missing_required_column() -> None:
     dataset = make_dataset(columns=["answer"])
     with pytest.raises(ContractError, match="missing required column") as exc:
-        check_dataset_compatibility(make_version(), dataset)
+        check_dataset_compatibility(make_version(), dataset, [_matching_label_set()])
     assert "question" in str(exc.value)
 
 
-def test_dataset_kind_mismatch() -> None:
-    dataset = make_dataset(label_schema={"kind": "numeric", "minimum": 0.0, "maximum": 1.0})
-    with pytest.raises(ContractError, match="does not match evaluator score kind") as exc:
-        check_dataset_compatibility(make_version(), dataset)
-    assert "numeric" in str(exc.value)
-    assert "categorical" in str(exc.value)
+def test_dataset_kind_mismatch_no_match() -> None:
+    dataset = make_dataset()
+    numeric_label_set = _matching_label_set(
+        kind=ScoreKind.NUMERIC, labels=None, minimum=0.0, maximum=1.0
+    )
+    with pytest.raises(ContractError, match="No label set"):
+        check_dataset_compatibility(make_version(), dataset, [numeric_label_set])
 
 
-def test_dataset_label_sets_differ_names_offenders() -> None:
-    dataset = make_dataset(label_schema={"kind": "categorical", "labels": ["pass", "maybe"]})
-    with pytest.raises(ContractError) as exc:
-        check_dataset_compatibility(make_version(), dataset)
-    message = str(exc.value)
-    assert "fail" in message
-    assert "maybe" in message
+def test_dataset_label_names_differ_no_match() -> None:
+    dataset = make_dataset()
+    label_set = _matching_label_set(
+        labels=[{"name": "pass", "description": "d"}, {"name": "maybe", "description": "d"}]
+    )
+    with pytest.raises(ContractError, match="No label set"):
+        check_dataset_compatibility(make_version(), dataset, [label_set])
 
 
 def test_output_field_valid_enum() -> None:
