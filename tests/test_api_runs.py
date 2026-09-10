@@ -18,7 +18,7 @@ from valcore.api.deps import get_store
 from valcore.api.main import create_app
 from valcore.api.routes.runs import _tasks, get_agent_factory
 from valcore.factory import build_output_model
-from valcore.models import LabelSource, RunKind, RunStatus, ScoreKind
+from valcore.models import RunKind, RunStatus, ScoreKind
 from valcore.store import Store, create_engine, init_db
 
 CATEGORICAL_SCHEMA = {"kind": "categorical", "labels": ["pass", "fail"]}
@@ -106,9 +106,7 @@ def make_dataset(store: Store, labels: list[str | None], *, inputs: list[str] | 
     )
     for row, label in zip(rows, labels, strict=True):
         if label is not None:
-            # Set both the annotation (for ground truth) and the row.label (for API responses)
             store.set_annotation(label_set.id, row.id, labels=[label])
-            store.set_label(row.id, {"value": label}, LabelSource.MANUAL)
     return dataset, rows
 
 

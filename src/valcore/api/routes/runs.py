@@ -21,7 +21,14 @@ from valcore.api.deps import get_store
 from valcore.api.events import bus
 from valcore.errors import ContractError
 from valcore.experiment import execute_experiment
-from valcore.models import EvaluatorVersion, RunKind, RunStatus, check_dataset_compatibility
+from valcore.models import (
+    EvaluatorVersion,
+    RunKind,
+    RunStatus,
+    annotation_ground_truth,
+    check_dataset_compatibility,
+    find_matching_label_set,
+)
 from valcore.runner import RunEvent, execute_run
 from valcore.settings import is_local_cli_model
 from valcore.store import Store
@@ -225,13 +232,6 @@ def _is_disagreement(agreement: bool | float | None) -> bool:
     return float(agreement) != 0.0
 
 
-def _label_value(label: dict | None) -> str | float | None:
-    """Return the scalar value from a row's ``{"value": ...}`` label, if any."""
-    if label is None:
-        return None
-    return label.get("value")
-
-
 def _metrics_delta(a: dict | None, b: dict | None) -> dict[str, float]:
     """Return ``b - a`` for every scalar numeric metric shared by both runs."""
     if not a or not b:
@@ -313,6 +313,26 @@ async def compare_runs(a: str, b: str, store: StoreDep) -> CompareOut:
     results_a = {r.row_id: r for r in store.list_results(a)}
     results_b = {r.row_id: r for r in store.list_results(b)}
 
+    version_a = store.get_version(run_a.version_id)
+    label_sets = store.list_label_sets(run_a.dataset_id)
+    # Ground truth is resolved from run_a's version -- if the two runs use evaluator
+    # versions with different score contracts, this is the label set whose shape matches
+    # run_a's; there is no principled way to pick between two disagreeing runs otherwise.
+    matched_label_set = find_matching_label_set(
+        label_sets,
+        score_kind=version_a.score_kind,
+        score_labels=version_a.score_labels,
+        score_minimum=version_a.score_minimum,
+        score_maximum=version_a.score_maximum,
+    )
+    annotations_by_row = {}
+    if matched_label_set is not None:
+        all_rows = store.list_rows(run_a.dataset_id)
+        annotations = store.list_annotations_for_rows(
+            matched_label_set.id, [r.id for r in all_rows]
+        )
+        annotations_by_row = {a.dataset_row_id: a for a in annotations}
+
     rows: list[CompareRow] = []
     for row in store.list_rows(run_a.dataset_id):
         ra = results_a.get(row.id)
@@ -328,7 +348,11 @@ async def compare_runs(a: str, b: str, store: StoreDep) -> CompareOut:
                 output_b=rb.output if rb is not None else None,
                 score_a=score_a,
                 score_b=score_b,
-                label=_label_value(row.label),
+                label=(
+                    annotation_ground_truth(matched_label_set, annotations_by_row.get(row.id))
+                    if matched_label_set is not None
+                    else None
+                ),
                 disagree=score_a != score_b,
             )
         )
@@ -362,6 +386,23 @@ async def list_run_results(
     run = store.get_run(id)
     rows_by_id = {row.id: row for row in store.list_rows(run.dataset_id)}
 
+    version = store.get_version(run.version_id)
+    label_sets = store.list_label_sets(run.dataset_id)
+    matched_label_set = find_matching_label_set(
+        label_sets,
+        score_kind=version.score_kind,
+        score_labels=version.score_labels,
+        score_minimum=version.score_minimum,
+        score_maximum=version.score_maximum,
+    )
+    annotations_by_row = {}
+    if matched_label_set is not None:
+        all_rows = store.list_rows(run.dataset_id)
+        annotations = store.list_annotations_for_rows(
+            matched_label_set.id, [r.id for r in all_rows]
+        )
+        annotations_by_row = {a.dataset_row_id: a for a in annotations}
+
     kept: list[ResultRow] = []
     for result in store.list_results(id):
         is_error = result.error is not None
@@ -388,7 +429,13 @@ async def list_run_results(
                 agreement=result.agreement,
                 error=result.error,
                 latency_ms=result.latency_ms,
-                label=_label_value(row.label) if row is not None else None,
+                label=(
+                    annotation_ground_truth(
+                        matched_label_set, annotations_by_row.get(result.row_id)
+                    )
+                    if matched_label_set is not None
+                    else None
+                ),
             )
         )
 
