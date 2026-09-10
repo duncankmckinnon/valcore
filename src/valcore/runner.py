@@ -201,6 +201,14 @@ async def execute_run(
                 cancelled = True
                 break
             tasks.append(asyncio.create_task(process(row)))
+            # Hand control to the event loop once so the task just created actually starts
+            # (reaches its own first await) before this loop moves on to the next row.
+            # Without this, whether concurrency is fully utilized depends on incidental
+            # scheduling behavior of the `to_thread` call above, which differs across event
+            # loop implementations (e.g. Windows' default ProactorEventLoop schedules
+            # to_thread completions differently than the SelectorEventLoop used elsewhere) --
+            # `run.concurrency` should be honored the same way regardless of platform.
+            await asyncio.sleep(0)
 
         await asyncio.gather(*tasks)
 
