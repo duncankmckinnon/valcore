@@ -426,7 +426,9 @@ async def test_invalid_config_returns_422_uniform_body(app) -> None:
 async def test_generate_returns_config_and_persists_nothing(app, store: Store, monkeypatch) -> None:
     canned = _canned_generated()
 
-    async def fake_generate(criteria: str, *, columns=None, column_notes=None) -> GeneratedConfig:
+    async def fake_generate(
+        criteria: str, *, columns=None, column_notes=None, label_schema=None
+    ) -> GeneratedConfig:
         assert criteria == "grade the answer"
         assert columns == ["input", "output"]
         return canned
