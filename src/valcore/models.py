@@ -301,6 +301,59 @@ def find_matching_label_set(
     return match
 
 
+def label_set_fields_from_schema(schema: LabelSchema) -> dict:
+    """Return LabelSet constructor keyword fields (kind/labels/minimum/maximum) for a LabelSchema.
+
+    Categorical labels carry no per-label description in a LabelSchema, so each gets an
+    empty one -- generation and import never had per-label descriptions to preserve, and a
+    human can add them later by editing the label set.
+    """
+    if schema.kind is ScoreKind.CATEGORICAL:
+        return {
+            "kind": ScoreKind.CATEGORICAL,
+            "labels": [{"name": label, "description": ""} for label in (schema.labels or [])],
+            "minimum": None,
+            "maximum": None,
+        }
+    return {
+        "kind": ScoreKind.NUMERIC,
+        "labels": None,
+        "minimum": schema.minimum,
+        "maximum": schema.maximum,
+    }
+
+
+def label_schema_from_label_set(label_set: LabelSet) -> LabelSchema:
+    """Return the LabelSchema shape a LabelSet describes.
+
+    For code that only needs kind/labels/bounds (seeded generation, evaluator seeding) and
+    has no use for a label set's name, description, or per-label descriptions.
+    """
+    if label_set.kind is ScoreKind.CATEGORICAL:
+        return LabelSchema(
+            kind=ScoreKind.CATEGORICAL,
+            labels=[item["name"] for item in (label_set.labels or [])],
+        )
+    return LabelSchema(kind=ScoreKind.NUMERIC, minimum=label_set.minimum, maximum=label_set.maximum)
+
+
+def annotation_ground_truth(
+    label_set: LabelSet, annotation: "Annotation | None"
+) -> str | float | None:
+    """Return the single ground-truth value an annotation supplies, or None if it has none.
+
+    Categorical: exactly one selected label is unambiguous ground truth; zero or multiple
+    selected labels count as unlabeled for validation purposes (the annotation itself is
+    still a legitimate multi-select record -- it just can't supply a single comparison
+    value). Numeric: the annotation's value, if set.
+    """
+    if annotation is None:
+        return None
+    if label_set.kind is ScoreKind.CATEGORICAL:
+        return annotation.labels[0] if len(annotation.labels) == 1 else None
+    return annotation.value
+
+
 class Evaluator(SQLModel, table=True):
     """A named evaluator with a pointer to its currently active version."""
 

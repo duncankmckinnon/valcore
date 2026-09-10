@@ -676,6 +676,23 @@ class Store:
                 )
             )
 
+    def primary_label_set(self, dataset_id: str) -> LabelSet | None:
+        """Return a dataset's oldest label set, or None if it has none.
+
+        Generation, upload, and Logfire-pull flows create at most one label set per
+        dataset, so "oldest" is unambiguous for every dataset those flows produced. A
+        dataset with additional hand-authored label sets still resolves to the one from
+        its original creation flow, which is what continued generation and legacy
+        stats/labeled-count reporting track.
+        """
+        with session_scope(self.engine) as session:
+            _require(session, Dataset, dataset_id)
+            return session.exec(
+                select(LabelSet)
+                .where(LabelSet.dataset_id == dataset_id)
+                .order_by(LabelSet.created_at)
+            ).first()
+
     def update_label_set(
         self, id: str, *, name: str | None = None, description: str | None = None
     ) -> LabelSet:
@@ -709,13 +726,19 @@ class Store:
         value: float | None = None,
         description: str | None = None,
         source: LabelSource | None = None,
+        suggested_labels: list[str] | None = None,
+        suggested_value: float | None = None,
+        reasoning: str | None = None,
     ) -> Annotation:
         """Create or update the single annotation for (label_set_id, dataset_row_id).
 
-        A full replace of ``labels``/``value``/``description``, not a merge -- mirroring
+        A full replace of whichever fields the caller passes, not a merge -- mirroring
         ``set_label``'s replace semantics for the equivalent single-label case today.
-        ``suggested_labels``/``suggested_value`` are untouched here; nothing in this plan
-        writes them yet.
+        ``labels``/``value`` are the confirmed ground truth; ``suggested_labels``/
+        ``suggested_value``/``reasoning`` are provenance a caller (generation, today) can
+        set without touching the confirmed fields, so a suggestion stays unconfirmed until
+        a separate call sets ``labels``/``value`` -- exactly as ``DatasetRow.suggested_label``
+        stayed distinct from ``DatasetRow.label`` until an explicit accept.
         """
         with session_scope(self.engine) as session:
             label_set = _require(session, LabelSet, label_set_id)
@@ -736,6 +759,9 @@ class Store:
                     value=value,
                     description=description,
                     source=source,
+                    suggested_labels=suggested_labels,
+                    suggested_value=suggested_value,
+                    reasoning=reasoning,
                     updated_at=now,
                 )
                 session.add(annotation)
@@ -744,6 +770,12 @@ class Store:
             existing.value = value
             existing.description = description
             existing.source = source
+            if suggested_labels is not None:
+                existing.suggested_labels = suggested_labels
+            if suggested_value is not None:
+                existing.suggested_value = suggested_value
+            if reasoning is not None:
+                existing.reasoning = reasoning
             existing.updated_at = now
             session.add(existing)
             return existing

@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from valcore.errors import ConfigError, ContractError
 from valcore.models import (
+    Annotation,
     Dataset,
     EvaluatorVersion,
     ExperimentRun,
@@ -13,8 +14,11 @@ from valcore.models import (
     LabelSet,
     OutputField,
     ScoreKind,
+    annotation_ground_truth,
     check_dataset_compatibility,
     find_matching_label_set,
+    label_schema_from_label_set,
+    label_set_fields_from_schema,
     parse_output_fields,
     validate_annotation,
     validate_label_set,
@@ -495,6 +499,67 @@ def test_find_matching_label_set_multiple_matches_returns_most_recent() -> None:
 def test_find_matching_label_set_no_label_sets_returns_none() -> None:
     found = find_matching_label_set([], score_kind=ScoreKind.CATEGORICAL, score_labels=["good"])
     assert found is None
+
+
+# -- Conversion helpers -------------------------------------------------------
+
+
+def test_label_set_fields_from_schema_categorical() -> None:
+    schema = LabelSchema(kind=ScoreKind.CATEGORICAL, labels=["good", "bad"])
+    fields = label_set_fields_from_schema(schema)
+    assert fields == {
+        "kind": ScoreKind.CATEGORICAL,
+        "labels": [{"name": "good", "description": ""}, {"name": "bad", "description": ""}],
+        "minimum": None,
+        "maximum": None,
+    }
+
+
+def test_label_set_fields_from_schema_numeric() -> None:
+    schema = LabelSchema(kind=ScoreKind.NUMERIC, minimum=0.0, maximum=1.0)
+    fields = label_set_fields_from_schema(schema)
+    assert fields == {"kind": ScoreKind.NUMERIC, "labels": None, "minimum": 0.0, "maximum": 1.0}
+
+
+def test_label_schema_from_label_set_categorical() -> None:
+    label_set = make_label_set(
+        labels=[{"name": "good", "description": "d"}, {"name": "bad", "description": "d"}]
+    )
+    schema = label_schema_from_label_set(label_set)
+    assert schema == LabelSchema(kind=ScoreKind.CATEGORICAL, labels=["good", "bad"])
+
+
+def test_label_schema_from_label_set_numeric() -> None:
+    label_set = make_label_set(kind=ScoreKind.NUMERIC, labels=None, minimum=0.0, maximum=1.0)
+    schema = label_schema_from_label_set(label_set)
+    assert schema == LabelSchema(kind=ScoreKind.NUMERIC, minimum=0.0, maximum=1.0)
+
+
+def test_annotation_ground_truth_categorical_single_label() -> None:
+    label_set = make_label_set(labels=[{"name": "good", "description": "d"}])
+    annotation = Annotation(label_set_id=label_set.id, dataset_row_id="row-1", labels=["good"])
+    assert annotation_ground_truth(label_set, annotation) == "good"
+
+
+def test_annotation_ground_truth_categorical_zero_or_multiple_labels_is_none() -> None:
+    label_set = make_label_set(
+        labels=[{"name": "good", "description": "d"}, {"name": "bad", "description": "d"}]
+    )
+    empty = Annotation(label_set_id=label_set.id, dataset_row_id="row-1", labels=[])
+    multi = Annotation(label_set_id=label_set.id, dataset_row_id="row-2", labels=["good", "bad"])
+    assert annotation_ground_truth(label_set, empty) is None
+    assert annotation_ground_truth(label_set, multi) is None
+
+
+def test_annotation_ground_truth_numeric() -> None:
+    label_set = make_label_set(kind=ScoreKind.NUMERIC, labels=None, minimum=0.0, maximum=1.0)
+    annotation = Annotation(label_set_id=label_set.id, dataset_row_id="row-1", labels=[], value=0.5)
+    assert annotation_ground_truth(label_set, annotation) == 0.5
+
+
+def test_annotation_ground_truth_none_annotation_is_none() -> None:
+    label_set = make_label_set()
+    assert annotation_ground_truth(label_set, None) is None
 
 
 # -- ExperimentRun ------------------------------------------------------------

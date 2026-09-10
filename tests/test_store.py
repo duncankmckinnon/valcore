@@ -359,6 +359,31 @@ def test_delete_label_set_removes_it(store: Store) -> None:
         store.get_label_set(label_set.id)
 
 
+def test_primary_label_set_returns_oldest(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"], {})
+    first = store.create_label_set(
+        dataset.id,
+        name="a",
+        description="",
+        kind=ScoreKind.CATEGORICAL,
+        labels=[{"name": "x", "description": "d"}],
+    )
+    store.create_label_set(
+        dataset.id,
+        name="b",
+        description="",
+        kind=ScoreKind.NUMERIC,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    assert store.primary_label_set(dataset.id).id == first.id
+
+
+def test_primary_label_set_none_when_dataset_has_none(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"], {})
+    assert store.primary_label_set(dataset.id) is None
+
+
 # -- Annotations ---------------------------------------------------------
 
 
@@ -421,6 +446,58 @@ def test_clear_annotation_removes_it(store: Store) -> None:
     store.set_annotation(label_set.id, rows[0].id, labels=["good"])
     store.clear_annotation(label_set.id, rows[0].id)
     assert store.get_annotation(label_set.id, rows[0].id) is None
+
+
+def test_set_annotation_writes_suggested_fields_without_confirming(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"], {})
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = _categorical_label_set(store, dataset.id)
+
+    annotation = store.set_annotation(
+        label_set.id,
+        rows[0].id,
+        suggested_labels=["good"],
+        reasoning="looks right",
+        source=LabelSource.GENERATED,
+    )
+    assert annotation.suggested_labels == ["good"]
+    assert annotation.reasoning == "looks right"
+    assert annotation.source is LabelSource.GENERATED
+    # Confirmed fields are untouched by a suggestion-only call.
+    assert annotation.labels == []
+    assert annotation.value is None
+
+
+def test_set_annotation_suggested_value_for_numeric(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"], {})
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = store.create_label_set(
+        dataset.id,
+        name="score",
+        description="",
+        kind=ScoreKind.NUMERIC,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    annotation = store.set_annotation(label_set.id, rows[0].id, suggested_value=0.7)
+    assert annotation.suggested_value == 0.7
+    assert annotation.value is None
+
+
+def test_set_annotation_confirming_a_suggestion_is_a_separate_call(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"], {})
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = _categorical_label_set(store, dataset.id)
+
+    store.set_annotation(
+        label_set.id, rows[0].id, suggested_labels=["good"], source=LabelSource.GENERATED
+    )
+    confirmed = store.set_annotation(
+        label_set.id, rows[0].id, labels=["good"], source=LabelSource.ACCEPTED
+    )
+    assert confirmed.labels == ["good"]
+    assert confirmed.suggested_labels == ["good"]  # untouched by the confirming call
+    assert confirmed.source is LabelSource.ACCEPTED
 
 
 def test_list_annotations_for_rows_filters_by_row_ids(store: Store) -> None:
