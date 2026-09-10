@@ -96,8 +96,18 @@ def make_dataset(store: Store, labels: list[str | None], *, inputs: list[str] | 
     rows = store.add_rows(
         dataset.id, [{"input": inp, "output": f"out{i}"} for i, inp in enumerate(inputs)]
     )
+    # Create a LabelSet for the dataset
+    label_set = store.create_label_set(
+        dataset.id,
+        "quality",
+        "",
+        ScoreKind.CATEGORICAL,
+        labels=[{"name": "pass", "description": ""}, {"name": "fail", "description": ""}],
+    )
     for row, label in zip(rows, labels, strict=True):
         if label is not None:
+            # Set both the annotation (for ground truth) and the row.label (for API responses)
+            store.set_annotation(label_set.id, row.id, labels=[label])
             store.set_label(row.id, {"value": label}, LabelSource.MANUAL)
     return dataset, rows
 
@@ -457,9 +467,9 @@ async def test_compare_orders_disagreements_first(store: Store) -> None:
 @pytest.mark.anyio
 async def test_background_task_failure_marks_run_failed(store: Store) -> None:
     version = make_version(store)
-    # A validation run over a partially labeled dataset makes the runner raise
+    # A validation run over a completely unlabeled dataset makes the runner raise
     # ContractError; the background wrapper must record it as FAILED.
-    dataset, _ = make_dataset(store, ["pass", None, "fail"])
+    dataset, _ = make_dataset(store, [None, None, None])
 
     async with _client(store, constant_factory()) as client:
         body = await _start_run(client, version.id, dataset.id)

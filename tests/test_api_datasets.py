@@ -394,7 +394,9 @@ async def test_generate_from_version_produces_a_compatible_dataset(
     # The derived shape must satisfy the compatibility check by construction, so a run
     # against the source version would start.
     dataset = store.get_dataset(ds_id)
-    check_dataset_compatibility(store.get_version(version.id), dataset)
+    check_dataset_compatibility(
+        store.get_version(version.id), dataset, store.list_label_sets(dataset.id)
+    )
 
     rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
     for row in rows:
@@ -433,7 +435,10 @@ async def test_generate_from_version_without_labels_leaves_no_ground_truth(
         assert row["suggested_label"] is None
 
     # Without labels it is still immediately runnable against the source version.
-    check_dataset_compatibility(store.get_version(version.id), store.get_dataset(ds_id))
+    dataset = store.get_dataset(ds_id)
+    check_dataset_compatibility(
+        store.get_version(version.id), dataset, store.list_label_sets(dataset.id)
+    )
 
 
 @pytest.mark.anyio

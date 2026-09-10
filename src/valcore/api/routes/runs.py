@@ -275,7 +275,8 @@ async def create_run(body: RunCreate, store: StoreDep, agent_factory: AgentFacto
     version = store.get_version(body.version_id)
     if not is_local_cli_model(version.model):
         config.require_gateway_key()
-    check_dataset_compatibility(version, store.get_dataset(body.dataset_id), kind=body.kind)
+    dataset = store.get_dataset(body.dataset_id)
+    check_dataset_compatibility(version, dataset, store.list_label_sets(dataset.id), kind=body.kind)
     run = store.create_run(
         kind=body.kind,
         version_id=body.version_id,
