@@ -81,6 +81,7 @@ async def create_label_set(dataset_id: str, body: LabelSetCreate, store: StoreDe
 @router.get("/datasets/{dataset_id}/label-sets")
 async def list_label_sets(dataset_id: str, store: StoreDep) -> list[LabelSetProgressOut]:
     """List a dataset's label sets, each carrying its annotation progress."""
+    store.get_dataset(dataset_id)
     out: list[LabelSetProgressOut] = []
     for label_set in store.list_label_sets(dataset_id):
         annotated, total = store.annotation_progress(label_set.id)

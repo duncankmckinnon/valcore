@@ -139,3 +139,9 @@ async def test_delete_label_set(client: httpx.AsyncClient) -> None:
 async def test_get_unknown_label_set_is_404(client: httpx.AsyncClient) -> None:
     resp = await client.get("/api/label-sets/does-not-exist")
     assert resp.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_list_label_sets_unknown_dataset_is_404(client: httpx.AsyncClient) -> None:
+    resp = await client.get("/api/datasets/does-not-exist/label-sets")
+    assert resp.status_code == 404
