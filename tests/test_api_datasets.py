@@ -76,7 +76,11 @@ async def test_csv_upload_with_label_column(client: httpx.AsyncClient) -> None:
     resp = await client.post(
         "/api/datasets/upload",
         files={"file": ("data.csv", csv, "text/csv")},
-        data={"name": "arith", "label_column": "verdict"},
+        data={
+            "name": "arith",
+            "label_column": "verdict",
+            "label_schema": json.dumps(CATEGORICAL_SCHEMA),
+        },
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -87,8 +91,16 @@ async def test_csv_upload_with_label_column(client: httpx.AsyncClient) -> None:
     ds_id = body["dataset"]["id"]
     rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
     assert rows[0]["data"] == {"question": "What is 2+2?"}
-    assert rows[0]["label"] == {"value": "good"}
-    assert rows[0]["label_source"] == LabelSource.MANUAL.value
+
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert len(label_sets) == 1
+    assert label_sets[0]["kind"] == "categorical"
+    assert {item["name"] for item in label_sets[0]["labels"]} == {"good", "bad"}
+
+    rows_page = (await client.get(f"/api/label-sets/{label_sets[0]['id']}/rows")).json()
+    annotation = rows_page["rows"][0]["annotation"]
+    assert annotation["labels"] == ["good"]
+    assert annotation["source"] == LabelSource.MANUAL.value
 
 
 @pytest.mark.anyio
@@ -194,12 +206,20 @@ async def test_generate_persists_rows_with_generated_source(
     ds_id = body["dataset"]["id"]
     rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
     assert len(rows) == 3
-    for row in rows:
-        assert row["label_source"] == LabelSource.GENERATED.value
-        assert row["suggested_label"] is not None
-        assert row["label_reasoning"].startswith("reason")
-        assert row["label"] is None  # suggested, not yet applied
-    assert rows[0]["suggested_label"] == {"value": "good"}
+
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert len(label_sets) == 1
+    assert label_sets[0]["kind"] == "categorical"
+
+    rows_page = (await client.get(f"/api/label-sets/{label_sets[0]['id']}/rows")).json()
+    for annotated_row in rows_page["rows"]:
+        annotation = annotated_row["annotation"]
+        assert annotation["source"] == LabelSource.GENERATED.value
+        assert annotation["suggested_labels"] is not None
+        assert annotation["reasoning"].startswith("reason")
+        assert annotation["labels"] == []  # suggested, not yet applied
+        assert annotation["value"] is None
+    assert rows_page["rows"][0]["annotation"]["suggested_labels"] == ["good"]
 
 
 @pytest.mark.anyio
@@ -398,10 +418,14 @@ async def test_generate_from_version_produces_a_compatible_dataset(
         store.get_version(version.id), dataset, store.list_label_sets(dataset.id)
     )
 
-    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
-    for row in rows:
-        assert row["label_source"] == LabelSource.GENERATED.value
-        assert row["suggested_label"] is not None
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert len(label_sets) == 1
+    rows_page = (await client.get(f"/api/label-sets/{label_sets[0]['id']}/rows")).json()
+    for annotated_row in rows_page["rows"]:
+        annotation = annotated_row["annotation"]
+        assert annotation["source"] == LabelSource.GENERATED.value
+        assert annotation["suggested_labels"] is not None
+        assert annotation["labels"] == []
 
 
 @pytest.mark.anyio
@@ -430,9 +454,9 @@ async def test_generate_from_version_without_labels_leaves_no_ground_truth(
     # The generator is told there is no label space to fill.
     assert calls[0]["label_schema"] is None
 
-    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
-    for row in rows:
-        assert row["suggested_label"] is None
+    # No label set is created at all when labels are excluded.
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert label_sets == []
 
     # Without labels it is still immediately runnable against the source version.
     dataset = store.get_dataset(ds_id)
@@ -735,12 +759,35 @@ async def test_create_get_list_delete_roundtrip(client: httpx.AsyncClient) -> No
     assert got.status_code == 200
     assert got.json()["name"] == "manual"
 
+    # A label_schema in the request creates a matching label set.
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert len(label_sets) == 1
+    assert label_sets[0]["kind"] == "categorical"
+    assert {item["name"] for item in label_sets[0]["labels"]} == {"good", "bad"}
+
     listed = await client.get("/api/datasets")
     assert [d["id"] for d in listed.json()] == [ds_id]
 
     deleted = await client.delete(f"/api/datasets/{ds_id}")
     assert deleted.status_code == 200
     assert (await client.get(f"/api/datasets/{ds_id}")).status_code == 404
+
+
+@pytest.mark.anyio
+async def test_create_dataset_without_label_schema_has_no_label_sets(
+    client: httpx.AsyncClient,
+) -> None:
+    # A label_schema is no longer required: omitting it is the legal "no label space" case.
+    created = await client.post(
+        "/api/datasets",
+        json={"name": "unlabeled", "description": "", "columns": ["prompt"]},
+    )
+    assert created.status_code == 200, created.text
+    ds_id = created.json()["id"]
+    assert created.json()["label_schema"] == {}
+
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert label_sets == []
 
 
 @pytest.mark.anyio
@@ -1407,8 +1454,13 @@ async def test_generate_rows_appends_after_the_existing_rows(
 
     rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()
     assert rows["total"] == 5
-    for row in rows["rows"]:
-        assert row["label_source"] == LabelSource.GENERATED.value
+
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert len(label_sets) == 1
+    rows_page = (await client.get(f"/api/label-sets/{label_sets[0]['id']}/rows")).json()
+    assert rows_page["total"] == 5
+    for annotated_row in rows_page["rows"]:
+        assert annotated_row["annotation"]["source"] == LabelSource.GENERATED.value
 
 
 @pytest.mark.anyio
@@ -1511,6 +1563,10 @@ async def test_generate_rows_without_a_label_space_leaves_labels_unset(
     appended = (await client.post(f"/api/datasets/{ds_id}/generate-rows", json={"count": 1})).json()
     assert appended[0]["suggested_label"] is None
 
+    # No label set exists at all when the dataset has no label space.
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert label_sets == []
+
 
 @pytest.mark.anyio
 async def test_generate_rows_label_guidance_without_a_label_space_is_422(
@@ -1592,28 +1648,33 @@ async def test_generate_rows_for_missing_dataset_is_404(client: httpx.AsyncClien
 
 
 def _seed_labeled_dataset(store: Store) -> str:
-    """Create a categorical dataset with two fully labeled rows; return its id."""
+    """Create a categorical dataset with two fully labeled rows; return its id.
+
+    Ground truth lives on a ``LabelSet``/``Annotation`` pair -- export (Task 3) reads
+    exclusively from there now, not from the legacy ``DatasetRow.label`` column.
+    """
     ds = store.create_dataset(
         name="refusal",
         description="",
         columns=["question", "answer"],
         label_schema=CATEGORICAL_SCHEMA,
     )
-    store.add_prepared_rows(
+    rows = store.add_prepared_rows(
         ds.id,
         [
-            {
-                "data": {"question": "q1", "answer": "a1"},
-                "label": {"value": "good"},
-                "label_source": LabelSource.MANUAL,
-            },
-            {
-                "data": {"question": "q2", "answer": "a2"},
-                "label": {"value": "bad"},
-                "label_source": LabelSource.MANUAL,
-            },
+            {"data": {"question": "q1", "answer": "a1"}},
+            {"data": {"question": "q2", "answer": "a2"}},
         ],
     )
+    label_set = store.create_label_set(
+        ds.id,
+        name="Labels",
+        description="",
+        kind=ScoreKind.CATEGORICAL,
+        labels=[{"name": "good", "description": ""}, {"name": "bad", "description": ""}],
+    )
+    store.set_annotation(label_set.id, rows[0].id, labels=["good"], source=LabelSource.MANUAL)
+    store.set_annotation(label_set.id, rows[1].id, labels=["bad"], source=LabelSource.MANUAL)
     return ds.id
 
 
@@ -1725,15 +1786,28 @@ async def test_dataset_export_json_round_trips_through_upload(
 
     reimported = (await client.get(f"/api/datasets/{new_id}")).json()
     assert reimported["columns"] == ["question", "answer"]
-    assert reimported["label_schema"]["kind"] == "categorical"
-    assert set(reimported["label_schema"]["labels"]) == {"good", "bad"}
 
     rows = (await client.get(f"/api/datasets/{new_id}/rows")).json()["rows"]
     assert [r["data"] for r in rows] == [
         {"question": "q1", "answer": "a1"},
         {"question": "q2", "answer": "a2"},
     ]
-    assert [r["label"] for r in rows] == [{"value": "good"}, {"value": "bad"}]
+
+    label_sets = (await client.get(f"/api/datasets/{new_id}/label-sets")).json()
+    assert len(label_sets) == 1
+    assert label_sets[0]["kind"] == "categorical"
+    assert {item["name"] for item in label_sets[0]["labels"]} == {"good", "bad"}
+
+    rows_page = (await client.get(f"/api/label-sets/{label_sets[0]['id']}/rows")).json()
+    annotations_by_row_id = {row["row_id"]: row["annotation"] for row in rows_page["rows"]}
+    ids_in_row_order = [r["id"] for r in rows]
+    assert [annotations_by_row_id[rid]["labels"] for rid in ids_in_row_order] == [
+        ["good"],
+        ["bad"],
+    ]
+    assert all(
+        annotations_by_row_id[rid]["source"] == LabelSource.MANUAL.value for rid in ids_in_row_order
+    )
 
 
 @pytest.mark.anyio
@@ -1792,8 +1866,9 @@ async def test_upload_package_explicit_label_schema_wins(
     assert resp.status_code == 200, resp.text
     new_id = resp.json()["dataset"]["id"]
 
-    schema = (await client.get(f"/api/datasets/{new_id}")).json()["label_schema"]
-    assert schema["labels"] == ["good", "bad", "maybe"]
+    label_sets = (await client.get(f"/api/datasets/{new_id}/label-sets")).json()
+    assert len(label_sets) == 1
+    assert {item["name"] for item in label_sets[0]["labels"]} == {"good", "bad", "maybe"}
 
 
 @pytest.mark.anyio
@@ -2200,6 +2275,7 @@ async def test_from_logfire_creates_dataset_and_stores_provenance(
                     }
                 }
             ],
+            row_annotations=[None],
             sql=sql,
             sample_n=sample_n,
             seed=11,
@@ -2292,9 +2368,10 @@ async def test_from_logfire_hosted_creates_dataset(
             columns=["question"],
             label_schema={"kind": "categorical", "labels": ["yes"]},
             prepared=[
-                {"data": {"question": "Q1"}, "label": {"value": "yes"}},
+                {"data": {"question": "Q1"}},
                 {"data": {"question": "Q2"}},
             ],
+            row_annotations=[{"labels": ["yes"], "source": LabelSource.MANUAL}, None],
         )
 
     monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_fetch)
@@ -2311,7 +2388,16 @@ async def test_from_logfire_hosted_creates_dataset(
     ds_id = body["dataset"]["id"]
     rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
     assert rows[0]["data"]["question"] == "Q1"
-    assert rows[0]["label"] == {"value": "yes"}
+
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert len(label_sets) == 1
+    assert {item["name"] for item in label_sets[0]["labels"]} == {"yes"}
+
+    rows_page = (await client.get(f"/api/label-sets/{label_sets[0]['id']}/rows")).json()
+    annotations_by_row_id = {row["row_id"]: row["annotation"] for row in rows_page["rows"]}
+    assert annotations_by_row_id[rows[0]["id"]]["labels"] == ["yes"]
+    assert annotations_by_row_id[rows[0]["id"]]["source"] == LabelSource.MANUAL.value
+    assert annotations_by_row_id[rows[1]["id"]] is None
 
 
 @pytest.mark.anyio
@@ -2327,6 +2413,7 @@ async def test_from_logfire_hosted_name_override(
             columns=["question"],
             label_schema={},
             prepared=[{"data": {"question": "Q1"}}],
+            row_annotations=[None],
         )
 
     monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_fetch)
@@ -2358,9 +2445,11 @@ def _install_recording_pull(monkeypatch, calls: list[dict], *, columns=None, pre
 
     async def fake_pull_records(sql, sample_n, **kwargs):
         calls.append({"sql": sql, "sample_n": sample_n, **kwargs})
+        resolved_prepared = prepared if prepared is not None else [{"data": {"question": "Q"}}]
         return PullResult(
             columns=columns if columns is not None else ["question"],
-            prepared=prepared if prepared is not None else [{"data": {"question": "Q"}}],
+            prepared=resolved_prepared,
+            row_annotations=[None] * len(resolved_prepared),
             sql=sql,
             sample_n=sample_n,
             seed=kwargs.get("seed") if kwargs.get("seed") is not None else 99,
@@ -2479,6 +2568,7 @@ async def _create_from_logfire_hosted(client: httpx.AsyncClient, monkeypatch, pr
             columns=["question"],
             label_schema={},
             prepared=prepared,
+            row_annotations=[None] * len(prepared),
         )
 
     monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_fetch)
@@ -2527,6 +2617,7 @@ async def test_hosted_fetch_union_adds_only_rows_not_already_present(
                 {"data": {"question": "Q2"}},
                 {"data": {"question": "Q3"}},
             ],
+            row_annotations=[None, None, None],
         )
 
     monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_refetch)
@@ -2553,6 +2644,7 @@ async def test_hosted_fetch_union_with_nothing_new_is_a_noop(
             columns=["question"],
             label_schema={},
             prepared=[{"data": {"question": "Q1"}}],
+            row_annotations=[None],
         )
 
     monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_refetch)
@@ -2581,6 +2673,7 @@ async def test_hosted_fetch_union_never_touches_an_edited_existing_row(
             columns=["question"],
             label_schema={},
             prepared=[{"data": {"question": "Q1"}}],
+            row_annotations=[None],
         )
 
     monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_refetch)
@@ -2608,6 +2701,7 @@ async def test_hosted_fetch_union_rejects_a_column_mismatch(
             columns=["different"],
             label_schema={},
             prepared=[{"data": {"different": "X"}}],
+            row_annotations=[None],
         )
 
     monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_refetch)

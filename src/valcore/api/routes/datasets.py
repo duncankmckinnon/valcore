@@ -18,7 +18,13 @@ from valcore.errors import ContractError
 from valcore.export import render_dataset_module, render_judge_module
 from valcore.logfire_io import fetch_hosted_dataset, list_hosted_datasets, push_dataset
 from valcore.logfire_pull import pull_records
-from valcore.models import LabelSchema, LabelSource
+from valcore.models import (
+    LabelSchema,
+    LabelSource,
+    ScoreKind,
+    label_schema_from_label_set,
+    label_set_fields_from_schema,
+)
 from valcore.schema_migration import label_matches_schema
 from valcore.seeding import dataset_shape_from_version
 from valcore.settings import get_settings, is_local_cli_model
@@ -51,7 +57,7 @@ class DatasetCreate(BaseModel):
     name: str
     description: str = ""
     columns: list[str]
-    label_schema: LabelSchema
+    label_schema: LabelSchema | None = None
 
 
 class DatasetGenerate(BaseModel):
@@ -301,19 +307,25 @@ class StatsOut(BaseModel):
     label_distribution: dict[str, int]
 
 
-def _parse_csv(text: str, label_column: str | None) -> tuple[list[str], list[dict]]:
-    """Parse CSV text into inferred data columns and prepared row dicts."""
+def _parse_csv(
+    text: str, label_column: str | None
+) -> tuple[list[str], list[dict], list[dict | None]]:
+    """Parse CSV text into inferred data columns, prepared rows, and per-row annotation fields."""
     reader = csv.DictReader(io.StringIO(text))
     header = reader.fieldnames or []
     if label_column is not None and label_column not in header:
         raise ContractError(f"label_column {label_column!r} is not one of the columns {header}.")
     columns = [name for name in header if name != label_column]
-    prepared = [_prepare_row(dict(record), columns, label_column) for record in reader]
-    return columns, prepared
+    pairs = [_prepare_row(dict(record), columns, label_column) for record in reader]
+    prepared = [p for p, _ in pairs]
+    row_annotations = [a for _, a in pairs]
+    return columns, prepared, row_annotations
 
 
-def _parse_jsonl(text: str, label_column: str | None) -> tuple[list[str], list[dict]]:
-    """Parse JSONL text into inferred data columns and prepared row dicts."""
+def _parse_jsonl(
+    text: str, label_column: str | None
+) -> tuple[list[str], list[dict], list[dict | None]]:
+    """Parse JSONL text into inferred data columns, prepared rows, and per-row annotation fields."""
     records: list[dict] = []
     for line in text.splitlines():
         line = line.strip()
@@ -332,17 +344,26 @@ def _parse_jsonl(text: str, label_column: str | None) -> tuple[list[str], list[d
         for key in record:
             if key != label_column and key not in keys:
                 keys.append(key)
-    prepared = [_prepare_row(record, keys, label_column) for record in records]
-    return keys, prepared
+    pairs = [_prepare_row(record, keys, label_column) for record in records]
+    prepared = [p for p, _ in pairs]
+    row_annotations = [a for _, a in pairs]
+    return keys, prepared, row_annotations
 
 
-def _prepare_row(record: dict, columns: list[str], label_column: str | None) -> dict:
-    """Split a raw record into a prepared row, moving any label column into a manual label."""
-    fields: dict = {"data": {k: v for k, v in record.items() if k != label_column}}
+def _prepare_row(
+    record: dict, columns: list[str], label_column: str | None
+) -> tuple[dict, dict | None]:
+    """Split a raw record into (prepared_row, annotation_fields | None).
+
+    ``annotation_fields`` carries the label_column's value, when present, as keyword
+    fields for ``Store.set_annotation`` once a label set and the row's real id exist.
+    """
+    prepared = {"data": {k: v for k, v in record.items() if k != label_column}}
     if label_column is not None and record.get(label_column) is not None:
-        fields["label"] = {"value": record[label_column]}
-        fields["label_source"] = LabelSource.MANUAL
-    return fields
+        value = record[label_column]
+        fields = {"labels": [value]} if isinstance(value, str) else {"value": value}
+        return prepared, {**fields, "source": LabelSource.MANUAL}
+    return prepared, None
 
 
 @router.get("")
@@ -353,13 +374,17 @@ async def list_datasets(store: StoreDep) -> list[DatasetSummaryOut]:
 
 @router.post("")
 async def create_dataset(body: DatasetCreate, store: StoreDep) -> DatasetOut:
-    """Create an empty dataset."""
+    """Create an empty dataset, with a label set if a label_schema is given."""
     dataset = store.create_dataset(
-        name=body.name,
-        description=body.description,
-        columns=body.columns,
-        label_schema=body.label_schema.model_dump(mode="json"),
+        name=body.name, description=body.description, columns=body.columns, label_schema={}
     )
+    if body.label_schema is not None:
+        store.create_label_set(
+            dataset.id,
+            name="Labels",
+            description="",
+            **label_set_fields_from_schema(body.label_schema),
+        )
     return DatasetOut.model_validate(dataset)
 
 
@@ -423,12 +448,14 @@ async def upload_dataset(
     text = contents.decode("utf-8-sig")
     filename = (file.filename or "").lower()
     if filename.endswith(".csv"):
-        columns, prepared = _parse_csv(text, label_column)
+        columns, prepared, row_annotations = _parse_csv(text, label_column)
         schema_dict = _parse_label_schema(label_schema)
     elif filename.endswith(".json") and (package := _load_package(text)) is not None:
-        columns, prepared, schema_dict = _import_package(package, label_column, label_schema)
+        columns, prepared, schema_dict, row_annotations = _import_package(
+            package, label_column, label_schema
+        )
     elif filename.endswith((".jsonl", ".json")):
-        columns, prepared = _parse_jsonl(text, label_column)
+        columns, prepared, row_annotations = _parse_jsonl(text, label_column)
         schema_dict = _parse_label_schema(label_schema)
     else:
         raise ContractError("Unsupported file type; upload a .csv or .jsonl file.")
@@ -436,10 +463,18 @@ async def upload_dataset(
     if not prepared:
         raise ContractError("File contains no data rows.")
 
-    dataset = store.create_dataset(
-        name=name, description="", columns=columns, label_schema=schema_dict
-    )
+    dataset = store.create_dataset(name=name, description="", columns=columns, label_schema={})
     rows = store.add_prepared_rows(dataset.id, prepared)
+    if schema_dict:
+        label_set = store.create_label_set(
+            dataset.id,
+            name="Imported labels",
+            description="",
+            **label_set_fields_from_schema(LabelSchema.model_validate(schema_dict)),
+        )
+        for row, fields in zip(rows, row_annotations):
+            if fields is not None:
+                store.set_annotation(label_set.id, row.id, **fields)
     return DatasetCreatedOut(dataset=DatasetOut.model_validate(dataset), row_count=len(rows))
 
 
@@ -464,19 +499,14 @@ def _load_package(text: str) -> EvalPackage | None:
 
 def _import_package(
     package: EvalPackage, label_column: str | None, label_schema: str | None
-) -> tuple[list[str], list[dict], dict]:
-    """Decode a package's dataset half into ``(columns, prepared_rows, label_schema)``.
-
-    ``label_column`` splits a labeled column out of tabular data, a notion a package has no use
-    for, so its presence is a caller mistake rather than a silent no-op. An explicitly posted
-    ``label_schema`` still wins over the one the package resolved.
-    """
+) -> tuple[list[str], list[dict], dict, list[dict | None]]:
+    """Decode a package's dataset half into (columns, prepared_rows, label_schema, row_annotations)."""
     if label_column is not None:
         raise ContractError("label_column does not apply to an eval-package upload.")
-    _name, columns, package_schema, prepared = package.to_dataset_fields()
+    _name, columns, package_schema, prepared, row_annotations = package.to_dataset_fields()
     explicit = label_schema is not None and label_schema.strip()
     schema_dict = _parse_label_schema(label_schema) if explicit else package_schema
-    return columns, prepared, schema_dict
+    return columns, prepared, schema_dict, row_annotations
 
 
 def _parse_label_schema(raw: str | None) -> dict:
@@ -530,7 +560,7 @@ async def generate_dataset(body: DatasetGenerate, store: StoreDep) -> DatasetCre
         name=body.name,
         description=body.description,
         columns=body.columns,
-        label_schema=body.label_schema.model_dump(mode="json"),
+        label_schema={},
     )
     # ``instructions`` steer generation when supplied; otherwise the stored description
     # doubles as the prompt, preserving the pre-``instructions`` behaviour.
@@ -543,16 +573,26 @@ async def generate_dataset(body: DatasetGenerate, store: StoreDep) -> DatasetCre
         column_notes=body.column_notes,
         label_mix=body.label_mix,
     )
-    prepared = [
-        {
-            "data": row.data,
-            "suggested_label": {"value": row.suggested_label},
-            "label_reasoning": row.reasoning,
-            "label_source": LabelSource.GENERATED,
-        }
-        for row in generated
-    ]
+    prepared = [{"data": row.data} for row in generated]
     rows = store.add_prepared_rows(dataset.id, prepared)
+    label_set = store.create_label_set(
+        dataset.id,
+        name="Generated labels",
+        description="",
+        **label_set_fields_from_schema(body.label_schema),
+    )
+    for row, generated_row in zip(rows, generated):
+        store.set_annotation(
+            label_set.id,
+            row.id,
+            **(
+                {"suggested_labels": [generated_row.suggested_label]}
+                if body.label_schema.kind is ScoreKind.CATEGORICAL
+                else {"suggested_value": generated_row.suggested_label}
+            ),
+            reasoning=generated_row.reasoning,
+            source=LabelSource.GENERATED,
+        )
     store.set_generation(
         dataset.id,
         count=body.count,
@@ -588,14 +628,13 @@ async def generate_dataset_from_version(
 
     # Without labels the dataset carries no ground truth: an empty schema is the legal
     # "no ground truth" state, and the generator is told there is no label space to fill.
-    stored_schema = label_schema.model_dump(mode="json") if body.include_labels else {}
     generation_schema = label_schema if body.include_labels else None
 
     dataset = store.create_dataset(
         name=body.name,
         description=body.description,
         columns=columns,
-        label_schema=stored_schema,
+        label_schema={},
     )
     prompt = body.instructions if body.instructions is not None else body.description
     generated = await generate_rows(
@@ -607,17 +646,27 @@ async def generate_dataset_from_version(
         label_guidance=body.label_guidance,
         label_mix=body.label_mix,
     )
-    prepared: list[dict] = []
-    for row in generated:
-        fields: dict = {
-            "data": row.data,
-            "label_reasoning": row.reasoning,
-            "label_source": LabelSource.GENERATED,
-        }
-        if body.include_labels:
-            fields["suggested_label"] = {"value": row.suggested_label}
-        prepared.append(fields)
+    prepared: list[dict] = [{"data": row.data} for row in generated]
     rows = store.add_prepared_rows(dataset.id, prepared)
+    if body.include_labels:
+        label_set = store.create_label_set(
+            dataset.id,
+            name="Generated labels",
+            description="",
+            **label_set_fields_from_schema(label_schema),
+        )
+        for row, generated_row in zip(rows, generated):
+            store.set_annotation(
+                label_set.id,
+                row.id,
+                **(
+                    {"suggested_labels": [generated_row.suggested_label]}
+                    if label_schema.kind is ScoreKind.CATEGORICAL
+                    else {"suggested_value": generated_row.suggested_label}
+                ),
+                reasoning=generated_row.reasoning,
+                source=LabelSource.GENERATED,
+            )
     store.set_generation(
         dataset.id,
         count=body.count,
@@ -651,14 +700,20 @@ async def create_dataset_from_logfire(
         max_timestamp=body.max_timestamp,
         label_column=body.label_column,
     )
-    schema = body.label_schema.model_dump(mode="json") if body.label_schema is not None else {}
     dataset = store.create_dataset(
-        name=body.name,
-        description=body.description,
-        columns=result.columns,
-        label_schema=schema,
+        name=body.name, description=body.description, columns=result.columns, label_schema={}
     )
     rows = store.add_prepared_rows(dataset.id, result.prepared)
+    if body.label_schema is not None:
+        label_set = store.create_label_set(
+            dataset.id,
+            name="Imported labels",
+            description="",
+            **label_set_fields_from_schema(body.label_schema),
+        )
+        for row, fields in zip(rows, result.row_annotations):
+            if fields is not None:
+                store.set_annotation(label_set.id, row.id, **fields)
     store.set_logfire_pull(
         dataset.id,
         sql=result.sql,
@@ -683,12 +738,19 @@ async def create_dataset_from_logfire_hosted(
     result = await fetch_hosted_dataset(source_name)
     local_name = (body.name or "").strip() or result.name
     dataset = store.create_dataset(
-        name=local_name,
-        description=body.description,
-        columns=result.columns,
-        label_schema=result.label_schema,
+        name=local_name, description=body.description, columns=result.columns, label_schema={}
     )
     rows = store.add_prepared_rows(dataset.id, result.prepared)
+    if result.label_schema:
+        label_set = store.create_label_set(
+            dataset.id,
+            name="Imported labels",
+            description="",
+            **label_set_fields_from_schema(LabelSchema.model_validate(result.label_schema)),
+        )
+        for row, fields in zip(rows, result.row_annotations):
+            if fields is not None:
+                store.set_annotation(label_set.id, row.id, **fields)
     store.set_hosted_fetch(dataset.id, source_name=source_name)
     return DatasetCreatedOut(dataset=DatasetOut.model_validate(dataset), row_count=len(rows))
 
@@ -756,13 +818,16 @@ async def pull_more_from_logfire(id: str, body: RowsLogfirePull, store: StoreDep
     return [RowOut.model_validate(row) for row in rows]
 
 
-def _row_content_key(data: dict, label: dict | None) -> str:
-    """A canonical key for union-style dedup: rows with identical data and label collide.
+def _row_content_key(data: dict) -> str:
+    """A canonical key for union-style dedup: rows with identical data collide.
 
     Hosted cases carry no stable id once imported (see ``spec.evals_to_dataset_fields``), so
-    exact content match is the only signal available for "already present."
+    exact content match is the only signal available for "already present." Only ``data``
+    is hashed -- a row's label lives in a separate ``Annotation`` now, not attached to the
+    row dict, so two rows with identical input data are duplicates regardless of what
+    either has (or will have) annotated against it.
     """
-    return json.dumps({"data": data, "label": label}, sort_keys=True, default=str)
+    return json.dumps({"data": data}, sort_keys=True, default=str)
 
 
 @router.get("/{id}/hosted-fetch")
@@ -794,11 +859,11 @@ async def pull_more_from_logfire_hosted(id: str, store: StoreDep) -> list[RowOut
             f"{dataset.columns}."
         )
 
-    existing = {_row_content_key(row.data, row.label) for row in store.list_rows(dataset.id)}
+    existing = {_row_content_key(row.data) for row in store.list_rows(dataset.id)}
     new_rows = [
         prepared
         for prepared in result.prepared
-        if _row_content_key(prepared.get("data", {}), prepared.get("label")) not in existing
+        if _row_content_key(prepared.get("data", {})) not in existing
     ]
     rows = store.add_prepared_rows(dataset.id, new_rows) if new_rows else []
     return [RowOut.model_validate(row) for row in rows]
@@ -840,11 +905,8 @@ async def generate_more_rows(id: str, body: RowsGenerate, store: StoreDep) -> li
 
     _check_column_notes(column_notes, dataset.columns)
 
-    # An empty stored schema is the legal "no ground truth" state, so there is no label
-    # space to fill and nothing to say about how labels are assigned.
-    label_schema = (
-        LabelSchema.model_validate(dataset.label_schema) if dataset.label_schema else None
-    )
+    label_set = store.primary_label_set(id)
+    label_schema = label_schema_from_label_set(label_set) if label_set is not None else None
     if label_schema is None and label_guidance is not None:
         raise ContractError(
             f"Dataset {dataset.name!r} has no label space, so label_guidance cannot apply."
@@ -860,20 +922,22 @@ async def generate_more_rows(id: str, body: RowsGenerate, store: StoreDep) -> li
         label_guidance=label_guidance,
         label_mix=label_mix,
     )
-    prepared: list[dict] = []
-    for row in generated:
-        fields: dict = {
-            "data": row.data,
-            "label_reasoning": row.reasoning,
-            "label_source": LabelSource.GENERATED,
-        }
-        if label_schema is not None:
-            fields["suggested_label"] = {"value": row.suggested_label}
-        prepared.append(fields)
+    prepared = [{"data": row.data} for row in generated]
     rows = store.add_prepared_rows(dataset.id, prepared)
+    if label_set is not None:
+        for row, generated_row in zip(rows, generated):
+            store.set_annotation(
+                label_set.id,
+                row.id,
+                **(
+                    {"suggested_labels": [generated_row.suggested_label]}
+                    if label_schema.kind is ScoreKind.CATEGORICAL
+                    else {"suggested_value": generated_row.suggested_label}
+                ),
+                reasoning=generated_row.reasoning,
+                source=LabelSource.GENERATED,
+            )
 
-    # Record the ask that actually ran, so the next top-up repeats it rather than the
-    # original creation call.
     store.set_generation(
         dataset.id,
         count=body.count,
@@ -881,7 +945,7 @@ async def generate_more_rows(id: str, body: RowsGenerate, store: StoreDep) -> li
         column_notes=column_notes,
         label_mix=label_mix,
         label_guidance=label_guidance,
-        include_labels=label_schema is not None,
+        include_labels=label_set is not None,
         source_version_id=stored.source_version_id if stored else None,
     )
     return [RowOut.model_validate(row) for row in rows]
@@ -971,13 +1035,31 @@ def _stem(name: str) -> str:
     return cleaned or "eval_package"
 
 
+def _primary_ground_truth(store: Store, dataset_id: str, rows: list) -> tuple:
+    """Return (label_set, annotations) for a dataset's primary label set, or (None, None).
+
+    Ground truth now lives on ``LabelSet``/``Annotation``, not on ``DatasetRow``, so export
+    must fetch it explicitly rather than reading it off the row.
+    """
+    label_set = store.primary_label_set(dataset_id)
+    if label_set is None:
+        return None, None
+    annotations = store.list_annotations_for_rows(label_set.id, [row.id for row in rows])
+    return label_set, annotations
+
+
 @router.get("/{id}/export.py", response_model=ExportFilesResponse)
 async def export_dataset_py(id: str, store: StoreDep) -> ExportFilesResponse:
     """Return a module that rebuilds this dataset as a ``pydantic_evals.Dataset``."""
     dataset = store.get_dataset(id)
     rows = store.list_rows(id)
+    label_set, annotations = _primary_ground_truth(store, id, rows)
     return ExportFilesResponse(
-        files={f"{_stem(dataset.name)}.py": render_dataset_module(dataset, rows)}
+        files={
+            f"{_stem(dataset.name)}.py": render_dataset_module(
+                dataset, rows, label_set=label_set, annotations=annotations
+            )
+        }
     )
 
 
@@ -994,7 +1076,8 @@ async def export_dataset_json(
     """
     dataset = store.get_dataset(id)
     rows = store.list_rows(id)
-    package = EvalPackage.from_dataset(dataset, rows)
+    label_set, annotations = _primary_ground_truth(store, id, rows)
+    package = EvalPackage.from_dataset(dataset, rows, label_set=label_set, annotations=annotations)
 
     version = None
     if version_id is not None:
