@@ -237,3 +237,17 @@ async def delete_annotation(label_set_id: str, row_id: str, store: StoreDep) -> 
             f"Row {row_id!r} belongs to dataset {row.dataset_id!r}, not label set {label_set_id!r}'s dataset {label_set.dataset_id!r}."
         )
     store.clear_annotation(label_set_id, row_id)
+
+
+@router.post("/label-sets/{label_set_id}/rows/{row_id}/annotation/accept")
+async def accept_annotation(label_set_id: str, row_id: str, store: StoreDep) -> AnnotationOut:
+    """Accept a row's suggested labels/value as its confirmed annotation."""
+    label_set = store.get_label_set(label_set_id)
+    row = store.get_row(row_id)
+    if row.dataset_id != label_set.dataset_id:
+        raise ContractError(
+            f"Row {row_id!r} belongs to dataset {row.dataset_id!r}, not label set "
+            f"{label_set_id!r}'s dataset {label_set.dataset_id!r}."
+        )
+    annotation = store.accept_annotation_suggestion(label_set_id, row_id)
+    return AnnotationOut.model_validate(annotation)

@@ -488,6 +488,59 @@ def test_list_annotations_for_rows_empty_ids_returns_empty(store: Store) -> None
     assert store.list_annotations_for_rows(label_set.id, []) == []
 
 
+def test_accept_annotation_suggestion_categorical(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = _categorical_label_set(store, dataset.id)
+    store.set_annotation(
+        label_set.id, rows[0].id, suggested_labels=["good"], source=LabelSource.GENERATED
+    )
+
+    accepted = store.accept_annotation_suggestion(label_set.id, rows[0].id)
+    assert accepted.labels == ["good"]
+    assert accepted.source is LabelSource.ACCEPTED
+    assert accepted.suggested_labels == ["good"]  # the suggestion itself is preserved, not cleared
+
+
+def test_accept_annotation_suggestion_numeric(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = store.create_label_set(
+        dataset.id,
+        name="score",
+        description="",
+        kind=ScoreKind.NUMERIC,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    store.set_annotation(
+        label_set.id, rows[0].id, suggested_value=0.7, source=LabelSource.GENERATED
+    )
+
+    accepted = store.accept_annotation_suggestion(label_set.id, rows[0].id)
+    assert accepted.value == 0.7
+    assert accepted.source is LabelSource.ACCEPTED
+
+
+def test_accept_annotation_suggestion_raises_when_no_annotation(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = _categorical_label_set(store, dataset.id)
+    with pytest.raises(ContractError, match="no suggested"):
+        store.accept_annotation_suggestion(label_set.id, rows[0].id)
+
+
+def test_accept_annotation_suggestion_raises_when_annotation_has_no_suggestion(
+    store: Store,
+) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = _categorical_label_set(store, dataset.id)
+    store.set_annotation(label_set.id, rows[0].id, labels=["good"], source=LabelSource.MANUAL)
+    with pytest.raises(ContractError, match="no suggested"):
+        store.accept_annotation_suggestion(label_set.id, rows[0].id)
+
+
 def test_annotation_progress_counts_annotated_and_total(store: Store) -> None:
     dataset = store.create_dataset("ds", "", ["q"])
     rows = store.add_rows(dataset.id, [{"q": "1"}, {"q": "2"}, {"q": "3"}])

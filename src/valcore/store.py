@@ -718,6 +718,38 @@ class Store:
             session.add(existing)
             return existing
 
+    def accept_annotation_suggestion(self, label_set_id: str, dataset_row_id: str) -> Annotation:
+        """Promote an annotation's suggested labels/value into its confirmed fields.
+
+        Mirrors the pre-Annotation ``patch_row(accept_suggestion=True)`` flow: copies
+        whatever generation wrote into ``suggested_labels``/``suggested_value`` onto
+        ``labels``/``value``, marking the result ``LabelSource.ACCEPTED``. The suggestion
+        itself is left in place -- accepting is not the same as clearing it. Raises
+        ContractError if there is no annotation, or an annotation with nothing suggested,
+        to accept.
+        """
+        with session_scope(self.engine) as session:
+            label_set = _require(session, LabelSet, label_set_id)
+            annotation = session.exec(
+                select(Annotation).where(
+                    Annotation.label_set_id == label_set_id,
+                    Annotation.dataset_row_id == dataset_row_id,
+                )
+            ).first()
+            has_suggestion = annotation is not None and (
+                annotation.suggested_labels or annotation.suggested_value is not None
+            )
+            if not has_suggestion:
+                raise ContractError("Annotation has no suggested labels/value to accept.")
+            if label_set.kind is ScoreKind.CATEGORICAL:
+                annotation.labels = annotation.suggested_labels or []
+            else:
+                annotation.value = annotation.suggested_value
+            annotation.source = LabelSource.ACCEPTED
+            annotation.updated_at = datetime.now(UTC)
+            session.add(annotation)
+            return annotation
+
     def get_annotation(self, label_set_id: str, dataset_row_id: str) -> Annotation | None:
         """Return the annotation for (label_set_id, dataset_row_id), or None if unset."""
         with session_scope(self.engine) as session:
