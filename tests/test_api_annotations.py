@@ -29,13 +29,11 @@ async def client(store: Store) -> AsyncIterator[httpx.AsyncClient]:
 
 
 async def _make_dataset(client: httpx.AsyncClient) -> str:
+    # No label_schema: these tests create their own label sets explicitly, and a
+    # label_schema here would auto-create an extra "Labels" label set alongside them.
     resp = await client.post(
         "/api/datasets",
-        json={
-            "name": "ds",
-            "columns": ["q"],
-            "label_schema": {"kind": "categorical", "labels": ["a"]},
-        },
+        json={"name": "ds", "columns": ["q"]},
     )
     assert resp.status_code == 200, resp.text
     return resp.json()["id"]

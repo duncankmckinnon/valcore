@@ -308,7 +308,7 @@ class StatsOut(BaseModel):
 
 
 def _parse_csv(
-    text: str, label_column: str | None
+    text: str, label_column: str | None, label_schema: dict | None = None
 ) -> tuple[list[str], list[dict], list[dict | None]]:
     """Parse CSV text into inferred data columns, prepared rows, and per-row annotation fields."""
     reader = csv.DictReader(io.StringIO(text))
@@ -316,14 +316,14 @@ def _parse_csv(
     if label_column is not None and label_column not in header:
         raise ContractError(f"label_column {label_column!r} is not one of the columns {header}.")
     columns = [name for name in header if name != label_column]
-    pairs = [_prepare_row(dict(record), columns, label_column) for record in reader]
+    pairs = [_prepare_row(dict(record), columns, label_column, label_schema) for record in reader]
     prepared = [p for p, _ in pairs]
     row_annotations = [a for _, a in pairs]
     return columns, prepared, row_annotations
 
 
 def _parse_jsonl(
-    text: str, label_column: str | None
+    text: str, label_column: str | None, label_schema: dict | None = None
 ) -> tuple[list[str], list[dict], list[dict | None]]:
     """Parse JSONL text into inferred data columns, prepared rows, and per-row annotation fields."""
     records: list[dict] = []
@@ -344,23 +344,28 @@ def _parse_jsonl(
         for key in record:
             if key != label_column and key not in keys:
                 keys.append(key)
-    pairs = [_prepare_row(record, keys, label_column) for record in records]
+    pairs = [_prepare_row(record, keys, label_column, label_schema) for record in records]
     prepared = [p for p, _ in pairs]
     row_annotations = [a for _, a in pairs]
     return keys, prepared, row_annotations
 
 
 def _prepare_row(
-    record: dict, columns: list[str], label_column: str | None
+    record: dict, columns: list[str], label_column: str | None, label_schema: dict | None = None
 ) -> tuple[dict, dict | None]:
     """Split a raw record into (prepared_row, annotation_fields | None).
 
     ``annotation_fields`` carries the label_column's value, when present, as keyword
     fields for ``Store.set_annotation`` once a label set and the row's real id exist.
+    CSV values always arrive as plain strings regardless of the schema's kind, so a
+    numeric label_schema coerces the string to float before deciding which field to
+    populate; without a schema (or a categorical one), the value is used as-is.
     """
     prepared = {"data": {k: v for k, v in record.items() if k != label_column}}
     if label_column is not None and record.get(label_column) is not None:
         value = record[label_column]
+        if (label_schema or {}).get("kind") == "numeric" and isinstance(value, str):
+            value = float(value)
         fields = {"labels": [value]} if isinstance(value, str) else {"value": value}
         return prepared, {**fields, "source": LabelSource.MANUAL}
     return prepared, None
@@ -448,15 +453,15 @@ async def upload_dataset(
     text = contents.decode("utf-8-sig")
     filename = (file.filename or "").lower()
     if filename.endswith(".csv"):
-        columns, prepared, row_annotations = _parse_csv(text, label_column)
         schema_dict = _parse_label_schema(label_schema)
+        columns, prepared, row_annotations = _parse_csv(text, label_column, schema_dict)
     elif filename.endswith(".json") and (package := _load_package(text)) is not None:
         columns, prepared, schema_dict, row_annotations = _import_package(
             package, label_column, label_schema
         )
     elif filename.endswith((".jsonl", ".json")):
-        columns, prepared, row_annotations = _parse_jsonl(text, label_column)
         schema_dict = _parse_label_schema(label_schema)
+        columns, prepared, row_annotations = _parse_jsonl(text, label_column, schema_dict)
     else:
         raise ContractError("Unsupported file type; upload a .csv or .jsonl file.")
 

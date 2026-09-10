@@ -104,6 +104,39 @@ async def test_csv_upload_with_label_column(client: httpx.AsyncClient) -> None:
 
 
 @pytest.mark.anyio
+async def test_csv_upload_with_numeric_label_column_coerces_string_to_float(
+    client: httpx.AsyncClient,
+) -> None:
+    # csv.DictReader always yields plain strings, regardless of the schema's kind -- a
+    # numeric label_schema must coerce "3.5" to 3.5 rather than routing it into `labels`.
+    csv = b"question,score\nWhat is 2+2?,3.5\nWhat is 3+3?,4\n"
+    resp = await client.post(
+        "/api/datasets/upload",
+        files={"file": ("data.csv", csv, "text/csv")},
+        data={
+            "name": "scored",
+            "label_column": "score",
+            "label_schema": json.dumps(NUMERIC_SCHEMA),
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["row_count"] == 2
+
+    ds_id = body["dataset"]["id"]
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert len(label_sets) == 1
+    assert label_sets[0]["kind"] == "numeric"
+
+    rows_page = (await client.get(f"/api/label-sets/{label_sets[0]['id']}/rows")).json()
+    annotation = rows_page["rows"][0]["annotation"]
+    assert annotation["value"] == 3.5
+    assert isinstance(annotation["value"], float)
+    assert annotation["labels"] == []
+    assert annotation["source"] == LabelSource.MANUAL.value
+
+
+@pytest.mark.anyio
 async def test_csv_upload_unknown_label_column_is_422(client: httpx.AsyncClient) -> None:
     csv = b"question,answer\nq,a\n"
     resp = await client.post(
