@@ -14,7 +14,15 @@ from valcore.export import (
     render_script,
     render_tool_sources,
 )
-from valcore.models import Dataset, DatasetRow, EvaluatorVersion, ScoreKind
+from valcore.models import (
+    Annotation,
+    Dataset,
+    DatasetRow,
+    EvaluatorVersion,
+    LabelSet,
+    LabelSource,
+    ScoreKind,
+)
 
 
 def _make_version(**overrides: object) -> EvaluatorVersion:
@@ -300,29 +308,68 @@ def _dataset_rows() -> list[DatasetRow]:
     """Three rows: two labelled, one unlabelled, to exercise expected_output omission."""
     return [
         DatasetRow(
+            id="r0",
             dataset_id="d1",
             idx=0,
             data={"question": "Q1", "answer": "A1"},
-            label={"value": "refusal"},
         ),
         DatasetRow(
+            id="r1",
             dataset_id="d1",
             idx=1,
             data={"question": "Q2", "answer": "A2"},
-            label={"value": "answer"},
         ),
         DatasetRow(
+            id="r2",
             dataset_id="d1",
             idx=2,
             data={"question": "Q3", "answer": "A3"},
-            label=None,
+        ),
+    ]
+
+
+def _label_set() -> LabelSet:
+    """A categorical label set matching the dataset's label schema."""
+    return LabelSet(
+        id="ls1",
+        dataset_id="d1",
+        name="quality",
+        kind=ScoreKind.CATEGORICAL,
+        labels=[
+            {"name": "refusal", "description": "refused to answer"},
+            {"name": "answer", "description": "provided an answer"},
+        ],
+    )
+
+
+def _annotations() -> list[Annotation]:
+    """Annotations for the first two rows, the third is unlabeled."""
+    return [
+        Annotation(
+            id="a1",
+            label_set_id="ls1",
+            dataset_row_id="r0",  # first row
+            labels=["refusal"],
+        ),
+        Annotation(
+            id="a2",
+            label_set_id="ls1",
+            dataset_row_id="r1",  # second row
+            labels=["answer"],
         ),
     ]
 
 
 def test_dataset_module_builds_pydantic_evals_dataset() -> None:
     """The module execs to a DATASET whose cases mirror the source rows."""
-    ns = _exec_script(render_dataset_module(_dataset(), _dataset_rows()))
+    ns = _exec_script(
+        render_dataset_module(
+            _dataset(),
+            _dataset_rows(),
+            label_set=_label_set(),
+            annotations=_annotations(),
+        )
+    )
     ds = ns["DATASET"]
     assert isinstance(ds, EvalsDataset)
     assert ds.name == "refusal-quality"
@@ -334,17 +381,34 @@ def test_dataset_module_builds_pydantic_evals_dataset() -> None:
 
 def test_dataset_module_omits_expected_output_for_unlabelled_row() -> None:
     """A row with no label produces a Case with expected_output unset (None)."""
-    ns = _exec_script(render_dataset_module(_dataset(), _dataset_rows()))
+    ns = _exec_script(
+        render_dataset_module(
+            _dataset(),
+            _dataset_rows(),
+            label_set=_label_set(),
+            annotations=_annotations(),
+        )
+    )
     ds = ns["DATASET"]
     assert ds.cases[2].expected_output is None
     # Only the two labelled rows emit an expected_output= argument in the source.
-    src = render_dataset_module(_dataset(), _dataset_rows())
+    src = render_dataset_module(
+        _dataset(),
+        _dataset_rows(),
+        label_set=_label_set(),
+        annotations=_annotations(),
+    )
     assert src.count("expected_output=") == 2
 
 
 def test_dataset_module_has_no_valcore_dependency() -> None:
     """The dataset module imports nothing from valcore and names the dataset in its docstring."""
-    src = render_dataset_module(_dataset(), _dataset_rows())
+    src = render_dataset_module(
+        _dataset(),
+        _dataset_rows(),
+        label_set=_label_set(),
+        annotations=_annotations(),
+    )
     assert "import valcore" not in src
     assert "from valcore" not in src
     ns = _exec_script(src)
@@ -353,36 +417,42 @@ def test_dataset_module_has_no_valcore_dependency() -> None:
 
 def test_dataset_module_emits_metadata_only_when_present() -> None:
     """Row provenance renders as metadata= only for rows that carry any; bare rows omit it."""
-    from valcore.models import LabelSource
-
     rows = [
         DatasetRow(
+            id="r0",
             dataset_id="d1",
             idx=0,
             data={"question": "Q1", "answer": "A1"},
-            label={"value": "refusal"},
-            note="checked by hand",
-            label_reasoning="clear refusal",
-            label_source=LabelSource.MANUAL,
-            suggested_label="answer",
         ),
         DatasetRow(
+            id="r1",
             dataset_id="d1",
             idx=1,
             data={"question": "Q2", "answer": "A2"},
-            label={"value": "answer"},
         ),
     ]
-    src = render_dataset_module(_dataset(), rows)
+    label_set = _label_set()
+    annotations = [
+        Annotation(
+            id="a1",
+            label_set_id="ls1",
+            dataset_row_id="r0",
+            labels=["refusal"],
+            description="checked by hand",
+            reasoning="clear refusal",
+            source=LabelSource.MANUAL,
+        ),
+        # Second row has no annotation
+    ]
+    src = render_dataset_module(_dataset(), rows, label_set=label_set, annotations=annotations)
     # Exactly one row carries provenance, so exactly one metadata= argument is emitted.
     assert src.count("metadata=") == 1
     ns = _exec_script(src)
     ds = ns["DATASET"]
     assert ds.cases[0].metadata == {
-        "note": "checked by hand",
-        "label_reasoning": "clear refusal",
-        "label_source": "manual",  # the enum is flattened to its string value
-        "suggested_label": "answer",
+        "description": "checked by hand",
+        "reasoning": "clear refusal",
+        "source": "manual",  # the enum is flattened to its string value
     }
     assert ds.cases[1].metadata is None
 
@@ -391,13 +461,24 @@ def test_dataset_module_uses_repr_so_values_round_trip() -> None:
     """Strings with quotes and nested dict inputs survive intact via repr()."""
     rows = [
         DatasetRow(
+            id="r0",
             dataset_id="d1",
             idx=0,
             data={"question": 'He said "hi"', "answer": {"nested": [1, 2]}},
-            label={"value": "refusal"},
         ),
     ]
-    ns = _exec_script(render_dataset_module(_dataset(), rows))
+    label_set = _label_set()
+    annotations = [
+        Annotation(
+            id="a1",
+            label_set_id="ls1",
+            dataset_row_id="r0",
+            labels=["refusal"],
+        ),
+    ]
+    ns = _exec_script(
+        render_dataset_module(_dataset(), rows, label_set=label_set, annotations=annotations)
+    )
     case = ns["DATASET"].cases[0]
     assert case.inputs == {"question": 'He said "hi"', "answer": {"nested": [1, 2]}}
 

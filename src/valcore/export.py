@@ -14,11 +14,14 @@ from valcore.capabilities import CAPABILITY_REGISTRY
 from valcore.errors import ContractError
 from valcore.models import (
     SCALAR_TYPES,
+    Annotation,
     Dataset,
     DatasetRow,
     EvaluatorVersion,
     FieldType,
+    LabelSet,
     OutputField,
+    annotation_ground_truth,
     parse_output_fields,
 )
 from valcore.settings import is_local_cli_model
@@ -270,19 +273,32 @@ def _dataset_docstring(dataset: Dataset) -> str:
     return _py_str(text)
 
 
-def render_dataset_module(dataset: Dataset, rows: list[DatasetRow]) -> str:
+def render_dataset_module(
+    dataset: Dataset,
+    rows: list[DatasetRow],
+    *,
+    label_set: LabelSet | None = None,
+    annotations: list[Annotation] | None = None,
+) -> str:
     """Render a dataset as a module that builds a ``pydantic_evals.Dataset``.
 
-    Every value is emitted via ``repr()`` so strings, numbers, and nested dicts round-trip
-    exactly. A row with no label omits ``expected_output``; row provenance is emitted as
-    ``metadata=`` only when there is any to carry.
+    ``label_set``/``annotations`` supply ground truth and provenance, typically
+    ``store.primary_label_set(dataset.id)`` and the rows' annotations under it. Every
+    value is emitted via ``repr()`` so strings, numbers, and nested dicts round-trip
+    exactly. A row with no ground truth omits ``expected_output``; row provenance is
+    emitted as ``metadata=`` only when there is any to carry.
     """
+    annotations_by_row = {a.dataset_row_id: a for a in (annotations or [])}
     case_lines: list[str] = []
     for row in rows:
         args = [f"name={row.id!r}", f"inputs={row.data!r}"]
-        if row.label is not None:
-            args.append(f"expected_output={row.label['value']!r}")
-        metadata = _row_metadata(row)
+        annotation = annotations_by_row.get(row.id)
+        ground_truth = (
+            annotation_ground_truth(label_set, annotation) if label_set is not None else None
+        )
+        if ground_truth is not None:
+            args.append(f"expected_output={ground_truth!r}")
+        metadata = _row_metadata(annotation)
         if metadata:
             args.append(f"metadata={metadata!r}")
         case_lines.append("        Case(" + ", ".join(args) + "),")
@@ -297,17 +313,17 @@ def render_dataset_module(dataset: Dataset, rows: list[DatasetRow]) -> str:
     return "\n\n\n".join(sections) + "\n"
 
 
-def _row_metadata(row: DatasetRow) -> dict:
-    """Return the provenance a case should carry, or an empty dict when the row has none."""
+def _row_metadata(annotation: Annotation | None) -> dict:
+    """Return the provenance a case should carry, or an empty dict when there is none."""
+    if annotation is None:
+        return {}
     metadata: dict = {}
-    if row.note is not None:
-        metadata["note"] = row.note
-    if row.label_reasoning is not None:
-        metadata["label_reasoning"] = row.label_reasoning
-    if row.label_source is not None:
-        metadata["label_source"] = row.label_source.value
-    if row.suggested_label is not None:
-        metadata["suggested_label"] = row.suggested_label
+    if annotation.description is not None:
+        metadata["description"] = annotation.description
+    if annotation.reasoning is not None:
+        metadata["reasoning"] = annotation.reasoning
+    if annotation.source is not None:
+        metadata["source"] = annotation.source.value
     return metadata
 
 
