@@ -121,6 +121,12 @@ class RowsAppend(BaseModel):
     rows: list[dict]
 
 
+class RowDataUpdate(BaseModel):
+    """Request body to merge-patch a dataset row's own data."""
+
+    data: dict
+
+
 class LogfirePullRequest(BaseModel):
     """Request body to create a dataset from a Logfire SQL query."""
 
@@ -953,6 +959,18 @@ async def list_dataset_rows(
 async def delete_row(row_id: str, store: StoreDep) -> None:
     """Delete a single dataset row."""
     store.delete_row(row_id)
+
+
+@router.patch("/rows/{row_id}")
+async def patch_row_data(row_id: str, body: RowDataUpdate, store: StoreDep) -> RowOut:
+    """Merge-patch a dataset row's own data (not its labels -- see the annotation endpoints)."""
+    row = store.get_row(row_id)
+    dataset = store.get_dataset(row.dataset_id)
+    unknown = [key for key in body.data if key not in dataset.columns]
+    if unknown:
+        raise ContractError(f"Unknown columns for this dataset: {unknown}.")
+    updated = store.update_row(row_id, data={**row.data, **body.data})
+    return RowOut.model_validate(updated)
 
 
 @router.get("/{id}/stats")

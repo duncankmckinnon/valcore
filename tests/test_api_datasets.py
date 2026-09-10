@@ -983,6 +983,56 @@ async def test_delete_rows_route_is_not_shadowed_by_dataset_delete(
     assert rows == []
 
 
+# -- Row data editing (PATCH /rows/{row_id}) --------------------------------
+
+
+@pytest.mark.anyio
+async def test_patch_row_data_merges_into_existing_data(client: httpx.AsyncClient) -> None:
+    resp = await client.post(
+        "/api/datasets",
+        json={"name": "ds", "columns": ["question", "answer"]},
+    )
+    dataset_id = resp.json()["id"]
+    rows_resp = await client.post(
+        f"/api/datasets/{dataset_id}/rows", json={"rows": [{"question": "q1", "answer": "a1"}]}
+    )
+    row_id = rows_resp.json()[0]["id"]
+
+    patch_resp = await client.patch(
+        f"/api/datasets/rows/{row_id}", json={"data": {"answer": "corrected"}}
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+    body = patch_resp.json()
+    assert body["data"] == {"question": "q1", "answer": "corrected"}
+
+    fetched = (await client.get(f"/api/datasets/{dataset_id}/rows")).json()["rows"][0]
+    assert fetched["data"] == {"question": "q1", "answer": "corrected"}
+
+
+@pytest.mark.anyio
+async def test_patch_row_data_rejects_unknown_column(client: httpx.AsyncClient) -> None:
+    resp = await client.post(
+        "/api/datasets",
+        json={"name": "ds", "columns": ["question", "answer"]},
+    )
+    dataset_id = resp.json()["id"]
+    rows_resp = await client.post(
+        f"/api/datasets/{dataset_id}/rows", json={"rows": [{"question": "q1", "answer": "a1"}]}
+    )
+    row_id = rows_resp.json()[0]["id"]
+
+    patch_resp = await client.patch(
+        f"/api/datasets/rows/{row_id}", json={"data": {"not_a_column": "x"}}
+    )
+    assert patch_resp.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_patch_row_data_unknown_row_is_404(client: httpx.AsyncClient) -> None:
+    resp = await client.patch("/api/datasets/rows/does-not-exist", json={"data": {}})
+    assert resp.status_code == 404
+
+
 # -- Referenced delete -------------------------------------------------------
 
 
