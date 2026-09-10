@@ -612,7 +612,10 @@ def check_dataset_compatibility(
     so its score space is free to differ from every label set's, and it needs no match.
 
     Returns the matched label set for a VALIDATION run (the caller's single source of
-    truth for reading ground truth), or None for EVAL.
+    truth for reading ground truth), or None for EVAL. An empty ``label_sets`` list is the
+    legal "no ground truth declared" state and returns None without raising, mirroring the
+    old empty ``label_schema``; only a dataset that has label sets, none of which match,
+    raises.
     """
     missing = [c for c in version.required_columns if c not in dataset.columns]
     if missing:
@@ -631,7 +634,7 @@ def check_dataset_compatibility(
         score_minimum=version.score_minimum,
         score_maximum=version.score_maximum,
     )
-    if match is None:
+    if match is None and label_sets:
         space = (
             f"labels {version.score_labels}"
             if version.score_kind is ScoreKind.CATEGORICAL

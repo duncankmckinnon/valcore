@@ -219,7 +219,7 @@ async def execute_experiment(
     # call later in this function always has a defined value to pass, regardless of kind.
     ground_truth_by_row: dict[str, str | float | None] = {}
     annotations: list[Annotation] = []
-    if run.kind is RunKind.VALIDATION:
+    if run.kind is RunKind.VALIDATION and matched_label_set is not None:
         annotations = await asyncio.to_thread(
             store.list_annotations_for_rows, matched_label_set.id, [row.id for row in rows]
         )
@@ -228,11 +228,16 @@ async def execute_experiment(
             row.id: annotation_ground_truth(matched_label_set, annotations_by_row.get(row.id))
             for row in rows
         }
-        rows = [row for row in rows if ground_truth_by_row[row.id] is not None]
+    if run.kind is RunKind.VALIDATION:
+        rows = [row for row in rows if ground_truth_by_row.get(row.id) is not None]
         if not rows:
+            detail = (
+                f" for the matched label set {matched_label_set.name!r}"
+                if matched_label_set
+                else ""
+            )
             raise ContractError(
-                "Validation run requires at least one row with a valid label for the "
-                f"matched label set {matched_label_set.name!r}; none found."
+                f"Validation run requires at least one row with a valid label{detail}; none found."
             )
 
     # Marks this run as experiment-produced before ``RUNNING``/``evaluate()`` even start,

@@ -217,6 +217,22 @@ async def test_validation_zero_labeled_rows_raises(store: Store) -> None:
 
 
 @pytest.mark.anyio
+async def test_validation_zero_label_sets_raises(store: Store) -> None:
+    """A dataset with no label sets at all is legal for check_dataset_compatibility (nothing
+    to reconcile), but a VALIDATION run still has nothing to validate against, so it raises
+    -- one level down from where a mismatched-but-present label set would."""
+    version = make_version(store)
+    dataset = make_dataset(store, [None, None, None], with_label_set=False)
+    assert store.list_label_sets(dataset.id) == []
+    run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=2)
+
+    with pytest.raises(ContractError):
+        await execute_run(store, run.id, agent=constant_agent(version))
+
+    assert store.list_results(run.id) == []
+
+
+@pytest.mark.anyio
 async def test_eval_run_needs_no_label_set(store: Store) -> None:
     """An EVAL run needs no label set at all -- the dataset here has zero."""
     version = make_version(store)

@@ -138,7 +138,7 @@ async def execute_run(
     # would be nothing to validate. Rows lacking a label are silently excluded, not an
     # error -- unlike the old all-or-nothing contract.
     ground_truth_by_row: dict[str, str | float | None] = {}
-    if run.kind is RunKind.VALIDATION:
+    if run.kind is RunKind.VALIDATION and matched_label_set is not None:
         # Ground truth is looked up over ``all_rows``, not just this call's (possibly
         # ``only_row_ids``-narrowed) ``rows``: a retry must summarize the whole run, so the
         # metrics block below needs every row's ground truth, not only the retried subset's.
@@ -150,11 +150,16 @@ async def execute_run(
             row.id: annotation_ground_truth(matched_label_set, annotations_by_row.get(row.id))
             for row in all_rows
         }
-        rows = [row for row in rows if ground_truth_by_row[row.id] is not None]
+    if run.kind is RunKind.VALIDATION:
+        rows = [row for row in rows if ground_truth_by_row.get(row.id) is not None]
         if not rows:
+            detail = (
+                f" for the matched label set {matched_label_set.name!r}"
+                if matched_label_set
+                else ""
+            )
             raise ContractError(
-                "Validation run requires at least one row with a valid label for the "
-                f"matched label set {matched_label_set.name!r}; none found."
+                f"Validation run requires at least one row with a valid label{detail}; none found."
             )
 
     with tracing.run_span(run, version, dataset, row_count=len(rows)) as span:

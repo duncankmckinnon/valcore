@@ -220,10 +220,20 @@ def test_no_label_sets_passes_for_eval_kind() -> None:
     assert result is None
 
 
-def test_no_matching_label_set_fails_for_validation_kind() -> None:
+def test_empty_label_sets_passes_for_validation_kind() -> None:
+    # Mirrors the old empty label_schema: no label space declared is legal and returns
+    # None without raising; the real "nothing to validate" rejection happens one level
+    # up, in runner.py/experiment.py, once zero rows turn out to have ground truth.
     dataset = make_dataset()
+    result = check_dataset_compatibility(make_version(), dataset, [], kind=RunKind.VALIDATION)
+    assert result is None
+
+
+def test_nonempty_but_no_matching_label_set_fails_for_validation_kind() -> None:
+    dataset = make_dataset()
+    wrong_kind = _matching_label_set(kind=ScoreKind.NUMERIC, labels=None, minimum=0.0, maximum=1.0)
     with pytest.raises(ContractError, match="No label set"):
-        check_dataset_compatibility(make_version(), dataset, [], kind=RunKind.VALIDATION)
+        check_dataset_compatibility(make_version(), dataset, [wrong_kind], kind=RunKind.VALIDATION)
 
 
 def test_dataset_missing_required_column() -> None:

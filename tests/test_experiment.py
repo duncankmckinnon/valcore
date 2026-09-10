@@ -681,6 +681,27 @@ async def test_wholly_unlabeled_validation_dataset_raises(
 
 
 @pytest.mark.anyio
+async def test_validation_zero_label_sets_raises(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dataset with no label sets at all is legal for check_dataset_compatibility (nothing
+    to reconcile), but a VALIDATION experiment still has nothing to validate against, so it
+    raises -- one level down from where a mismatched-but-present label set would."""
+    from valcore.experiment import execute_experiment
+
+    version = make_version(store)
+    dataset = make_dataset(store, [None, None, None], with_label_set=False)
+    assert store.list_label_sets(dataset.id) == []
+    run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=2)
+
+    patch_build_agent(monkeypatch, constant_agent(version))
+    with pytest.raises(ContractError):
+        await execute_experiment(store, run.id)
+
+    assert store.list_results(run.id) == []
+
+
+@pytest.mark.anyio
 async def test_eval_run_tolerates_unlabeled_rows(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
