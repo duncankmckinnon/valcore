@@ -91,7 +91,7 @@ def make_version(store: Store, **overrides):
 
 def make_dataset(store: Store, labels: list[str | None], *, inputs: list[str] | None = None):
     """Create a dataset with one row per label entry (None = unlabeled)."""
-    dataset = store.create_dataset("ds", "", ["input", "output"], CATEGORICAL_SCHEMA)
+    dataset = store.create_dataset("ds", "", ["input", "output"])
     inputs = inputs if inputs is not None else [f"in{i}" for i in range(len(labels))]
     rows = store.add_rows(
         dataset.id, [{"input": inp, "output": f"out{i}"} for i, inp in enumerate(inputs)]

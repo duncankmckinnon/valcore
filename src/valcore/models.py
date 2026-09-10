@@ -395,7 +395,6 @@ class Dataset(SQLModel, table=True):
     name: str
     description: str = ""
     columns: list[str] = Field(default_factory=list, sa_column=Column(JSON))
-    label_schema: dict = Field(default_factory=dict, sa_column=Column(JSON))
 
 
 class DatasetGeneration(SQLModel, table=True):
@@ -455,18 +454,13 @@ class DatasetHostedFetch(SQLModel, table=True):
 
 
 class DatasetRow(SQLModel, table=True):
-    """A single row of a dataset with its (optional) hand-assigned label."""
+    """A single row of a dataset."""
 
     id: str = Field(default_factory=lambda: uuid4().hex, primary_key=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     dataset_id: str
     idx: int
     data: dict = Field(default_factory=dict, sa_column=Column(JSON))
-    label: dict | None = Field(default=None, sa_column=Column(JSON))
-    suggested_label: dict | None = Field(default=None, sa_column=Column(JSON))
-    label_reasoning: str | None = None
-    label_source: LabelSource | None = None
-    note: str | None = None
 
 
 class Run(SQLModel, table=True):

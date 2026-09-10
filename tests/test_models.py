@@ -7,6 +7,7 @@ from valcore.errors import ConfigError, ContractError
 from valcore.models import (
     Annotation,
     Dataset,
+    DatasetRow,
     EvaluatorVersion,
     ExperimentRun,
     FieldType,
@@ -592,3 +593,12 @@ def test_experiment_run_ids_are_unique_per_instance() -> None:
     second = ExperimentRun(run_id="run1", experiment_name="exp1")
 
     assert first.id != second.id
+
+
+def test_dataset_has_no_label_schema_field() -> None:
+    assert "label_schema" not in Dataset.model_fields
+
+
+def test_dataset_row_has_no_legacy_label_fields() -> None:
+    legacy = {"label", "suggested_label", "label_reasoning", "label_source", "note"}
+    assert legacy.isdisjoint(DatasetRow.model_fields)

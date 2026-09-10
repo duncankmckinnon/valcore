@@ -628,9 +628,7 @@ async def test_generate_from_version_unknown_version_is_404(
 
 def _seed_rows(store: Store, label_schema: dict, prepared: list[dict]) -> tuple[str, list[str]]:
     """Create a dataset with prepared rows, returning its id and row ids."""
-    ds = store.create_dataset(
-        name="seed", description="", columns=["prompt"], label_schema=label_schema
-    )
+    ds = store.create_dataset(name="seed", description="", columns=["prompt"])
     rows = store.add_prepared_rows(ds.id, prepared)
     return ds.id, [r.id for r in rows]
 
@@ -644,7 +642,7 @@ def _seed_rows_with_label_set(
     labeling tests need a real label set to annotate against. Returns
     ``(dataset_id, label_set_id, row_ids)``.
     """
-    ds = store.create_dataset(name="seed", description="", columns=["prompt"], label_schema={})
+    ds = store.create_dataset(name="seed", description="", columns=["prompt"])
     rows = store.add_prepared_rows(ds.id, prepared)
     label_set = (
         store.create_label_set(
@@ -952,63 +950,6 @@ async def test_patch_dataset_empty_body_is_noop(client: httpx.AsyncClient) -> No
 
 
 @pytest.mark.anyio
-async def test_patch_dataset_narrowing_schema_with_labels_is_409(
-    client: httpx.AsyncClient, store: Store
-) -> None:
-    ds_id, row_ids = _seed_rows(
-        store,
-        CATEGORICAL_SCHEMA,
-        [{"data": {"prompt": "p0"}}, {"data": {"prompt": "p1"}}, {"data": {"prompt": "p2"}}],
-    )
-    # Two rows labeled "bad" would fall outside a schema narrowed to just "good". This
-    # legacy DatasetRow.label narrowing (Store.update_dataset) is untouched by this task,
-    # so the setup writes the field directly rather than through the removed patch_row route.
-    store.update_row(row_ids[0], label={"value": "good"}, label_source=LabelSource.MANUAL)
-    store.update_row(row_ids[1], label={"value": "bad"}, label_source=LabelSource.MANUAL)
-    store.update_row(row_ids[2], label={"value": "bad"}, label_source=LabelSource.MANUAL)
-
-    narrowed = {"kind": "categorical", "labels": ["good"]}
-    resp = await client.patch(f"/api/datasets/{ds_id}", json={"label_schema": narrowed})
-    assert resp.status_code == 409, resp.text
-    error = resp.json()["error"]
-    assert error["type"] == "DestructiveChangeError"
-    assert error["detail"]["invalid_label_count"] == 2
-
-    # Nothing changed: the schema and the "bad" labels are still present.
-    assert store.get_dataset(ds_id).label_schema["labels"] == ["good", "bad"]
-    persisted = [store.get_row(row_id) for row_id in row_ids]
-    assert [r.label for r in persisted] == [
-        {"value": "good"},
-        {"value": "bad"},
-        {"value": "bad"},
-    ]
-
-
-@pytest.mark.anyio
-async def test_patch_dataset_narrowing_schema_with_force_clears_invalid(
-    client: httpx.AsyncClient, store: Store
-) -> None:
-    ds_id, row_ids = _seed_rows(
-        store,
-        CATEGORICAL_SCHEMA,
-        [{"data": {"prompt": "p0"}}, {"data": {"prompt": "p1"}}],
-    )
-    store.update_row(row_ids[0], label={"value": "good"}, label_source=LabelSource.MANUAL)
-    store.update_row(row_ids[1], label={"value": "bad"}, label_source=LabelSource.MANUAL)
-
-    narrowed = {"kind": "categorical", "labels": ["good"]}
-    resp = await client.patch(
-        f"/api/datasets/{ds_id}", json={"label_schema": narrowed, "force": True}
-    )
-    assert resp.status_code == 200, resp.text
-    assert store.get_dataset(ds_id).label_schema["labels"] == ["good"]
-
-    persisted = [store.get_row(row_id) for row_id in row_ids]
-    assert persisted[0].label == {"value": "good"}
-    assert persisted[1].label is None
-    assert persisted[1].label_source is None
-
-
 # -- Row deletion (DELETE /rows/{row_id}) ------------------------------------
 
 
@@ -1638,7 +1579,6 @@ def _seed_labeled_dataset(store: Store) -> str:
         name="refusal",
         description="",
         columns=["question", "answer"],
-        label_schema=CATEGORICAL_SCHEMA,
     )
     rows = store.add_prepared_rows(
         ds.id,
@@ -2302,7 +2242,7 @@ async def test_from_logfire_empty_sql_is_422(client: httpx.AsyncClient) -> None:
 async def test_logfire_pull_provenance_is_null_for_an_uploaded_dataset(
     client: httpx.AsyncClient, store: Store
 ) -> None:
-    dataset = store.create_dataset(name="blank", description="", columns=["a"], label_schema={})
+    dataset = store.create_dataset(name="blank", description="", columns=["a"])
     resp = await client.get(f"/api/datasets/{dataset.id}/logfire-pull")
     assert resp.status_code == 200
     assert resp.json() is None
@@ -2525,7 +2465,7 @@ async def test_logfire_pull_more_rejects_a_column_mismatch(
 async def test_logfire_pull_more_without_a_stored_pull_is_422(
     client: httpx.AsyncClient, store: Store
 ) -> None:
-    dataset = store.create_dataset(name="blank", description="", columns=["a"], label_schema={})
+    dataset = store.create_dataset(name="blank", description="", columns=["a"])
     resp = await client.post(f"/api/datasets/{dataset.id}/logfire-pull", json={})
     assert resp.status_code == 422, resp.text
 
@@ -2571,7 +2511,7 @@ async def test_from_logfire_hosted_stores_source_provenance(
 async def test_hosted_fetch_provenance_is_null_for_a_non_hosted_dataset(
     client: httpx.AsyncClient, store: Store
 ) -> None:
-    dataset = store.create_dataset(name="blank", description="", columns=["a"], label_schema={})
+    dataset = store.create_dataset(name="blank", description="", columns=["a"])
     resp = await client.get(f"/api/datasets/{dataset.id}/hosted-fetch")
     assert resp.status_code == 200
     assert resp.json() is None
@@ -2638,37 +2578,6 @@ async def test_hosted_fetch_union_with_nothing_new_is_a_noop(
 
 
 @pytest.mark.anyio
-async def test_hosted_fetch_union_never_touches_an_edited_existing_row(
-    client: httpx.AsyncClient, store: Store, monkeypatch
-) -> None:
-    ds_id = await _create_from_logfire_hosted(client, monkeypatch, [{"data": {"question": "Q1"}}])
-    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
-    # "note" is no longer settable via the API (RowOut/patch_row are gone), so this
-    # edits the row directly through the store, exercising the same real field.
-    store.update_row(rows[0]["id"], note="keep me")
-
-    async def fake_refetch(id_or_name, *, api_key=None):
-        from valcore.logfire_io import HostedFetch
-
-        return HostedFetch(
-            source_name=id_or_name,
-            name="qa-set",
-            columns=["question"],
-            label_schema={},
-            prepared=[{"data": {"question": "Q1"}}],
-            row_annotations=[None],
-        )
-
-    monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_refetch)
-    resp = await client.post(f"/api/datasets/{ds_id}/hosted-fetch")
-    assert resp.status_code == 200, resp.text
-    assert resp.json() == []
-
-    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
-    assert len(rows) == 1
-    assert store.get_row(rows[0]["id"]).note == "keep me"
-
-
 @pytest.mark.anyio
 async def test_hosted_fetch_union_rejects_a_column_mismatch(
     client: httpx.AsyncClient, monkeypatch
@@ -2696,7 +2605,7 @@ async def test_hosted_fetch_union_rejects_a_column_mismatch(
 async def test_hosted_fetch_union_without_a_stored_fetch_is_422(
     client: httpx.AsyncClient, store: Store
 ) -> None:
-    dataset = store.create_dataset(name="blank", description="", columns=["a"], label_schema={})
+    dataset = store.create_dataset(name="blank", description="", columns=["a"])
     resp = await client.post(f"/api/datasets/{dataset.id}/hosted-fetch")
     assert resp.status_code == 422, resp.text
 

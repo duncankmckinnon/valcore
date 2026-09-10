@@ -459,12 +459,11 @@ async def generate(body: GenerateRequest, store: StoreDep) -> GeneratedConfig:
     editable draft saved as a version separately.
     """
     _require_gateway_key_unless_local()
-    columns, label_schema = _resolve_seed(body, store)
+    columns, _label_schema = _resolve_seed(body, store)
     return await generator.generate_config(
         body.criteria,
         columns=columns,
         column_notes=body.column_notes,
-        label_schema=label_schema,
     )
 
 
@@ -478,12 +477,11 @@ async def generate_version(id: str, body: GenerateRequest, store: StoreDep) -> G
     """
     _require_gateway_key_unless_local()
     store.get_evaluator(id)
-    columns, label_schema = _resolve_seed(body, store)
+    columns, _label_schema = _resolve_seed(body, store)
     return await generator.generate_config(
         body.criteria,
         columns=columns,
         column_notes=body.column_notes,
-        label_schema=label_schema,
     )
 
 

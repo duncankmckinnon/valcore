@@ -70,7 +70,7 @@ def make_dataset(
     each non-None entry as that row's confirmed ground-truth annotation.
     """
     dataset = store.create_dataset(
-        "ds", "", columns if columns is not None else ["input", "output"], {}
+        "ds", "", columns if columns is not None else ["input", "output"]
     )
     rows = store.add_rows(
         dataset.id, [{"input": f"in{i}", "output": f"out{i}"} for i in range(len(labels))]

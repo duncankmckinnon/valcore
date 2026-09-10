@@ -80,7 +80,7 @@ def _seed(store: Store, labels: list[str | None]) -> None:
     """
     evaluator = store.create_evaluator("judge", description="a judge")
     store.create_version(evaluator.id, **VERSION_FIELDS)
-    dataset = store.create_dataset("cases", "", ["input", "output"], CATEGORICAL_SCHEMA)
+    dataset = store.create_dataset("cases", "", ["input", "output"])
     rows = store.add_rows(
         dataset.id, [{"input": f"in{i}", "output": f"out{i}"} for i in range(len(labels))]
     )
@@ -1065,8 +1065,7 @@ def test_logfire_fetch_creates_local_dataset(runner, db_path, monkeypatch):
 
     s = _fresh_store(db_path)
     ds = s.get_dataset(s.list_datasets()[0].id)
-    # The dataset is created with an empty legacy schema; the schema lives on a LabelSet.
-    assert ds.label_schema == {}
+    # The schema lives on a LabelSet.
     label_sets = s.list_label_sets(ds.id)
     assert len(label_sets) == 1
     rows = s.list_rows(ds.id)

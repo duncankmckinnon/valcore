@@ -381,7 +381,7 @@ def import_(ctx: click.Context, path: Path, name: str | None) -> None:
         # A bare case array (Logfire's export shape) carries no dataset name, so fall back to the
         # filename the way the evaluator branch below already does.
         ds_name = name or ds_name or path.stem
-        created = store.create_dataset(ds_name, "", columns, {})
+        created = store.create_dataset(ds_name, "", columns)
         rows = store.add_prepared_rows(created.id, prepared_rows)
         if label_schema:
             label_set = store.create_label_set(
@@ -902,7 +902,6 @@ def logfire_pull_cmd(
         name=name,
         description=description,
         columns=result.columns,
-        label_schema={},
     )
     rows = store.add_prepared_rows(dataset.id, result.prepared)
     if schema:
@@ -956,7 +955,6 @@ def logfire_fetch(ctx: click.Context, source_name: str, name: str | None, descri
         name=(name or "").strip() or result.name,
         description=description,
         columns=result.columns,
-        label_schema={},
     )
     rows = store.add_prepared_rows(dataset.id, result.prepared)
     if result.label_schema:

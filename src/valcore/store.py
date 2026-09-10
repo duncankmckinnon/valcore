@@ -15,7 +15,6 @@ from sqlmodel import create_engine as _sqlmodel_create_engine
 from valcore import settings
 from valcore.errors import (
     ContractError,
-    DestructiveChangeError,
     FrozenVersionError,
     NotFoundError,
     ReferencedError,
@@ -30,7 +29,6 @@ from valcore.models import (
     Evaluator,
     EvaluatorVersion,
     ExperimentRun,
-    LabelSchema,
     LabelSet,
     LabelSource,
     Run,
@@ -42,7 +40,7 @@ from valcore.models import (
     validate_label_set,
     validate_version,
 )
-from valcore.schema_migration import apply_column_changes, invalid_label_ids
+from valcore.schema_migration import apply_column_changes
 
 
 def create_engine(db_path: Path | str | None = None) -> Engine:
@@ -302,7 +300,6 @@ class Store:
         name: str,
         description: str,
         columns: list[str],
-        label_schema: dict,
     ) -> Dataset:
         """Create and persist a new dataset."""
         with session_scope(self.engine) as session:
@@ -310,7 +307,6 @@ class Store:
                 name=name,
                 description=description,
                 columns=columns,
-                label_schema=label_schema,
             )
             session.add(dataset)
             return dataset
@@ -373,8 +369,6 @@ class Store:
         description: str | None = None,
         columns: list[str] | None = None,
         column_renames: dict[str, str] | None = None,
-        label_schema: dict | None = None,
-        force: bool = False,
     ) -> Dataset:
         """Update a dataset's metadata and shape, migrating its rows."""
         with session_scope(self.engine) as session:
@@ -403,23 +397,6 @@ class Store:
                     row.data = apply_column_changes(row.data, renames, final_columns)
                     session.add(row)
                 dataset.columns = final_columns
-
-            if label_schema is not None:
-                schema = LabelSchema.model_validate(label_schema)
-                rows = session.exec(select(DatasetRow).where(DatasetRow.dataset_id == id)).all()
-                invalid = invalid_label_ids(rows, schema)
-                if invalid and not force:
-                    raise DestructiveChangeError(
-                        f"{len(invalid)} labels would become invalid under the new schema.",
-                        detail={"invalid_label_count": len(invalid)},
-                    )
-                invalid_ids = set(invalid)
-                for row in rows:
-                    if row.id in invalid_ids:
-                        row.label = None
-                        row.label_source = None
-                        session.add(row)
-                dataset.label_schema = label_schema
 
             session.add(dataset)
             return dataset

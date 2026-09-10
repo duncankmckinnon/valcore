@@ -124,9 +124,9 @@ def test_overview_counts_entities(store: Store) -> None:
     store.create_evaluator("e2")
     v1 = store.create_version(e1.id, **version_fields()).id
 
-    d1 = store.create_dataset("d1", "", ["question"], CATEGORICAL_SCHEMA)
-    d2 = store.create_dataset("d2", "", ["question"], CATEGORICAL_SCHEMA)
-    store.create_dataset("d3", "", ["question"], CATEGORICAL_SCHEMA)
+    d1 = store.create_dataset("d1", "", ["question"])
+    d2 = store.create_dataset("d2", "", ["question"])
+    store.create_dataset("d3", "", ["question"])
 
     store.create_run(RunKind.EVAL, v1, d1.id, concurrency=1)
     store.create_run(RunKind.EVAL, v1, d2.id, concurrency=1)
@@ -153,8 +153,8 @@ def _categorical_label_set(store: Store, dataset_id: str) -> str:
 
 
 def test_overview_sums_rows_across_datasets(store: Store) -> None:
-    d1 = store.create_dataset("d1", "", ["question"], CATEGORICAL_SCHEMA)
-    d2 = store.create_dataset("d2", "", ["question"], CATEGORICAL_SCHEMA)
+    d1 = store.create_dataset("d1", "", ["question"])
+    d2 = store.create_dataset("d2", "", ["question"])
 
     # d1: 3 rows, 2 labeled.
     r1 = store.add_rows(d1.id, [{"question": "a"}, {"question": "b"}, {"question": "c"}])
@@ -177,7 +177,7 @@ def test_overview_sums_rows_across_datasets(store: Store) -> None:
 
 def test_overview_best_accuracy_is_max_over_finished_runs(store: Store) -> None:
     version_id = _make_version(store)
-    dataset_id = store.create_dataset("d", "", ["question"], CATEGORICAL_SCHEMA).id
+    dataset_id = store.create_dataset("d", "", ["question"]).id
 
     _finish_run(
         store,
@@ -208,7 +208,7 @@ def test_overview_best_accuracy_is_max_over_finished_runs(store: Store) -> None:
 
 def test_overview_best_accuracy_ignores_unfinished_runs(store: Store) -> None:
     version_id = _make_version(store)
-    dataset_id = store.create_dataset("d", "", ["question"], CATEGORICAL_SCHEMA).id
+    dataset_id = store.create_dataset("d", "", ["question"]).id
 
     _finish_run(
         store,
@@ -238,7 +238,7 @@ def test_overview_ignores_non_completed_terminal_states(
     # Only the strict COMPLETED terminal state feeds best_accuracy / latest_run; a run that
     # ended in any other terminal state must not count even though it carries a higher score.
     version_id = _make_version(store)
-    dataset_id = store.create_dataset("d", "", ["question"], CATEGORICAL_SCHEMA).id
+    dataset_id = store.create_dataset("d", "", ["question"]).id
 
     _finish_run(
         store,
@@ -276,7 +276,7 @@ def test_overview_defensive_accuracy_does_not_raise_or_count(
     store: Store, metrics: dict | None
 ) -> None:
     version_id = _make_version(store)
-    dataset_id = store.create_dataset("d", "", ["question"], CATEGORICAL_SCHEMA).id
+    dataset_id = store.create_dataset("d", "", ["question"]).id
 
     _finish_run(
         store,
@@ -292,7 +292,7 @@ def test_overview_defensive_accuracy_does_not_raise_or_count(
 
 def test_overview_defensive_run_does_not_hide_valid_one(store: Store) -> None:
     version_id = _make_version(store)
-    dataset_id = store.create_dataset("d", "", ["question"], CATEGORICAL_SCHEMA).id
+    dataset_id = store.create_dataset("d", "", ["question"]).id
 
     _finish_run(
         store,
@@ -317,8 +317,8 @@ def test_overview_defensive_run_does_not_hide_valid_one(store: Store) -> None:
 
 def test_overview_latest_run_is_most_recently_finished(store: Store) -> None:
     version_id = _make_version(store)
-    early_ds = store.create_dataset("early", "", ["question"], CATEGORICAL_SCHEMA).id
-    late_ds = store.create_dataset("late", "", ["question"], CATEGORICAL_SCHEMA).id
+    early_ds = store.create_dataset("early", "", ["question"]).id
+    late_ds = store.create_dataset("late", "", ["question"]).id
 
     _finish_run(
         store,
@@ -349,7 +349,7 @@ def test_overview_latest_run_is_most_recently_finished(store: Store) -> None:
 
 def test_overview_latest_run_accuracy_none_when_metrics_lack_it(store: Store) -> None:
     version_id = _make_version(store)
-    dataset_id = store.create_dataset("d", "", ["question"], CATEGORICAL_SCHEMA).id
+    dataset_id = store.create_dataset("d", "", ["question"]).id
 
     _finish_run(
         store,
@@ -373,9 +373,9 @@ def _datasets_by_id(store: Store) -> dict[str, Any]:
 
 
 def test_list_datasets_reports_row_and_labeled_counts(store: Store) -> None:
-    empty = store.create_dataset("empty", "", ["question"], CATEGORICAL_SCHEMA)
-    full = store.create_dataset("full", "", ["question"], CATEGORICAL_SCHEMA)
-    partial = store.create_dataset("partial", "", ["question"], CATEGORICAL_SCHEMA)
+    empty = store.create_dataset("empty", "", ["question"])
+    full = store.create_dataset("full", "", ["question"])
+    partial = store.create_dataset("partial", "", ["question"])
 
     full_rows = store.add_rows(full.id, [{"question": "a"}, {"question": "b"}])
     full_label_set = _categorical_label_set(store, full.id)
@@ -404,7 +404,7 @@ def test_list_datasets_reports_row_and_labeled_counts(store: Store) -> None:
 
 
 def test_list_datasets_keeps_existing_fields(store: Store) -> None:
-    ds = store.create_dataset("keep", "why", ["question"], CATEGORICAL_SCHEMA)
+    ds = store.create_dataset("keep", "why", ["question"])
     only = _datasets_by_id(store)[ds.id]
     assert _field(only, "name") == "keep"
     assert _field(only, "columns") == ["question"]
@@ -430,8 +430,8 @@ async def test_get_overview_empty(client: httpx.AsyncClient) -> None:
 @pytest.mark.anyio
 async def test_get_overview_populated_shape(client: httpx.AsyncClient, store: Store) -> None:
     version_id = _make_version(store)
-    d1 = store.create_dataset("d1", "", ["question"], CATEGORICAL_SCHEMA)
-    d2 = store.create_dataset("scored", "", ["question"], CATEGORICAL_SCHEMA)
+    d1 = store.create_dataset("d1", "", ["question"])
+    d2 = store.create_dataset("scored", "", ["question"])
 
     rows = store.add_rows(d1.id, [{"question": "a"}, {"question": "b"}])
     label_set = _categorical_label_set(store, d1.id)
@@ -470,8 +470,8 @@ async def test_get_overview_populated_shape(client: httpx.AsyncClient, store: St
 
 @pytest.mark.anyio
 async def test_get_datasets_includes_counts(client: httpx.AsyncClient, store: Store) -> None:
-    empty = store.create_dataset("empty", "", ["question"], CATEGORICAL_SCHEMA)
-    partial = store.create_dataset("partial", "", ["question"], CATEGORICAL_SCHEMA)
+    empty = store.create_dataset("empty", "", ["question"])
+    partial = store.create_dataset("partial", "", ["question"])
 
     rows = store.add_rows(partial.id, [{"question": "a"}, {"question": "b"}])
     label_set = _categorical_label_set(store, partial.id)
@@ -496,7 +496,7 @@ async def test_get_dataset_detail_omits_counts(client: httpx.AsyncClient, store:
     # Counts belong only on the list endpoint, which can fill them from a grouped query. The
     # detail endpoint must not advertise ``row_count``/``labeled_count`` at all rather than
     # report a fabricated zero for a dataset that actually has rows.
-    dataset = store.create_dataset("has-rows", "", ["question"], CATEGORICAL_SCHEMA)
+    dataset = store.create_dataset("has-rows", "", ["question"])
     rows = store.add_rows(dataset.id, [{"question": "a"}, {"question": "b"}])
     label_set = _categorical_label_set(store, dataset.id)
     store.set_annotation(label_set, rows[0].id, labels=["good"], source=LabelSource.MANUAL)

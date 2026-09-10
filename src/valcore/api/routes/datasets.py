@@ -205,8 +205,6 @@ class DatasetUpdate(BaseModel):
     description: str | None = None
     columns: list[str] | None = None
     column_renames: dict[str, str] | None = None
-    label_schema: LabelSchema | None = None
-    force: bool = False
 
 
 class DatasetOut(BaseModel):
@@ -365,7 +363,7 @@ async def list_datasets(store: StoreDep) -> list[DatasetSummaryOut]:
 async def create_dataset(body: DatasetCreate, store: StoreDep) -> DatasetOut:
     """Create an empty dataset, with a label set if a label_schema is given."""
     dataset = store.create_dataset(
-        name=body.name, description=body.description, columns=body.columns, label_schema={}
+        name=body.name, description=body.description, columns=body.columns
     )
     if body.label_schema is not None:
         store.create_label_set(
@@ -393,15 +391,12 @@ async def get_dataset(id: str, store: StoreDep) -> DatasetOut:
 @router.patch("/{id}")
 async def update_dataset(id: str, body: DatasetUpdate, store: StoreDep) -> DatasetOut:
     """Update a dataset's metadata and shape, migrating its rows."""
-    schema = body.label_schema.model_dump(mode="json") if body.label_schema is not None else None
     dataset = store.update_dataset(
         id,
         name=body.name,
         description=body.description,
         columns=body.columns,
         column_renames=body.column_renames,
-        label_schema=schema,
-        force=body.force,
     )
     return DatasetOut.model_validate(dataset)
 
@@ -452,7 +447,7 @@ async def upload_dataset(
     if not prepared:
         raise ContractError("File contains no data rows.")
 
-    dataset = store.create_dataset(name=name, description="", columns=columns, label_schema={})
+    dataset = store.create_dataset(name=name, description="", columns=columns)
     rows = store.add_prepared_rows(dataset.id, prepared)
     if schema_dict:
         label_set = store.create_label_set(
@@ -549,7 +544,6 @@ async def generate_dataset(body: DatasetGenerate, store: StoreDep) -> DatasetCre
         name=body.name,
         description=body.description,
         columns=body.columns,
-        label_schema={},
     )
     # ``instructions`` steer generation when supplied; otherwise the stored description
     # doubles as the prompt, preserving the pre-``instructions`` behaviour.
@@ -623,7 +617,6 @@ async def generate_dataset_from_version(
         name=body.name,
         description=body.description,
         columns=columns,
-        label_schema={},
     )
     prompt = body.instructions if body.instructions is not None else body.description
     generated = await generate_rows(
@@ -690,7 +683,7 @@ async def create_dataset_from_logfire(
         label_column=body.label_column,
     )
     dataset = store.create_dataset(
-        name=body.name, description=body.description, columns=result.columns, label_schema={}
+        name=body.name, description=body.description, columns=result.columns
     )
     rows = store.add_prepared_rows(dataset.id, result.prepared)
     if body.label_schema is not None:
@@ -727,7 +720,7 @@ async def create_dataset_from_logfire_hosted(
     result = await fetch_hosted_dataset(source_name)
     local_name = (body.name or "").strip() or result.name
     dataset = store.create_dataset(
-        name=local_name, description=body.description, columns=result.columns, label_schema={}
+        name=local_name, description=body.description, columns=result.columns
     )
     rows = store.add_prepared_rows(dataset.id, result.prepared)
     if result.label_schema:

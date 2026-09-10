@@ -485,7 +485,7 @@ def test_prepared_rows_load_into_store(tmp_path) -> None:
         evals, valcore_meta(make_version())
     )
 
-    dataset = store.create_dataset(name=name, description="", columns=columns, label_schema={})
+    dataset = store.create_dataset(name=name, description="", columns=columns)
     created = store.add_prepared_rows(dataset.id, prepared)
     real_label_set = store.create_label_set(
         dataset.id,
