@@ -280,6 +280,84 @@ def test_set_label_missing_row_raises(store: Store) -> None:
         store.set_label("nope", {"verdict": "pass"}, LabelSource.MANUAL)
 
 
+# -- Label sets ----------------------------------------------------------
+
+
+def test_create_and_get_label_set(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"], {})
+    created = store.create_label_set(
+        dataset.id,
+        name="quality",
+        description="human review",
+        kind=ScoreKind.CATEGORICAL,
+        labels=[{"name": "good", "description": "meets the bar"}],
+    )
+    assert created.id
+    assert created.dataset_id == dataset.id
+    assert created.kind is ScoreKind.CATEGORICAL
+
+    fetched = store.get_label_set(created.id)
+    assert fetched.name == "quality"
+    assert fetched.labels == [{"name": "good", "description": "meets the bar"}]
+
+
+def test_create_label_set_rejects_invalid_shape(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"], {})
+    with pytest.raises(ContractError):
+        store.create_label_set(
+            dataset.id, name="bad", description="", kind=ScoreKind.CATEGORICAL, labels=None
+        )
+
+
+def test_list_label_sets_ordered_by_creation(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"], {})
+    first = store.create_label_set(
+        dataset.id,
+        name="a",
+        description="",
+        kind=ScoreKind.CATEGORICAL,
+        labels=[{"name": "x", "description": "d"}],
+    )
+    second = store.create_label_set(
+        dataset.id,
+        name="b",
+        description="",
+        kind=ScoreKind.NUMERIC,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    listed = store.list_label_sets(dataset.id)
+    assert [ls.id for ls in listed] == [first.id, second.id]
+
+
+def test_update_label_set_renames(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"], {})
+    created = store.create_label_set(
+        dataset.id,
+        name="a",
+        description="",
+        kind=ScoreKind.CATEGORICAL,
+        labels=[{"name": "x", "description": "d"}],
+    )
+    updated = store.update_label_set(created.id, name="renamed", description="new desc")
+    assert updated.name == "renamed"
+    assert updated.description == "new desc"
+
+
+def test_delete_label_set_removes_it(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"], {})
+    label_set = store.create_label_set(
+        dataset.id,
+        name="a",
+        description="",
+        kind=ScoreKind.CATEGORICAL,
+        labels=[{"name": "x", "description": "d"}],
+    )
+    store.delete_label_set(label_set.id)
+    with pytest.raises(NotFoundError):
+        store.get_label_set(label_set.id)
+
+
 # -- Runs --------------------------------------------------------------------
 
 

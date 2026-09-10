@@ -21,6 +21,7 @@ from valcore.errors import (
     ReferencedError,
 )
 from valcore.models import (
+    Annotation,
     Dataset,
     DatasetGeneration,
     DatasetHostedFetch,
@@ -30,11 +31,14 @@ from valcore.models import (
     EvaluatorVersion,
     ExperimentRun,
     LabelSchema,
+    LabelSet,
     LabelSource,
     Run,
     RunKind,
     RunResult,
     RunStatus,
+    ScoreKind,
+    validate_label_set,
     validate_version,
 )
 from valcore.schema_migration import apply_column_changes, invalid_label_ids
@@ -610,6 +614,72 @@ class Store:
                 key = str(label.get("value"))
                 distribution[key] = distribution.get(key, 0) + 1
             return distribution
+
+    # -- Label sets -------------------------------------------------------------
+
+    def create_label_set(
+        self,
+        dataset_id: str,
+        name: str,
+        description: str,
+        kind: ScoreKind,
+        labels: list[dict] | None = None,
+        minimum: float | None = None,
+        maximum: float | None = None,
+    ) -> LabelSet:
+        """Validate and persist a new label set (annotation contract) for a dataset."""
+        with session_scope(self.engine) as session:
+            _require(session, Dataset, dataset_id)
+            label_set = LabelSet(
+                dataset_id=dataset_id,
+                name=name,
+                description=description,
+                kind=kind,
+                labels=labels,
+                minimum=minimum,
+                maximum=maximum,
+            )
+            validate_label_set(label_set)
+            session.add(label_set)
+            return label_set
+
+    def get_label_set(self, id: str) -> LabelSet:
+        """Return the label set with ``id`` or raise NotFoundError."""
+        with session_scope(self.engine) as session:
+            return _require(session, LabelSet, id)
+
+    def list_label_sets(self, dataset_id: str) -> list[LabelSet]:
+        """Return every label set of a dataset ordered by creation time."""
+        with session_scope(self.engine) as session:
+            return list(
+                session.exec(
+                    select(LabelSet)
+                    .where(LabelSet.dataset_id == dataset_id)
+                    .order_by(LabelSet.created_at)
+                )
+            )
+
+    def update_label_set(
+        self, id: str, *, name: str | None = None, description: str | None = None
+    ) -> LabelSet:
+        """Rename or redescribe a label set; its label space is fixed at creation."""
+        with session_scope(self.engine) as session:
+            label_set = _require(session, LabelSet, id)
+            if name is not None:
+                label_set.name = name
+            if description is not None:
+                label_set.description = description
+            session.add(label_set)
+            return label_set
+
+    def delete_label_set(self, id: str) -> None:
+        """Delete a label set and every annotation recorded against it."""
+        with session_scope(self.engine) as session:
+            label_set = _require(session, LabelSet, id)
+            annotations = session.exec(select(Annotation).where(Annotation.label_set_id == id))
+            for annotation in annotations:
+                session.delete(annotation)
+            session.delete(label_set)
 
     # -- Runs -----------------------------------------------------------------
 
