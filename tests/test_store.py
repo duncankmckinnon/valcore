@@ -591,6 +591,35 @@ def test_delete_dataset_cascades_rows(store: Store) -> None:
         assert session.exec(select(DatasetRow)).all() == []
 
 
+def test_delete_row_cascades_annotations(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"], {})
+    rows = store.add_rows(dataset.id, [{"q": "1"}, {"q": "2"}])
+    label_set = _categorical_label_set(store, dataset.id)
+    store.set_annotation(label_set.id, rows[0].id, labels=["good"])
+    store.set_annotation(label_set.id, rows[1].id, labels=["bad"])
+
+    store.delete_row(rows[0].id)
+
+    assert store.get_annotation(label_set.id, rows[0].id) is None
+    annotated, total = store.annotation_progress(label_set.id)
+    assert (annotated, total) == (1, 1)
+    # Verify the other row's annotation still exists
+    assert store.get_annotation(label_set.id, rows[1].id) is not None
+
+
+def test_delete_dataset_cascades_label_sets_and_annotations(store: Store) -> None:
+    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
+    rows = store.add_rows(ds.id, [{"question": "a"}])
+    label_set = _categorical_label_set(store, ds.id)
+    store.set_annotation(label_set.id, rows[0].id, labels=["good"])
+
+    store.delete_dataset(ds.id)
+
+    with pytest.raises(NotFoundError):
+        store.get_label_set(label_set.id)
+    assert store.get_annotation(label_set.id, rows[0].id) is None
+
+
 # -- Cross-thread access (WAL / check_same_thread=False) ---------------------
 
 

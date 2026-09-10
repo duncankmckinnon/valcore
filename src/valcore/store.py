@@ -434,6 +434,17 @@ class Store:
             rows = session.exec(select(DatasetRow).where(DatasetRow.dataset_id == id))
             for row in rows:
                 session.delete(row)
+            # The annotation records have no meaning without their label set; leaving them would
+            # orphan rows that nothing can reach. The label set has no meaning without its dataset;
+            # leaving it would orphan rows that nothing can reach.
+            label_sets = session.exec(select(LabelSet).where(LabelSet.dataset_id == id))
+            for label_set in label_sets:
+                annotations = session.exec(
+                    select(Annotation).where(Annotation.label_set_id == label_set.id)
+                )
+                for annotation in annotations:
+                    session.delete(annotation)
+                session.delete(label_set)
             # The generation record has no meaning without its dataset; leaving it would
             # orphan a row that nothing can reach.
             generations = session.exec(
@@ -572,9 +583,14 @@ class Store:
             return row
 
     def delete_row(self, id: str) -> None:
-        """Delete a single dataset row."""
+        """Delete a single dataset row and all its annotations."""
         with session_scope(self.engine) as session:
             row = _require(session, DatasetRow, id)
+            # The annotation records have no meaning without their dataset row; leaving them would
+            # orphan rows that nothing can reach.
+            annotations = session.exec(select(Annotation).where(Annotation.dataset_row_id == id))
+            for annotation in annotations:
+                session.delete(annotation)
             session.delete(row)
 
     def set_label(
