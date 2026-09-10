@@ -31,15 +31,18 @@ from valcore.config_io import EvalPackage
 from valcore.errors import ConfigError, ContractError, ValcoreError
 from valcore.export import render_dataset_module, render_judge_module, render_script
 from valcore.models import (
+    Annotation,
     Dataset,
     DatasetRow,
     Evaluator,
     EvaluatorVersion,
     LabelSchema,
+    LabelSet,
     Run,
     RunKind,
     RunStatus,
     ScoreKind,
+    label_set_fields_from_schema,
     validate_version,
 )
 from valcore.paths import config_path
@@ -249,15 +252,32 @@ def export(
     if evaluator is not None:
         ev = resolve_evaluator(store, evaluator)
         ver = resolve_version(store, ev, version_name)
-    ds = rows = None
+    ds = rows = label_set = annotations = None
     if dataset is not None:
         ds = resolve_dataset(store, dataset)
         rows = store.list_rows(ds.id)
+        label_set, annotations = _primary_ground_truth(store, ds.id, rows)
 
     if fmt == "code":
-        _export_code(ver, ds, rows, output)
+        _export_code(ver, ds, rows, output, label_set=label_set, annotations=annotations)
     else:
-        _export_json(ev, ver, ds, rows, output, split)
+        _export_json(ev, ver, ds, rows, output, split, label_set=label_set, annotations=annotations)
+
+
+def _primary_ground_truth(
+    store: Store, dataset_id: str, rows: list[DatasetRow]
+) -> tuple[LabelSet | None, list[Annotation] | None]:
+    """Return (label_set, annotations) for a dataset's primary label set, or (None, None).
+
+    Ground truth now lives on ``LabelSet``/``Annotation``, not on ``DatasetRow``, so export
+    must fetch it explicitly rather than reading it off the row -- mirroring the identical
+    helper in ``routes/datasets.py``.
+    """
+    label_set = store.primary_label_set(dataset_id)
+    if label_set is None:
+        return None, None
+    annotations = store.list_annotations_for_rows(label_set.id, [row.id for row in rows])
+    return label_set, annotations
 
 
 def _export_code(
@@ -265,6 +285,9 @@ def _export_code(
     ds: Dataset | None,
     rows: list[DatasetRow] | None,
     output: Path | None,
+    *,
+    label_set: LabelSet | None = None,
+    annotations: list[Annotation] | None = None,
 ) -> None:
     """Emit the Python-code form: a standalone script and/or a dataset module."""
     if ver is not None and ds is not None:
@@ -272,11 +295,17 @@ def _export_code(
             raise click.UsageError("A script and a dataset module cannot share stdout; pass -o.")
         _write_artifact(output, render_script(ver), output)
         _write_artifact(
-            output.parent / f"{output.stem}.dataset.py", render_dataset_module(ds, rows), output
+            output.parent / f"{output.stem}.dataset.py",
+            render_dataset_module(ds, rows, label_set=label_set, annotations=annotations),
+            output,
         )
         return
 
-    content = render_script(ver) if ver is not None else render_dataset_module(ds, rows)
+    content = (
+        render_script(ver)
+        if ver is not None
+        else render_dataset_module(ds, rows, label_set=label_set, annotations=annotations)
+    )
     if output is None:
         click.echo(content, nl=False)
     else:
@@ -290,13 +319,16 @@ def _export_json(
     rows: list[DatasetRow] | None,
     output: Path | None,
     split: bool,
+    *,
+    label_set: LabelSet | None = None,
+    annotations: list[Annotation] | None = None,
 ) -> None:
     """Emit the JSON eval-package form, writing the companion judge module beside a config file."""
     pkg = None
     if ver is not None:
         pkg = EvalPackage.from_version(ver)
     if ds is not None:
-        ds_pkg = EvalPackage.from_dataset(ds, rows)
+        ds_pkg = EvalPackage.from_dataset(ds, rows, label_set=label_set, annotations=annotations)
         pkg = ds_pkg if pkg is None else pkg.merge(ds_pkg)
 
     mode = "split" if split else "bundled"
@@ -345,12 +377,22 @@ def import_(ctx: click.Context, path: Path, name: str | None) -> None:
         validate_version(EvaluatorVersion(evaluator_id="", **version_fields))
 
     if pkg.dataset is not None:
-        ds_name, columns, label_schema, prepared_rows = pkg.to_dataset_fields()
+        ds_name, columns, label_schema, prepared_rows, row_annotations = pkg.to_dataset_fields()
         # A bare case array (Logfire's export shape) carries no dataset name, so fall back to the
         # filename the way the evaluator branch below already does.
         ds_name = name or ds_name or path.stem
-        created = store.create_dataset(ds_name, "", columns, label_schema)
-        store.add_prepared_rows(created.id, prepared_rows)
+        created = store.create_dataset(ds_name, "", columns, {})
+        rows = store.add_prepared_rows(created.id, prepared_rows)
+        if label_schema:
+            label_set = store.create_label_set(
+                created.id,
+                name="Imported labels",
+                description="",
+                **label_set_fields_from_schema(LabelSchema.model_validate(label_schema)),
+            )
+            for row, fields in zip(rows, row_annotations):
+                if fields is not None:
+                    store.set_annotation(label_set.id, row.id, **fields)
         click.echo(f"dataset {created.id} {created.name}")
 
     if version_fields is not None:
@@ -860,9 +902,19 @@ def logfire_pull_cmd(
         name=name,
         description=description,
         columns=result.columns,
-        label_schema=schema or {},
+        label_schema={},
     )
     rows = store.add_prepared_rows(dataset.id, result.prepared)
+    if schema:
+        label_set = store.create_label_set(
+            dataset.id,
+            name="Imported labels",
+            description="",
+            **label_set_fields_from_schema(LabelSchema.model_validate(schema)),
+        )
+        for row, fields in zip(rows, result.row_annotations):
+            if fields is not None:
+                store.set_annotation(label_set.id, row.id, **fields)
     store.set_logfire_pull(
         dataset.id,
         sql=result.sql,
@@ -904,9 +956,19 @@ def logfire_fetch(ctx: click.Context, source_name: str, name: str | None, descri
         name=(name or "").strip() or result.name,
         description=description,
         columns=result.columns,
-        label_schema=result.label_schema,
+        label_schema={},
     )
     rows = store.add_prepared_rows(dataset.id, result.prepared)
+    if result.label_schema:
+        label_set = store.create_label_set(
+            dataset.id,
+            name="Imported labels",
+            description="",
+            **label_set_fields_from_schema(LabelSchema.model_validate(result.label_schema)),
+        )
+        for row, fields in zip(rows, result.row_annotations):
+            if fields is not None:
+                store.set_annotation(label_set.id, row.id, **fields)
     emit(
         {"id": dataset.id, "name": dataset.name, "row_count": len(rows)},
         as_json=False,
