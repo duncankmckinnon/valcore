@@ -102,8 +102,8 @@ describe("AnnotationQueue", () => {
 
   it("toggles a categorical label on and off with number keys (multi-select)", async () => {
     listLabelSetsMock.mockResolvedValue([LABEL_SET]);
-    rowsMock.mockResolvedValue(page([makeRow({ annotation: makeAnnotation({ labels: ["good"] }) })]));
-    putMock.mockResolvedValue(makeAnnotation({ labels: ["good", "bad"] }));
+    rowsMock.mockResolvedValue(page([makeRow({ annotation: makeAnnotation({ labels: ["good"], description: "looks solid" }) })]));
+    putMock.mockResolvedValue(makeAnnotation({ labels: ["good", "bad"], description: "looks solid" }));
 
     renderQueue();
     await screen.findByDisplayValue("hello world");
@@ -114,7 +114,7 @@ describe("AnnotationQueue", () => {
       expect(putMock).toHaveBeenCalledWith("ls1", "r1", {
         labels: ["good", "bad"],
         value: null,
-        description: null,
+        description: "looks solid",
       }),
     );
   });
@@ -214,9 +214,9 @@ describe("AnnotationQueue", () => {
     const numericSet: LabelSetProgress = { ...LABEL_SET, kind: "numeric", labels: null, minimum: 0, maximum: 1 };
     listLabelSetsMock.mockResolvedValue([numericSet]);
     rowsMock.mockResolvedValue(
-      page([makeRow({ annotation: makeAnnotation({ labels: [], value: 0.5, suggested_labels: null, suggested_value: 0.7 }) })]),
+      page([makeRow({ annotation: makeAnnotation({ labels: [], value: 0.5, suggested_labels: null, suggested_value: 0.7, description: "initial note" }) })]),
     );
-    putMock.mockResolvedValue(makeAnnotation({ value: 0.9 }));
+    putMock.mockResolvedValue(makeAnnotation({ value: 0.9, description: "initial note" }));
 
     renderQueue();
     await screen.findByDisplayValue("hello world");
@@ -226,7 +226,7 @@ describe("AnnotationQueue", () => {
     fireEvent.blur(value);
 
     await waitFor(() =>
-      expect(putMock).toHaveBeenCalledWith("ls1", "r1", { labels: [], value: 0.9, description: null }),
+      expect(putMock).toHaveBeenCalledWith("ls1", "r1", { labels: [], value: 0.9, description: "initial note" }),
     );
   });
 });
