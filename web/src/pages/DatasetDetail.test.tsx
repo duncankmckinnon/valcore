@@ -31,18 +31,6 @@ vi.mock("../components/DatasetSettingsModal", () => ({
     ) : null,
 }));
 
-// The labeling grid fetches its own rows; stub it to expose the columns it is
-// asked to render so a re-render after a shape change is observable.
-vi.mock("../components/LabelingGrid", () => ({
-  default: ({ columns }: { columns: string[] }) => (
-    <div aria-label="grid">
-      {columns.map((column) => (
-        <span key={column}>header:{column}</span>
-      ))}
-    </div>
-  ),
-}));
-
 vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
   return {
@@ -124,9 +112,6 @@ function madeDataset(): Dataset {
     name: "My set",
     description: "desc",
     columns: ["question", "answer"],
-    label_schema: { kind: "categorical", labels: ["good", "bad"], minimum: null, maximum: null },
-    row_count: 5,
-    labeled_count: 5,
   };
 }
 
@@ -140,6 +125,11 @@ function renderDetail() {
       </Routes>
     </MemoryRouter>,
   );
+}
+
+/** Waits for the dataset to have loaded — the page's title is the stable readiness gate now that the grid no longer renders inline. */
+async function ready() {
+  return screen.findByRole("heading", { name: "My set" });
 }
 
 beforeEach(() => {
@@ -166,8 +156,7 @@ afterEach(() => {
 describe("DatasetDetail", () => {
   it("carries the title area in a single level-1 heading over its breadcrumb", async () => {
     renderDetail();
-
-    await screen.findByText("header:question");
+    await ready();
 
     // The breadcrumb back to the list stays alongside the adopted PageHeader.
     expect(screen.getByRole("link", { name: "Datasets" })).toBeTruthy();
@@ -178,44 +167,35 @@ describe("DatasetDetail", () => {
     expect(screen.getByText("desc")).toBeTruthy();
   });
 
-  it("opens the settings modal from Edit and re-renders the grid headers after a shape change", async () => {
+  it("links Annotate to this dataset's Annotations page", async () => {
     renderDetail();
+    await ready();
 
-    expect(await screen.findByText("header:question")).toBeTruthy();
-
-    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
-    const dialog = screen.getByRole("dialog", { name: "Dataset settings" });
-
-    await userEvent.click(within(dialog).getByRole("button", { name: "apply shape change" }));
-
-    expect(await screen.findByText("header:query")).toBeTruthy();
-    expect(screen.getByText("header:context")).toBeTruthy();
-    expect(screen.queryByText("header:question")).toBeNull();
+    const link = screen.getByRole("link", { name: "Annotate" });
+    expect(link).toHaveAttribute("href", "/annotations/d1");
   });
 
-  it("refreshes the stats counts after a shape change clears labels", async () => {
+  it("refreshes the stats counts after dataset settings are saved", async () => {
     getMock.mockResolvedValue(madeDataset());
     statsMock
       .mockResolvedValueOnce({ total: 5, labeled: 5, unlabeled: 0, label_distribution: {} })
       .mockResolvedValue({ total: 5, labeled: 1, unlabeled: 4, label_distribution: {} });
     renderDetail();
-
-    await screen.findByText("header:question");
+    await ready();
     await waitFor(() => expect(statsMock).toHaveBeenCalledTimes(1));
 
     await userEvent.click(screen.getByRole("button", { name: "Edit" }));
-    await userEvent.click(screen.getByRole("button", { name: "apply shape change" }));
+    const dialog = screen.getByRole("dialog", { name: "Dataset settings" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "apply shape change" }));
 
     await waitFor(() => expect(statsMock).toHaveBeenCalledTimes(2));
-    // 4 unlabeled rows is unique to the post-migration stats.
     expect(await screen.findByText("4", { selector: ".stat-value" })).toBeTruthy();
   });
 
   it("deletes the dataset on confirm and navigates back to the list", async () => {
     removeMock.mockResolvedValue(undefined);
     renderDetail();
-
-    await screen.findByText("header:question");
+    await ready();
 
     await userEvent.click(screen.getByRole("button", { name: "Delete dataset" }));
     const dialog = await screen.findByRole("dialog");
@@ -227,8 +207,7 @@ describe("DatasetDetail", () => {
 
   it("opens the Generate evaluator modal, seeded with the dataset's columns", async () => {
     renderDetail();
-
-    await screen.findByText("header:question");
+    await ready();
     await userEvent.click(screen.getByRole("button", { name: "Generate evaluator" }));
 
     // The modal is seeded from this dataset: its columns render as locked note rows.
@@ -242,8 +221,7 @@ describe("DatasetDetail", () => {
     const draft = madeDraft();
     generateMock.mockResolvedValue(draft);
     renderDetail();
-
-    await screen.findByText("header:question");
+    await ready();
     await userEvent.click(screen.getByRole("button", { name: "Generate evaluator" }));
 
     await userEvent.type(
@@ -260,12 +238,9 @@ describe("DatasetDetail", () => {
     expect(screen.getByLabelText("Version name")).toHaveValue("v1");
     expect(screen.getByLabelText("Instructions")).toHaveValue(draft.instructions);
     expect(screen.getByLabelText("Prompt template")).toHaveValue(draft.prompt_template);
-    // Seeded generation sends dataset_id plus the columns to expose, which defaults to all of
-    // them; `columns` narrows the dataset-derived set rather than conflicting with it.
     const arg = generateMock.mock.calls[0][0];
     expect(arg.dataset_id).toBe("d1");
     expect(arg.columns).toEqual(["question", "answer"]);
-    // The draft is editable, not saved: nothing was persisted from the modal.
     expect(createMock).not.toHaveBeenCalled();
     expect(createVersionMock).not.toHaveBeenCalled();
   });
@@ -275,8 +250,7 @@ describe("DatasetDetail", () => {
       new ApiError("blocked", "ReferencedError", 409, { run_count: 2 }),
     );
     renderDetail();
-
-    await screen.findByText("header:question");
+    await ready();
 
     await userEvent.click(screen.getByRole("button", { name: "Delete dataset" }));
     const dialog = await screen.findByRole("dialog");
@@ -290,10 +264,8 @@ describe("DatasetDetail", () => {
 
   it("offers an Export action in the header alongside the other dataset actions", async () => {
     renderDetail();
+    await ready();
 
-    await screen.findByText("header:question");
-
-    // The action sits in the header next to Edit / Delete; the modal has not opened yet.
     expect(screen.getByRole("button", { name: "Export" })).toBeTruthy();
     expect(screen.queryByRole("dialog", { name: "Export dataset" })).toBeNull();
   });
@@ -301,16 +273,12 @@ describe("DatasetDetail", () => {
   it("opens the export modal on click and fetches this dataset's code export", async () => {
     exportFilesMock.mockResolvedValue({ "my_set.py": "# pydantic_evals.Dataset module" });
     renderDetail();
-
-    await screen.findByText("header:question");
+    await ready();
     await userEvent.click(screen.getByRole("button", { name: "Export" }));
 
-    // The real ExportModal opens on Code and renders one named block per emitted file.
     expect(await screen.findByRole("dialog", { name: "Export dataset" })).toBeTruthy();
     expect(await screen.findByText("my_set.py")).toBeTruthy();
 
-    // Dataset Code is fetched for this id in the default bundled layout. The dataset page
-    // exports the dataset alone, so no evaluator version id is threaded through.
     await waitFor(() => expect(exportFilesMock).toHaveBeenCalledTimes(1));
     const [id, format, opts] = exportFilesMock.mock.calls[0];
     expect(id).toBe("d1");
@@ -322,15 +290,12 @@ describe("DatasetDetail", () => {
   it("unmounts the export modal when it is closed", async () => {
     exportFilesMock.mockResolvedValue({ "my_set.py": "# pydantic_evals.Dataset module" });
     renderDetail();
-
-    await screen.findByText("header:question");
+    await ready();
     await userEvent.click(screen.getByRole("button", { name: "Export" }));
 
     const dialog = await screen.findByRole("dialog", { name: "Export dataset" });
     await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
 
-    // Gating the modal on local `exporting` state means closing removes it from the tree,
-    // matching how EvaluatorDetail tears down its own export modal.
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: "Export dataset" })).toBeNull(),
     );
@@ -354,8 +319,7 @@ describe("DatasetDetail", () => {
 
   it("omits Open in Logfire when the datasets URL is unknown", async () => {
     renderDetail();
-
-    await screen.findByText("header:question");
+    await ready();
     expect(screen.queryByRole("link", { name: "Open in Logfire" })).toBeNull();
   });
 
@@ -406,8 +370,7 @@ describe("DatasetDetail", () => {
 
   it("offers neither Logfire top-up action for a dataset with no Logfire provenance", async () => {
     renderDetail();
-
-    await screen.findByText("header:question");
+    await ready();
     expect(screen.queryByRole("button", { name: "Pull more from Logfire" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Sync from Logfire" })).toBeNull();
   });
@@ -440,18 +403,7 @@ describe("DatasetDetail", () => {
   it("syncs from the hosted source and reports how many rows were added", async () => {
     hostedFetchMock.mockResolvedValue({ source_name: "qa-set" });
     pullMoreFromLogfireHostedMock.mockResolvedValue([
-      {
-        id: "r1",
-        created_at: "2026-09-08T00:00:00Z",
-        dataset_id: "d1",
-        idx: 5,
-        data: { question: "new" },
-        label: null,
-        suggested_label: null,
-        label_reasoning: null,
-        label_source: null,
-        note: null,
-      },
+      { id: "r1", dataset_id: "d1", idx: 5, data: { question: "new" } },
     ]);
     statsMock
       .mockResolvedValueOnce({ total: 5, labeled: 5, unlabeled: 0, label_distribution: {} })

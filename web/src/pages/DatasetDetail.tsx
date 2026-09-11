@@ -1,5 +1,5 @@
-// Detail view for a single dataset: a stats header over the labeling grid, with
-// Edit (shape/settings) and Delete actions in the header.
+// Detail view for a single dataset: a stats header with a link to the annotation
+// queue, and Edit (shape/settings) and Delete actions in the header.
 
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
@@ -11,7 +11,6 @@ import type {
   DatasetLogfirePull,
   DatasetStats,
   GeneratedConfig,
-  LabelSchema,
   LogfirePushResult,
 } from "../api/types";
 import { Button, ConfirmDialog, ErrorBanner, Spinner } from "../components/ui";
@@ -25,7 +24,6 @@ import GenerateMoreRows from "../components/GenerateMoreRows";
 import GenerationSettings from "../components/GenerationSettings";
 import LogfirePullMoreRows from "../components/LogfirePullMoreRows";
 import { LogfirePullSettings } from "../components/LogfirePullSettings";
-import LabelingGrid from "../components/LabelingGrid";
 
 // Mirrors the server's generation cap so an over-large ask is refused before it costs a
 // slow generation call.
@@ -49,7 +47,6 @@ export default function DatasetDetail({ datasetId }: Props) {
   const [syncing, setSyncing] = useState(false);
   const [syncAdded, setSyncAdded] = useState<number | null>(null);
   const [syncError, setSyncError] = useState<unknown>(null);
-  const [gridEpoch, setGridEpoch] = useState(0);
   const [generatingEvaluator, setGeneratingEvaluator] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -140,7 +137,6 @@ export default function DatasetDetail({ datasetId }: Props) {
       .then((added) => {
         setSyncAdded(added.length);
         refreshStats();
-        setGridEpoch((epoch) => epoch + 1);
       })
       .catch(setSyncError)
       .finally(() => setSyncing(false));
@@ -161,8 +157,8 @@ export default function DatasetDetail({ datasetId }: Props) {
 
   function onSaved(updated: Dataset) {
     setEditing(false);
-    // Replace the local shape so the grid headers and label controls re-render,
-    // then refresh the counts a migration may have changed.
+    // Replace the local shape so downstream views (e.g. the annotation queue) pick up
+    // the new columns, then refresh the counts a migration may have changed.
     setDataset(updated);
     refreshStats();
   }
@@ -191,11 +187,6 @@ export default function DatasetDetail({ datasetId }: Props) {
 
   if (error) return <ErrorBanner error={error} />;
   if (!dataset) return <Spinner />;
-
-  // Remount the grid whenever the dataset's shape changes so it refetches rows
-  // (e.g. after a column migration or a cleared label schema). `gridEpoch` covers the
-  // case where the shape is unchanged but rows were appended.
-  const gridKey = JSON.stringify([dataset.columns, dataset.label_schema, gridEpoch]);
 
   return (
     <section>
@@ -236,6 +227,9 @@ export default function DatasetDetail({ datasetId }: Props) {
                 Open in Logfire
               </a>
             ) : null}
+            <Link className="btn btn-secondary" to={`/annotations/${datasetId}`}>
+              Annotate
+            </Link>
             <Button variant="secondary" onClick={() => setGeneratingRows(true)}>
               Generate more rows
             </Button>
@@ -310,14 +304,6 @@ export default function DatasetDetail({ datasetId }: Props) {
       <GenerationSettings generation={generation} />
       <LogfirePullSettings pull={logfirePull} />
 
-      <LabelingGrid
-        key={gridKey}
-        datasetId={datasetId}
-        columns={dataset.columns}
-        schema={dataset.label_schema as LabelSchema}
-        onChange={refreshStats}
-      />
-
       <DatasetSettingsModal
         open={editing}
         dataset={dataset}
@@ -335,7 +321,6 @@ export default function DatasetDetail({ datasetId }: Props) {
           // The top-up records the ask that ran, so refetch it for the next prefill.
           refreshGeneration();
           refreshStats();
-          setGridEpoch((epoch) => epoch + 1);
         }}
         onClose={() => setGeneratingRows(false)}
       />
@@ -350,7 +335,6 @@ export default function DatasetDetail({ datasetId }: Props) {
             // The top-up records the ask that ran, so refetch it for the next prefill.
             refreshLogfirePull();
             refreshStats();
-            setGridEpoch((epoch) => epoch + 1);
           }}
           onClose={() => setPullingRows(false)}
         />
