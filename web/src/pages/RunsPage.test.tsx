@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import RunsPage from "./RunsPage";
 import { datasets, evaluators, runs } from "../api/client";
-import type { Dataset, Evaluator, EvaluatorVersion, Run } from "../api/types";
+import type { DatasetSummary, Evaluator, EvaluatorVersion, Run } from "../api/types";
 
 // RunLauncher owns its own API traffic and is exercised by its own suite; stub it
 // so opening the "New run" modal is observable without standing up its fixtures.
@@ -45,13 +45,12 @@ function makeRun(overrides: Partial<Run> = {}): Run {
   };
 }
 
-const DATASET: Dataset = {
+const DATASET: DatasetSummary = {
   id: "ds-1",
   created_at: "2026-01-01T00:00:00Z",
   name: "My dataset",
   description: "",
   columns: [],
-  label_schema: {},
   row_count: 0,
   labeled_count: 0,
 };

@@ -75,9 +75,6 @@ function madeDataset(): Dataset {
     name: "From Logfire",
     description: "",
     columns: ["question"],
-    label_schema: {},
-    row_count: 5,
-    labeled_count: 0,
   };
 }
 

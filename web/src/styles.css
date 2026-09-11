@@ -1610,6 +1610,20 @@ kbd {
   gap: var(--space-3);
 }
 
+.annotation-row-page,
+.label-set-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.annotation-row-data,
+.annotation-row-labels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
 /* -- Labeling grid ---------------------------------------------------------- */
 
 .labeling-grid {

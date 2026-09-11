@@ -90,9 +90,6 @@ describe("DatasetUpload", () => {
         name: "data",
         description: "",
         columns: ["text"],
-        label_schema: { kind: "categorical", labels: [], minimum: null, maximum: null },
-        row_count: 2,
-        labeled_count: 0,
       },
       row_count: 2,
     });
@@ -183,9 +180,6 @@ describe("DatasetUpload eval package", () => {
         name: "refusal",
         description: "",
         columns: ["question", "answer"],
-        label_schema: { kind: "categorical", labels: [], minimum: null, maximum: null },
-        row_count: 2,
-        labeled_count: 0,
       },
       row_count: 2,
     });
