@@ -1,12 +1,11 @@
-// Settings editor: rename a dataset, reshape its columns, and adjust its label space.
-// Column moves are diffed into a rename map; the server owns whether the reshape is
-// destructive, so a refusal is surfaced with its exact label-loss count.
+// Settings editor: rename a dataset and reshape its columns. A dataset's label space is
+// no longer part of its shape -- it lives in label sets, managed from the Annotations
+// page -- so this modal only ever sends name/description/columns/column_renames.
 
 import { useState } from "react";
-import { ApiError, datasets } from "../api/client";
-import type { Dataset, DatasetUpdate, LabelSchema } from "../api/types";
+import { datasets } from "../api/client";
+import type { Dataset, DatasetUpdate } from "../api/types";
 import { Button, ErrorBanner, Modal, Spinner } from "./ui";
-import LabelSchemaEditor from "./LabelSchemaEditor";
 
 type DatasetSettingsModalProps = {
   open: boolean;
@@ -27,16 +26,12 @@ export default function DatasetSettingsModal({
 }: DatasetSettingsModalProps) {
   const [name, setName] = useState(dataset.name);
   const [description, setDescription] = useState(dataset.description);
-  const [schema, setSchema] = useState<LabelSchema>(dataset.label_schema as LabelSchema);
   const [rows, setRows] = useState<ColumnRow[]>(
     dataset.columns.map((column) => ({ original: column, current: column })),
   );
   const [duplicateError, setDuplicateError] = useState<string | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [pending, setPending] = useState<{ body: DatasetUpdate; count: number } | null>(null);
-
-  const schemaChanged = JSON.stringify(schema) !== JSON.stringify(dataset.label_schema);
 
   function setRowName(index: number, value: string) {
     setRows((current) =>
@@ -52,7 +47,6 @@ export default function DatasetSettingsModal({
     setRows((current) => current.filter((_, i) => i !== index));
   }
 
-  // Derive the PATCH body from the current form, or a duplicate-name complaint.
   function buildBody(): { body: DatasetUpdate } | { duplicate: string } {
     const columns = rows.map((row) => row.current.trim()).filter(Boolean);
     if (new Set(columns).size !== columns.length) {
@@ -72,66 +66,45 @@ export default function DatasetSettingsModal({
     if (description.trim() !== dataset.description) body.description = description.trim();
     if (JSON.stringify(columns) !== JSON.stringify(dataset.columns)) body.columns = columns;
     if (Object.keys(renames).length > 0) body.column_renames = renames;
-    if (schemaChanged) body.label_schema = schema;
     return { body };
-  }
-
-  async function send(body: DatasetUpdate, force: boolean) {
-    setSubmitting(true);
-    setError(null);
-    try {
-      const saved = await datasets.update(dataset.id, force ? { ...body, force: true } : body);
-      onSaved(saved);
-      onClose();
-    } catch (err) {
-      if (err instanceof ApiError && err.type === "DestructiveChangeError") {
-        setPending({ body, count: Number(err.detail?.invalid_label_count ?? 0) });
-      } else {
-        setError(err);
-      }
-    } finally {
-      setSubmitting(false);
-    }
   }
 
   async function onSave() {
     setDuplicateError(null);
-    setPending(null);
     const built = buildBody();
     if ("duplicate" in built) {
       setDuplicateError(built.duplicate);
       return;
     }
-    await send(built.body, false);
+    setSubmitting(true);
+    setError(null);
+    try {
+      const saved = await datasets.update(dataset.id, built.body);
+      onSaved(saved);
+      onClose();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setSubmitting(false);
+    }
   }
-
-  const footer = pending ? (
-    <div className="modal-actions">
-      <Button variant="secondary" onClick={() => setPending(null)} disabled={submitting}>
-        Cancel
-      </Button>
-      <Button onClick={() => send(pending.body, true)} disabled={submitting}>
-        {submitting ? <Spinner /> : "Save anyway"}
-      </Button>
-    </div>
-  ) : (
-    <div className="modal-actions">
-      <Button variant="secondary" onClick={onClose} disabled={submitting}>
-        Cancel
-      </Button>
-      <Button onClick={onSave} disabled={submitting}>
-        {submitting ? <Spinner /> : "Save"}
-      </Button>
-    </div>
-  );
 
   return (
     <Modal
       open={open}
       title="Dataset settings"
-      description="The stored generation settings for this dataset. Editing them shapes future generation, not the existing rows."
+      description="Rename this dataset or reshape its columns."
       onClose={onClose}
-      footer={footer}
+      footer={
+        <div className="modal-actions">
+          <Button variant="secondary" onClick={onClose} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button onClick={onSave} disabled={submitting}>
+            {submitting ? <Spinner /> : "Save"}
+          </Button>
+        </div>
+      }
     >
       <div className="dataset-settings">
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
@@ -177,19 +150,7 @@ export default function DatasetSettingsModal({
           </Button>
         </div>
 
-        <LabelSchemaEditor value={schema} onChange={setSchema} />
-
         {duplicateError && <p className="destructive-warning">{duplicateError}</p>}
-
-        {schemaChanged && !pending && (
-          <p className="destructive-warning">
-            Changing the label space may clear labels that no longer fit.
-          </p>
-        )}
-
-        {pending && (
-          <p className="destructive-warning">{pending.count} rows will lose their label.</p>
-        )}
       </div>
     </Modal>
   );

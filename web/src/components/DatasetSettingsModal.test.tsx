@@ -22,9 +22,6 @@ function madeDataset(): Dataset {
     name: "My set",
     description: "desc",
     columns: ["question", "answer"],
-    label_schema: { kind: "categorical", labels: ["good", "bad"], minimum: null, maximum: null },
-    row_count: 0,
-    labeled_count: 0,
   };
 }
 
@@ -58,8 +55,7 @@ describe("DatasetSettingsModal", () => {
     await waitFor(() => expect(updateMock).toHaveBeenCalledOnce());
     const [id, body] = updateMock.mock.calls[0];
     expect(id).toBe("d1");
-    expect(body.columns).toEqual(["query", "answer"]);
-    expect(body.column_renames).toEqual({ question: "query" });
+    expect(body).toEqual({ columns: ["query", "answer"], column_renames: { question: "query" } });
   });
 
   it("adds a column to the list without a rename entry", async () => {
@@ -100,49 +96,7 @@ describe("DatasetSettingsModal", () => {
     expect(updateMock).not.toHaveBeenCalled();
   });
 
-  it("renders the server's invalid-label count and stays open on a DestructiveChangeError", async () => {
-    updateMock.mockRejectedValue(
-      new ApiError("destructive", "DestructiveChangeError", 409, { invalid_label_count: 3 }),
-    );
-    const props = renderModal();
-
-    const first = screen.getByLabelText("Column 1");
-    await userEvent.clear(first);
-    await userEvent.type(first, "query");
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
-
-    expect(await screen.findByText("3 rows will lose their label.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Save anyway" })).toBeTruthy();
-    expect(props.onClose).not.toHaveBeenCalled();
-    expect(props.onSaved).not.toHaveBeenCalled();
-  });
-
-  it("re-submits the identical body with force on confirm and reports success", async () => {
-    const saved = madeDataset();
-    updateMock
-      .mockRejectedValueOnce(
-        new ApiError("destructive", "DestructiveChangeError", 409, { invalid_label_count: 3 }),
-      )
-      .mockResolvedValueOnce(saved);
-    const props = renderModal();
-
-    const first = screen.getByLabelText("Column 1");
-    await userEvent.clear(first);
-    await userEvent.type(first, "query");
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
-
-    await screen.findByText("3 rows will lose their label.");
-    const [, firstBody] = updateMock.mock.calls[0];
-
-    await userEvent.click(screen.getByRole("button", { name: "Save anyway" }));
-
-    await waitFor(() => expect(updateMock).toHaveBeenCalledTimes(2));
-    const [, secondBody] = updateMock.mock.calls[1];
-    expect(secondBody).toEqual({ ...firstBody, force: true });
-    await waitFor(() => expect(props.onSaved).toHaveBeenCalledWith(saved));
-  });
-
-  it("routes a non-destructive error through the banner without a force confirm", async () => {
+  it("routes a server error through the banner and keeps the modal open", async () => {
     updateMock.mockRejectedValue(new ApiError("bad config", "ConfigError", 422));
     const props = renderModal();
 
@@ -152,7 +106,6 @@ describe("DatasetSettingsModal", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("bad config");
-    expect(screen.queryByRole("button", { name: "Save anyway" })).toBeNull();
     expect(props.onClose).not.toHaveBeenCalled();
   });
 
@@ -185,15 +138,13 @@ describe("DatasetSettingsModal", () => {
   });
 });
 
-// -- Redesigned modal chrome -------------------------------------------------
-// The redesign gives the modal a one-line description and moves its actions into the
-// footer. The actions keep their accessible names, so they are still located by role.
+// -- Modal chrome -------------------------------------------------------------
 
 describe("DatasetSettingsModal chrome", () => {
-  it("describes that edits shape future generation, not existing rows", () => {
+  it("describes that this only renames the dataset and reshapes its columns", () => {
     renderModal();
 
-    expect(screen.getByText(/future generation|existing rows/i)).toBeInTheDocument();
+    expect(screen.getByText(/rename this dataset or reshape its columns/i)).toBeInTheDocument();
   });
 
   it("keeps the Cancel action wired to onClose from the footer", async () => {
