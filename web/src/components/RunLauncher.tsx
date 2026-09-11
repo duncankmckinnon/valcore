@@ -1,11 +1,11 @@
 // Start a run: pick an evaluator, one of its versions, and a dataset, choose the run
-// kind and concurrency, then Start. Validation requires a fully labeled dataset, so
-// that option is disabled (with an explanation) when the chosen dataset has unlabeled
-// rows.
+// kind and concurrency, then Start. Validation requires a matching label set, so that
+// option is disabled (with an explanation) when no label set on the dataset matches
+// the chosen evaluator version's score space; partial coverage only warns.
 
 import { useEffect, useMemo, useState } from "react";
 import { datasets, evaluators, runs } from "../api/client";
-import type { Dataset, DatasetStats, Evaluator, EvaluatorVersion, Run, RunKind } from "../api/types";
+import type { DatasetSummary, Evaluator, EvaluatorVersion, Run, RunCoverage, RunKind } from "../api/types";
 import { Button, ErrorBanner, Select, Spinner } from "./ui";
 import { GATEWAY_BLOCKER, useSetup } from "./useSetup";
 
@@ -17,9 +17,9 @@ type Props = {
 
 export default function RunLauncher({ onStarted }: Props) {
   const [evaluatorList, setEvaluatorList] = useState<Evaluator[]>([]);
-  const [datasetList, setDatasetList] = useState<Dataset[]>([]);
+  const [datasetList, setDatasetList] = useState<DatasetSummary[]>([]);
   const [versions, setVersions] = useState<EvaluatorVersion[]>([]);
-  const [stats, setStats] = useState<DatasetStats | null>(null);
+  const [coverage, setCoverage] = useState<RunCoverage | null>(null);
 
   const [evaluatorId, setEvaluatorId] = useState("");
   const [versionId, setVersionId] = useState("");
@@ -59,24 +59,28 @@ export default function RunLauncher({ onStarted }: Props) {
   }, [evaluatorId]);
 
   useEffect(() => {
-    if (!datasetId) {
-      setStats(null);
+    if (!datasetId || !versionId) {
+      setCoverage(null);
       return;
     }
     let cancelled = false;
-    datasets
-      .stats(datasetId)
-      .then((s) => !cancelled && setStats(s))
-      .catch(() => !cancelled && setStats(null));
+    runs
+      .coverage(datasetId, versionId)
+      .then((c) => !cancelled && setCoverage(c))
+      .catch(() => !cancelled && setCoverage(null));
     return () => {
       cancelled = true;
     };
-  }, [datasetId]);
+  }, [datasetId, versionId]);
 
-  const hasUnlabeled = stats !== null && stats.unlabeled > 0;
-  const validationDisabled = hasUnlabeled;
+  const noCoverage = coverage !== null && coverage.label_set_id === null;
+  const partialCoverage =
+    coverage !== null && coverage.label_set_id !== null && coverage.labeled_rows < coverage.total_rows;
+  const validationDisabled = noCoverage;
 
-  // A dataset with unlabeled rows cannot be validated; fall back to a plain eval run.
+  // A dataset/version pairing with no matching label set cannot be validated; fall back
+  // to a plain eval run. Partial coverage no longer disables validation -- it now runs on
+  // whichever rows have a valid label, which is exactly what the warning below explains.
   useEffect(() => {
     if (validationDisabled && kind === "validation") setKind("eval");
   }, [validationDisabled, kind]);
@@ -162,7 +166,7 @@ export default function RunLauncher({ onStarted }: Props) {
             {
               value: "validation",
               label: validationDisabled
-                ? "Validation (needs a fully labeled dataset)"
+                ? "Validation (no label set matches this evaluator)"
                 : "Validation — measure agreement with labels",
             },
           ]}
@@ -170,7 +174,15 @@ export default function RunLauncher({ onStarted }: Props) {
         />
         {validationDisabled && (
           <span className="muted">
-            Validation is unavailable: {stats?.unlabeled} row(s) in this dataset are unlabeled.
+            Validation is unavailable: no label set on this dataset matches this evaluator
+            version&apos;s score space. Only Eval can run.
+          </span>
+        )}
+        {!validationDisabled && partialCoverage && kind === "validation" && (
+          <span className="muted">
+            {coverage?.labeled_rows} of {coverage?.total_rows} rows have a label for this
+            evaluator; validation will run on {coverage?.labeled_rows} row
+            {coverage?.labeled_rows === 1 ? "" : "s"}.
           </span>
         )}
       </label>
