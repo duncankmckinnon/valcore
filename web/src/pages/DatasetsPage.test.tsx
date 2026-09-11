@@ -3,8 +3,8 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import DatasetsPage from "./DatasetsPage";
-import { datasets, setup } from "../api/client";
-import type { Dataset, SetupStatus } from "../api/types";
+import { datasets, labelSets, setup } from "../api/client";
+import type { DatasetSummary, LabelSetProgress, SetupStatus } from "../api/types";
 
 // The four creation paths are owned by other tasks; stub each so it reports a
 // distinct id back through its `onCreated` prop. Blank and Generate hand back a
@@ -15,8 +15,19 @@ vi.mock("../components/DatasetBlankForm", () => ({
   ),
 }));
 vi.mock("../components/DatasetGenerateForm", () => ({
-  default: ({ onCreated }: { onCreated: (id: string) => void }) => (
-    <button onClick={() => onCreated("gen-1")}>generate creates</button>
+  default: ({
+    onCreated,
+    initial,
+  }: {
+    onCreated: (id: string) => void;
+    initial?: { labelSchema?: unknown };
+  }) => (
+    <div>
+      <button onClick={() => onCreated("gen-1")}>generate creates</button>
+      {initial?.labelSchema !== undefined && (
+        <pre data-testid="generate-seed-schema">{JSON.stringify(initial.labelSchema)}</pre>
+      )}
+    </div>
   ),
 }));
 vi.mock("../components/DatasetUpload", () => ({
@@ -34,13 +45,16 @@ vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
   return {
     ...actual,
-    datasets: { ...actual.datasets, list: vi.fn(), stats: vi.fn() },
+    datasets: { ...actual.datasets, list: vi.fn(), stats: vi.fn(), generation: vi.fn() },
+    labelSets: { ...actual.labelSets, list: vi.fn() },
     setup: { ...actual.setup, get: vi.fn() },
   };
 });
 
 const listMock = vi.mocked(datasets.list);
 const statsMock = vi.mocked(datasets.stats);
+const generationMock = vi.mocked(datasets.generation);
+const listLabelSetsMock = vi.mocked(labelSets.list);
 const setupGet = vi.mocked(setup.get);
 
 const EMPTY_SETUP: SetupStatus = {
@@ -55,14 +69,13 @@ const EMPTY_SETUP: SetupStatus = {
 
 // A dataset as it now arrives from `datasets.list()` — carrying the per-dataset
 // `row_count` and `labeled_count` the summary strip and table columns read.
-function madeDataset(overrides: Partial<Dataset> = {}): Dataset {
+function madeDataset(overrides: Partial<DatasetSummary> = {}): DatasetSummary {
   return {
     id: "d1",
     created_at: "2026-01-01T00:00:00Z",
     name: "Alpha",
     description: "",
     columns: ["question", "answer"],
-    label_schema: {},
     row_count: 0,
     labeled_count: 0,
     ...overrides,
@@ -89,6 +102,7 @@ function renderPage() {
 beforeEach(() => {
   listMock.mockResolvedValue([]);
   statsMock.mockResolvedValue({ total: 0, labeled: 0, unlabeled: 0, label_distribution: {} });
+  generationMock.mockResolvedValue(null);
   setupGet.mockResolvedValue(EMPTY_SETUP);
 });
 
@@ -301,5 +315,56 @@ describe("DatasetsPage", () => {
 
     await waitFor(() => expect(listMock).toHaveBeenCalled());
     expect(screen.queryByRole("link", { name: "Open in Logfire" })).toBeNull();
+  });
+});
+
+function madeLabelSet(overrides: Partial<LabelSetProgress> = {}): LabelSetProgress {
+  return {
+    id: "ls1",
+    created_at: "2026-01-01T00:00:00Z",
+    dataset_id: "d1",
+    name: "quality",
+    description: "",
+    kind: "categorical",
+    labels: [{ name: "good", description: "" }, { name: "bad", description: "" }],
+    minimum: null,
+    maximum: null,
+    annotated_count: 0,
+    row_count: 0,
+    ...overrides,
+  };
+}
+
+describe("DatasetsPage duplicate", () => {
+  it("opens the Generate tab seeded from the dataset's primary label set", async () => {
+    listMock.mockResolvedValue([madeDataset({ id: "d1", name: "Alpha" })]);
+    listLabelSetsMock.mockResolvedValue([madeLabelSet()]);
+    renderPage();
+
+    await screen.findByRole("link", { name: "Alpha" });
+    await userEvent.click(screen.getByRole("button", { name: "Duplicate Alpha" }));
+
+    expect(await screen.findByRole("tab", { name: "Generate", selected: true })).toBeTruthy();
+    await waitFor(() => expect(listLabelSetsMock).toHaveBeenCalledWith("d1"));
+    const seed = await screen.findByTestId("generate-seed-schema");
+    expect(JSON.parse(seed.textContent ?? "")).toEqual({
+      kind: "categorical",
+      labels: ["good", "bad"],
+      minimum: null,
+      maximum: null,
+    });
+  });
+
+  it("seeds no label schema when the dataset has no label sets", async () => {
+    listMock.mockResolvedValue([madeDataset({ id: "d1", name: "Alpha" })]);
+    listLabelSetsMock.mockResolvedValue([]);
+    renderPage();
+
+    await screen.findByRole("link", { name: "Alpha" });
+    await userEvent.click(screen.getByRole("button", { name: "Duplicate Alpha" }));
+
+    await screen.findByRole("tab", { name: "Generate", selected: true });
+    await waitFor(() => expect(listLabelSetsMock).toHaveBeenCalledWith("d1"));
+    expect(screen.queryByTestId("generate-seed-schema")).toBeNull();
   });
 });
