@@ -13,6 +13,7 @@ import { EmptyState } from "../components/EmptyState";
 import { AnnotationIcon } from "../components/icons";
 import LabelSetEditor from "../components/LabelSetEditor";
 import AnnotationQueue from "../components/LabelingGrid";
+import AnnotationRowPage from "./AnnotationRowPage";
 
 const BLANK_LABEL_SET: LabelSetCreate = {
   name: "",
@@ -24,7 +25,10 @@ const BLANK_LABEL_SET: LabelSetCreate = {
 };
 
 export default function AnnotationsPage() {
-  const { datasetId, labelSetId } = useParams();
+  const { datasetId, labelSetId, rowId } = useParams();
+  if (datasetId && labelSetId && rowId) {
+    return <AnnotationRowPage datasetId={datasetId} labelSetId={labelSetId} rowId={rowId} />;
+  }
   if (datasetId && labelSetId) return <AnnotationQueue datasetId={datasetId} labelSetId={labelSetId} />;
   if (datasetId) return <LabelSetsList datasetId={datasetId} />;
   return <AnnotationDatasetsList />;
