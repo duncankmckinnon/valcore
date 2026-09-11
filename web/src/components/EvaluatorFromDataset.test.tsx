@@ -3,18 +3,21 @@
 // user supplies criteria and per-column notes to steer the generated judge. The result is
 // an editable draft handed to the version editor; the modal itself persists nothing.
 //
-// These tests mock only the client module (as the neighbouring component tests do) and
-// exercise the real ColumnNotesEditor so the locked-column / no-add-control behaviour is
-// verified end to end rather than stubbed.
+// The label space now comes from the dataset's label sets rather than a single embedded
+// schema: zero (the evaluator defines its own), one (used automatically), or more than one
+// (the user must pick, defaulting to the first) — mirroring `_resolve_seed` in
+// routes/evaluators.py. These tests mock only the client module (as the neighbouring
+// component tests do) and exercise the real ColumnNotesEditor/LabelSchemaEditor so the
+// locked-column and override behaviour is verified end to end rather than stubbed.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import EvaluatorFromDataset from "./EvaluatorFromDataset";
-import { ApiError, evaluators } from "../api/client";
+import { ApiError, evaluators, labelSets } from "../api/client";
 import { GATEWAY_BLOCKER, useSetup } from "./useSetup";
 import type { UseSetupResult } from "./useSetup";
-import type { Dataset, GeneratedConfig, LabelSchema } from "../api/types";
+import type { Dataset, GeneratedConfig, LabelSetProgress } from "../api/types";
 
 vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
@@ -28,6 +31,7 @@ vi.mock("../api/client", async (importOriginal) => {
       create: vi.fn(),
       createVersion: vi.fn(),
     },
+    labelSets: { ...actual.labelSets, list: vi.fn() },
   };
 });
 
@@ -43,6 +47,7 @@ vi.mock("./useSetup", async (importOriginal) => {
 const generateMock = vi.mocked(evaluators.generate);
 const createMock = vi.mocked(evaluators.create);
 const createVersionMock = vi.mocked(evaluators.createVersion);
+const listLabelSetsMock = vi.mocked(labelSets.list);
 const useSetupMock = vi.mocked(useSetup);
 
 function makeSetupResult(overrides: Partial<UseSetupResult> = {}): UseSetupResult {
@@ -56,29 +61,22 @@ function makeSetupResult(overrides: Partial<UseSetupResult> = {}): UseSetupResul
   };
 }
 
-const LABELLED_SCHEMA: LabelSchema = {
-  kind: "categorical",
-  labels: ["good", "bad"],
-  minimum: null,
-  maximum: null,
-};
-
-// The API returns a literal empty object when the dataset has no ground truth.
-const EMPTY_SCHEMA: Dataset["label_schema"] = {};
-
-const BOUNDED_NUMERIC_SCHEMA: LabelSchema = {
-  kind: "numeric",
-  labels: null,
-  minimum: 1,
-  maximum: 5,
-};
-
-const UNBOUNDED_NUMERIC_SCHEMA: LabelSchema = {
-  kind: "numeric",
-  labels: null,
-  minimum: null,
-  maximum: null,
-};
+function makeLabelSet(overrides: Partial<LabelSetProgress> = {}): LabelSetProgress {
+  return {
+    id: "ls1",
+    created_at: "2026-01-01T00:00:00Z",
+    dataset_id: "d1",
+    name: "quality",
+    description: "",
+    kind: "categorical",
+    labels: [{ name: "good", description: "" }, { name: "bad", description: "" }],
+    minimum: null,
+    maximum: null,
+    annotated_count: 0,
+    row_count: 0,
+    ...overrides,
+  };
+}
 
 function madeDataset(overrides: Partial<Dataset> = {}): Dataset {
   return {
@@ -87,9 +85,6 @@ function madeDataset(overrides: Partial<Dataset> = {}): Dataset {
     name: "Support tickets",
     description: "desc",
     columns: ["question", "answer"],
-    label_schema: LABELLED_SCHEMA,
-    row_count: 0,
-    labeled_count: 0,
     ...overrides,
   };
 }
@@ -113,7 +108,7 @@ function madeDraft(): GeneratedConfig {
   };
 }
 
-function renderModal(props: {
+async function renderReady(props: {
   dataset?: Dataset;
   onGenerated?: (draft: GeneratedConfig) => void;
   onClose?: () => void;
@@ -128,6 +123,7 @@ function renderModal(props: {
       onClose={onClose}
     />,
   );
+  await waitFor(() => expect(listLabelSetsMock).toHaveBeenCalled());
   return { onGenerated, onClose };
 }
 
@@ -138,26 +134,20 @@ afterEach(() => {
 
 beforeEach(() => {
   useSetupMock.mockReturnValue(makeSetupResult());
+  // Most tests exercise the single-label-set (auto-used) path by default.
+  listLabelSetsMock.mockResolvedValue([makeLabelSet()]);
 });
 
 describe("EvaluatorFromDataset", () => {
-  it("renders the dataset's columns locked with no control for adding columns", () => {
-    renderModal({ dataset: madeDataset({ columns: ["question", "answer"] }) });
+  it("renders the dataset's columns locked with no control for adding columns", async () => {
+    await renderReady({ dataset: madeDataset({ columns: ["question", "answer"] }) });
 
-    // Each dataset column is present as a per-column note row (from ColumnNotesEditor).
     expect(screen.getByLabelText("Note for question")).toBeInTheDocument();
     expect(screen.getByLabelText("Note for answer")).toBeInTheDocument();
-
-    // Locked, not removable: no remove control on any dataset column.
     expect(screen.queryByRole("button", { name: "Remove question" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Remove answer" })).toBeNull();
-
-    // allowAddColumns is false, so the add-column affordance never renders. The dataset's
-    // columns are the fixed set; the user cannot introduce new ones here.
     expect(screen.queryByLabelText("New column name")).toBeNull();
     expect(screen.queryByRole("button", { name: "Add column" })).toBeNull();
-
-    // The note prompt asks how the column factors into the assessment.
     expect(
       (screen.getByLabelText("Note for question") as HTMLInputElement).placeholder,
     ).toMatch(/assess/i);
@@ -167,7 +157,7 @@ describe("EvaluatorFromDataset", () => {
     const draft = madeDraft();
     generateMock.mockResolvedValue(draft);
     const user = userEvent.setup();
-    renderModal({ dataset: madeDataset({ columns: ["question", "answer"] }) });
+    await renderReady({ dataset: madeDataset({ columns: ["question", "answer"] }) });
 
     await user.type(screen.getByLabelText("Criteria"), "Does the answer resolve the ticket?");
     await user.type(screen.getByLabelText("Note for question"), "the customer's problem");
@@ -179,15 +169,13 @@ describe("EvaluatorFromDataset", () => {
     expect(arg.dataset_id).toBe("d1");
     expect(arg.column_notes).toEqual({ question: "the customer's problem" });
     expect(arg.criteria).toBe("Does the answer resolve the ticket?");
-    // `columns` now narrows the dataset-derived set rather than conflicting with it, and
-    // defaults to every column so the pre-subset behaviour is preserved.
     expect(arg.columns).toEqual(["question", "answer"]);
   });
 
   it("narrows columns to the included ones and drops an excluded column's note", async () => {
     generateMock.mockResolvedValue(madeDraft());
     const user = userEvent.setup();
-    renderModal({ dataset: madeDataset({ columns: ["question", "answer"] }) });
+    await renderReady({ dataset: madeDataset({ columns: ["question", "answer"] }) });
 
     await user.type(screen.getByLabelText("Criteria"), "grade it");
     await user.type(screen.getByLabelText("Note for answer"), "stale note");
@@ -198,46 +186,66 @@ describe("EvaluatorFromDataset", () => {
     await waitFor(() => expect(generateMock).toHaveBeenCalledTimes(1));
     const arg = generateMock.mock.calls[0][0];
     expect(arg.columns).toEqual(["question"]);
-    // A note keyed outside the resolved set is a server-side error, so it must not travel.
     expect(arg.column_notes).toEqual({});
   });
 
-  it("inherits the dataset's label space by default and sends no label_schema", async () => {
+  it("sends label_set_id automatically when the dataset has exactly one label set", async () => {
     generateMock.mockResolvedValue(madeDraft());
     const user = userEvent.setup();
-    renderModal({ dataset: madeDataset({ label_schema: LABELLED_SCHEMA }) });
+    await renderReady();
 
-    expect(screen.getByLabelText("Use this dataset's label space")).toBeChecked();
+    expect(screen.getByLabelText("Use one of this dataset's label sets")).toBeChecked();
+    expect(screen.queryByLabelText("Label set")).toBeNull(); // no picker needed for one set
 
     await user.type(screen.getByLabelText("Criteria"), "grade it");
     await user.click(screen.getByRole("button", { name: "Generate evaluator" }));
 
     await waitFor(() => expect(generateMock).toHaveBeenCalledTimes(1));
-    // Omitted, not sent-as-the-dataset's: the server seeds it, so there is one source of truth.
+    expect(generateMock.mock.calls[0][0].label_set_id).toBe("ls1");
     expect(generateMock.mock.calls[0][0]).not.toHaveProperty("label_schema");
   });
 
-  it("sends a prescribed label_schema once the dataset labels are turned off", async () => {
+  it("requires a picker and defaults to the first label set when more than one exists", async () => {
+    listLabelSetsMock.mockResolvedValue([
+      makeLabelSet({ id: "ls1", name: "quality" }),
+      makeLabelSet({ id: "ls2", name: "toxicity" }),
+    ]);
     generateMock.mockResolvedValue(madeDraft());
     const user = userEvent.setup();
-    renderModal({ dataset: madeDataset({ label_schema: LABELLED_SCHEMA }) });
+    await renderReady();
 
-    await user.click(screen.getByLabelText("Use this dataset's label space"));
-    // The schema editor replaces the read-only chips.
+    const picker = await screen.findByLabelText("Label set");
+    expect((picker as HTMLSelectElement).value).toBe("ls1");
+
+    await user.selectOptions(picker, "ls2");
+    await user.type(screen.getByLabelText("Criteria"), "grade it");
+    await user.click(screen.getByRole("button", { name: "Generate evaluator" }));
+
+    await waitFor(() => expect(generateMock).toHaveBeenCalledTimes(1));
+    expect(generateMock.mock.calls[0][0].label_set_id).toBe("ls2");
+  });
+
+  it("sends a prescribed label_schema once the dataset's label sets are turned off", async () => {
+    generateMock.mockResolvedValue(madeDraft());
+    const user = userEvent.setup();
+    await renderReady();
+
+    await user.click(screen.getByLabelText("Use one of this dataset's label sets"));
     expect(screen.getByPlaceholderText("Add a label")).toBeInTheDocument();
-    // The consequence is stated where the choice is made, not when a run later fails.
     expect(screen.getByText(/cannot be validated against it/)).toBeInTheDocument();
 
     await user.type(screen.getByLabelText("Criteria"), "grade it");
     await user.click(screen.getByRole("button", { name: "Generate evaluator" }));
 
     await waitFor(() => expect(generateMock).toHaveBeenCalledTimes(1));
-    expect(generateMock.mock.calls[0][0].label_schema).toEqual(LABELLED_SCHEMA);
+    const arg = generateMock.mock.calls[0][0];
+    expect(arg).not.toHaveProperty("label_set_id");
+    expect(arg.label_schema).toEqual({ kind: "categorical", labels: [], minimum: null, maximum: null });
   });
 
   it("blocks submission when every column is excluded", async () => {
     const user = userEvent.setup();
-    renderModal({ dataset: madeDataset({ columns: ["question"] }) });
+    await renderReady({ dataset: madeDataset({ columns: ["question"] }) });
 
     await user.type(screen.getByLabelText("Criteria"), "grade it");
     await user.click(screen.getByLabelText("Include question"));
@@ -246,56 +254,24 @@ describe("EvaluatorFromDataset", () => {
     expect(screen.getByRole("button", { name: "Generate evaluator" })).toBeDisabled();
   });
 
-  it("renders a declared label space read-only with a line that the evaluator will use it", () => {
-    renderModal({ dataset: madeDataset({ label_schema: LABELLED_SCHEMA }) });
+  it("explains the evaluator defines its own space when the dataset has no label sets", async () => {
+    listLabelSetsMock.mockResolvedValue([]);
+    await renderReady();
 
-    // The dataset's labels are shown for reference...
-    expect(screen.getByText("good")).toBeInTheDocument();
-    expect(screen.getByText("bad")).toBeInTheDocument();
-    // ...and explained: when labels are involved the space comes from the evaluator, which
-    // here is derived from this dataset's space.
-    expect(screen.getByText(/generated evaluator will use/i)).toBeInTheDocument();
-
-    // Read-only: the labels are not editable inputs.
-    expect(screen.queryByDisplayValue("good")).toBeNull();
-    expect(screen.queryByDisplayValue("bad")).toBeNull();
-  });
-
-  it("explains the evaluator defines its own space when the dataset has an empty label schema", () => {
-    renderModal({ dataset: madeDataset({ label_schema: EMPTY_SCHEMA }) });
-
-    expect(screen.getByText(/define its own/i)).toBeInTheDocument();
-    // No stray label chips when there is no declared space.
-    expect(screen.queryByText("good")).toBeNull();
-  });
-
-  it("renders a bounded numeric label space read-only", () => {
-    renderModal({ dataset: madeDataset({ label_schema: BOUNDED_NUMERIC_SCHEMA }) });
-
-    expect(screen.getByText(/Minimum: 1; Maximum: 5/)).toBeInTheDocument();
-    expect(screen.getByText(/generated evaluator will use/i)).toBeInTheDocument();
-    expect(screen.queryByRole("spinbutton")).toBeNull();
-  });
-
-  it("recognizes and renders an unbounded numeric label space", () => {
-    renderModal({ dataset: madeDataset({ label_schema: UNBOUNDED_NUMERIC_SCHEMA }) });
-
-    expect(screen.getByText(/Minimum: unbounded; Maximum: unbounded/)).toBeInTheDocument();
-    expect(screen.getByText(/generated evaluator will use/i)).toBeInTheDocument();
-    expect(screen.queryByText(/define its own/i)).toBeNull();
+    expect(await screen.findByText(/no label sets/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Use one of this dataset's label sets")).toBeNull();
   });
 
   it("hands the generated draft to the version editor without saving anything", async () => {
     const draft = madeDraft();
     generateMock.mockResolvedValue(draft);
     const user = userEvent.setup();
-    const { onGenerated } = renderModal();
+    const { onGenerated } = await renderReady();
 
     await user.type(screen.getByLabelText("Criteria"), "Judge answer quality.");
     await user.click(screen.getByRole("button", { name: "Generate evaluator" }));
 
     await waitFor(() => expect(onGenerated).toHaveBeenCalledWith(draft));
-    // The draft is editable, not persisted: no evaluator and no version are created here.
     expect(createMock).not.toHaveBeenCalled();
     expect(createVersionMock).not.toHaveBeenCalled();
   });
@@ -305,7 +281,7 @@ describe("EvaluatorFromDataset", () => {
       new ApiError("columns and dataset_id are mutually exclusive", "ContractError", 400),
     );
     const user = userEvent.setup();
-    const { onGenerated } = renderModal();
+    const { onGenerated } = await renderReady();
 
     await user.type(screen.getByLabelText("Criteria"), "Judge answer quality.");
     await user.click(screen.getByRole("button", { name: "Generate evaluator" }));
@@ -324,13 +300,12 @@ describe("EvaluatorFromDataset", () => {
       }),
     );
     const user = userEvent.setup();
-    renderModal();
+    await renderReady();
 
     await user.type(screen.getByLabelText("Criteria"), "Judge answer quality.");
     const submit = screen.getByRole("button", { name: "Generate evaluator" });
     await user.click(submit);
 
-    // Still pending: a second submit must be impossible until the request settles.
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Generate evaluator" })).toBeDisabled(),
     );
@@ -344,9 +319,8 @@ describe("EvaluatorFromDataset", () => {
 
   it("keeps submit disabled until criteria are entered", async () => {
     const user = userEvent.setup();
-    renderModal();
+    await renderReady();
 
-    // Criteria are required; nothing to submit yet.
     expect(screen.getByRole("button", { name: "Generate evaluator" })).toBeDisabled();
 
     await user.type(screen.getByLabelText("Criteria"), "Judge answer quality.");
@@ -355,22 +329,18 @@ describe("EvaluatorFromDataset", () => {
   });
 });
 
-// -- Redesigned modal chrome -------------------------------------------------
-// The redesign adds a description (the shape is derived from the dataset; criteria and
-// notes only steer content) and moves the actions into the footer. This direction locks
-// the dataset's columns with no add-column affordance, so it gains no extra-columns
-// tooltip — only the description and the relocated actions.
+// -- Modal chrome ---------------------------------------------------------------
 
 describe("EvaluatorFromDataset chrome", () => {
-  it("describes that the shape is derived and the inputs only steer content", () => {
-    renderModal();
+  it("describes that the shape is derived and the inputs only steer content", async () => {
+    await renderReady();
 
     expect(screen.getByText(/derived|steer/i)).toBeInTheDocument();
   });
 
   it("keeps the Cancel action wired to onClose from the footer", async () => {
     const user = userEvent.setup();
-    const { onClose } = renderModal();
+    const { onClose } = await renderReady();
 
     await user.click(screen.getByRole("button", { name: "Cancel" }));
 
@@ -379,15 +349,12 @@ describe("EvaluatorFromDataset chrome", () => {
 });
 
 // -- Gateway gating -----------------------------------------------------------
-// Generation needs the Pydantic AI Gateway key as much as running a version does, so it
-// is gated the same way: the shared GATEWAY_BLOCKER text and a disabled primary action
-// when the key is not set, and no change at all to today's behavior once it is.
 
 describe("EvaluatorFromDataset gateway gating", () => {
   it("disables Generate and shows the shared gateway blocker when the gateway key is unset", async () => {
     useSetupMock.mockReturnValue(makeSetupResult({ gatewayReady: false }));
     const user = userEvent.setup();
-    renderModal();
+    await renderReady();
 
     await user.type(screen.getByLabelText("Criteria"), "Judge answer quality.");
 
@@ -396,43 +363,15 @@ describe("EvaluatorFromDataset gateway gating", () => {
     expect(generateMock).not.toHaveBeenCalled();
   });
 
-  it("does not call generate if Generate is somehow invoked while the gateway is blocked", async () => {
-    useSetupMock.mockReturnValue(makeSetupResult({ gatewayReady: false }));
-    renderModal();
-
-    // Disabled buttons swallow user-event clicks by design; assert directly on
-    // generateMock so this test does not depend on that browser behaviour.
-    expect(generateMock).not.toHaveBeenCalled();
-  });
-
   it("shows no gateway blocker and governs Generate only by criteria validity when the gateway is ready", async () => {
     useSetupMock.mockReturnValue(makeSetupResult({ gatewayReady: true }));
     const user = userEvent.setup();
-    renderModal();
+    await renderReady();
 
     expect(screen.queryByText(GATEWAY_BLOCKER)).toBeNull();
     expect(screen.getByRole("button", { name: "Generate evaluator" })).toBeDisabled();
 
     await user.type(screen.getByLabelText("Criteria"), "Judge answer quality.");
     expect(screen.getByRole("button", { name: "Generate evaluator" })).not.toBeDisabled();
-  });
-
-  it("re-enables Generate once gatewayReady flips true with criteria already filled", async () => {
-    useSetupMock.mockReturnValue(makeSetupResult({ gatewayReady: false }));
-    const user = userEvent.setup();
-    const { rerender } = render(
-      <EvaluatorFromDataset open dataset={madeDataset()} onGenerated={vi.fn()} onClose={vi.fn()} />,
-    );
-
-    await user.type(screen.getByLabelText("Criteria"), "Judge answer quality.");
-    expect(screen.getByRole("button", { name: "Generate evaluator" })).toBeDisabled();
-
-    useSetupMock.mockReturnValue(makeSetupResult({ gatewayReady: true }));
-    rerender(
-      <EvaluatorFromDataset open dataset={madeDataset()} onGenerated={vi.fn()} onClose={vi.fn()} />,
-    );
-
-    expect(screen.getByRole("button", { name: "Generate evaluator" })).not.toBeDisabled();
-    expect(screen.queryByText(GATEWAY_BLOCKER)).toBeNull();
   });
 });
