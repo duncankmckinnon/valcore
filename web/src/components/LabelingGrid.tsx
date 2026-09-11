@@ -26,6 +26,7 @@ const PAGE_SIZE = 100;
 export default function AnnotationQueue({ datasetId, labelSetId }: Props) {
   const navigate = useNavigate();
   const [labelSet, setLabelSet] = useState<LabelSetProgress | null>(null);
+  const [columns, setColumns] = useState<string[]>([]);
   const [rows, setRows] = useState<AnnotationRow[]>([]);
   const [total, setTotal] = useState(0);
   const [annotatedCount, setAnnotatedCount] = useState(0);
@@ -47,6 +48,10 @@ export default function AnnotationQueue({ datasetId, labelSetId }: Props) {
       .then((items) => setLabelSet(items.find((item) => item.id === labelSetId) ?? null))
       .catch(setError);
   }, [datasetId, labelSetId]);
+
+  useEffect(() => {
+    datasets.get(datasetId).then((d) => setColumns(d.columns)).catch(setError);
+  }, [datasetId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -132,14 +137,22 @@ export default function AnnotationQueue({ datasetId, labelSetId }: Props) {
     (row: AnnotationRow, name: string) => {
       const current = row.annotation?.labels ?? [];
       const next = current.includes(name) ? current.filter((l) => l !== name) : [...current, name];
-      applyPut(row, { labels: next, value: null, description: row.annotation?.description ?? null });
+      applyPut(row, {
+        labels: next,
+        value: row.annotation?.value ?? null,
+        description: row.annotation?.description ?? null,
+      });
     },
     [applyPut],
   );
 
   const setValue = useCallback(
     (row: AnnotationRow, value: number) => {
-      applyPut(row, { labels: [], value, description: row.annotation?.description ?? null });
+      applyPut(row, {
+        labels: row.annotation?.labels ?? [],
+        value,
+        description: row.annotation?.description ?? null,
+      });
     },
     [applyPut],
   );
@@ -293,7 +306,16 @@ export default function AnnotationQueue({ datasetId, labelSetId }: Props) {
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
 
-  if (loading || labelSet === null) return <Spinner />;
+  if (loading) return <Spinner />;
+
+  if (labelSet === null) {
+    return (
+      <div className="labeling-grid">
+        <ErrorBanner error={error} onDismiss={() => setError(null)} />
+        {!error && <p className="muted">This label set was not found.</p>}
+      </div>
+    );
+  }
 
   return (
     <div className="labeling-grid" ref={containerRef}>
@@ -309,7 +331,7 @@ export default function AnnotationQueue({ datasetId, labelSetId }: Props) {
       <table className="table labeling-table">
         <thead>
           <tr>
-            {(rows[0] ? Object.keys(rows[0].data) : []).map((column) => (
+            {columns.map((column) => (
               <th key={column}>{column}</th>
             ))}
             <th>Labels</th>
@@ -325,7 +347,7 @@ export default function AnnotationQueue({ datasetId, labelSetId }: Props) {
               key={row.row_id}
               ref={index === focusedIdx ? focusedRef : null}
               row={row}
-              columns={rows[0] ? Object.keys(rows[0].data) : []}
+              columns={columns}
               labelSet={labelSet}
               focused={index === focusedIdx}
               expanded={expanded}

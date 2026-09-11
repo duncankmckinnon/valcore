@@ -88,7 +88,30 @@ export default function AnnotationRowPage({ datasetId, labelSetId, rowId }: Prop
     navigate(`/annotations/${datasetId}/${labelSetId}/rows/${id}`, { state: { rows: entries } });
   }
 
-  if (!labelSet || !current) return <Spinner />;
+  if (!labelSet || entries === null) {
+    if (error) {
+      return (
+        <section className="annotation-row-page">
+          <ErrorBanner error={error} onDismiss={() => setError(null)} />
+        </section>
+      );
+    }
+    return <Spinner />;
+  }
+
+  if (!current) {
+    return (
+      <section className="annotation-row-page">
+        <div className="detail-breadcrumb">
+          <Link to="/annotations">Annotations</Link> /{" "}
+          <Link to={`/annotations/${datasetId}`}>{datasetId}</Link> /{" "}
+          <Link to={`/annotations/${datasetId}/${labelSetId}`}>{labelSet.name}</Link>
+        </div>
+        <ErrorBanner error={error} onDismiss={() => setError(null)} />
+        <p className="muted">This row was not found in the label set's queue.</p>
+      </section>
+    );
+  }
 
   return (
     <section className="annotation-row-page">

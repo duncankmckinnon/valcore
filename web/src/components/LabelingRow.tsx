@@ -132,7 +132,8 @@ const LabelingRow = forwardRef<HTMLTableRowElement, LabelingRowProps>(function L
         aria-label="Value"
         defaultValue={current ?? ""}
         onBlur={(e) => {
-          if (e.target.value !== "") onSetValue(Number(e.target.value));
+          if (e.target.value === "") onClearAnnotation();
+          else onSetValue(Number(e.target.value));
         }}
         onKeyDown={(e) => {
           if (e.key === "Enter") (e.target as HTMLInputElement).blur();

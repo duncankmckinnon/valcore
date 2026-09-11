@@ -1,5 +1,5 @@
 // web/src/components/LabelingGrid.test.tsx
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import AnnotationQueue from "./LabelingGrid";
@@ -12,7 +12,7 @@ vi.mock("../api/client", async (importOriginal) => {
     ...actual,
     labelSets: { ...actual.labelSets, list: vi.fn(), rows: vi.fn() },
     annotations: { ...actual.annotations, put: vi.fn(), remove: vi.fn(), accept: vi.fn() },
-    datasets: { ...actual.datasets, patchRowData: vi.fn(), deleteRow: vi.fn() },
+    datasets: { ...actual.datasets, patchRowData: vi.fn(), deleteRow: vi.fn(), get: vi.fn() },
   };
 });
 
@@ -23,6 +23,21 @@ const removeMock = vi.mocked(annotations.remove);
 const acceptMock = vi.mocked(annotations.accept);
 const patchDataMock = vi.mocked(datasets.patchRowData);
 const deleteRowMock = vi.mocked(datasets.deleteRow);
+const getDatasetMock = vi.mocked(datasets.get);
+
+// The grid now sources its table columns from the dataset's declared schema (fixed in
+// this review wave — see LabelingGrid.tsx's `columns` state) rather than from the first
+// loaded row's data keys, so every test needs `datasets.get` to resolve with the column
+// set its row fixtures use ("text").
+beforeEach(() => {
+  getDatasetMock.mockResolvedValue({
+    id: "d1",
+    created_at: "2026-01-01T00:00:00Z",
+    name: "dataset",
+    description: "",
+    columns: ["text"],
+  });
+});
 
 const LABEL_SET: LabelSetProgress = {
   id: "ls1",

@@ -157,8 +157,8 @@ export default function DatasetDetail({ datasetId }: Props) {
 
   function onSaved(updated: Dataset) {
     setEditing(false);
-    // Replace the local shape so downstream views (e.g. the annotation queue) pick up
-    // the new columns, then refresh the counts a migration may have changed.
+    // Replace the local shape so the header reflects the rename/reshape immediately,
+    // then refresh the counts a column change may have affected.
     setDataset(updated);
     refreshStats();
   }
