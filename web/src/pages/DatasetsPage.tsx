@@ -4,8 +4,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { datasets } from "../api/client";
-import type { Dataset, LabelSchema } from "../api/types";
+import { datasets, labelSets } from "../api/client";
+import type { AnnotationLabel, DatasetSummary, LabelSchema } from "../api/types";
 import { Badge, Button, ErrorBanner, Modal, Spinner, Table } from "../components/ui";
 import { PageHeader } from "../components/PageHeader";
 import { EmptyState } from "../components/EmptyState";
@@ -37,7 +37,7 @@ function DatasetsList() {
   const navigate = useNavigate();
   const { status } = useSetup();
   const datasetsUrl = status?.logfire_datasets_url ?? null;
-  const [listings, setListings] = useState<Dataset[] | null>(null);
+  const [listings, setListings] = useState<DatasetSummary[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [creating, setCreating] = useState(false);
   const [mode, setMode] = useState<CreateMode>("blank");
@@ -64,17 +64,31 @@ function DatasetsList() {
     setCreating(true);
   }
 
-  async function duplicate(dataset: Dataset) {
+  async function duplicate(dataset: DatasetSummary) {
     // Settings are optional: a dataset that was uploaded rather than generated still
     // seeds its shape and description, just with nothing to steer content.
     const generation = await datasets.generation(dataset.id).catch(() => null);
+    // The dataset's oldest label set (if any) is what continued generation and the old
+    // labeled-count reporting track server-side (`Store.primary_label_set`); seed the
+    // form from that one.
+    const primary = await labelSets
+      .list(dataset.id)
+      .then((sets) => sets[0] ?? null)
+      .catch(() => null);
+    const labelSchema: LabelSchema | undefined =
+      primary === null
+        ? undefined
+        : {
+            kind: primary.kind,
+            labels: primary.kind === "categorical" ? (primary.labels ?? []).map((l: AnnotationLabel) => l.name) : null,
+            minimum: primary.minimum,
+            maximum: primary.maximum,
+          };
     setSeed({
       name: `${dataset.name} copy`,
       description: dataset.description,
       columns: dataset.columns,
-      labelSchema: Object.keys(dataset.label_schema).length > 0
-        ? (dataset.label_schema as LabelSchema)
-        : undefined,
+      labelSchema,
       instructions: generation?.instructions ?? undefined,
       columnNotes: generation?.column_notes ?? undefined,
       labelMix: generation?.label_mix ?? null,

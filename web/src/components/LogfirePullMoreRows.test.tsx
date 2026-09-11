@@ -75,9 +75,6 @@ function madeDataset(): Dataset {
     name: "From Logfire",
     description: "",
     columns: ["question"],
-    label_schema: {},
-    row_count: 5,
-    labeled_count: 0,
   };
 }
 
@@ -96,15 +93,9 @@ function madePull(overrides: Partial<DatasetLogfirePull> = {}): DatasetLogfirePu
 function madeRows(n: number): DatasetRow[] {
   return Array.from({ length: n }, (_, i) => ({
     id: `r${i}`,
-    created_at: "2026-09-08T00:00:00Z",
     dataset_id: "d1",
     idx: i,
     data: { question: "q" },
-    label: null,
-    suggested_label: null,
-    label_reasoning: null,
-    label_source: null,
-    note: null,
   }));
 }
 

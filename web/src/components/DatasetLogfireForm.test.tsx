@@ -91,9 +91,6 @@ function madeCreated(): DatasetCreated {
       name: "traces",
       description: "",
       columns: ["span_id"],
-      label_schema: {},
-      row_count: 1,
-      labeled_count: 0,
     },
     row_count: 1,
   };

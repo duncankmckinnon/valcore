@@ -151,6 +151,20 @@ class CompareOut(BaseModel):
     rows: list[CompareRow]
 
 
+class RunCoverageOut(BaseModel):
+    """How much of a dataset a version's ground truth actually covers.
+
+    ``label_set_id`` is the label set VALIDATION would use for this dataset/version
+    pairing, or ``None`` when no label set matches (VALIDATION is unavailable; only
+    EVAL can run). ``labeled_rows`` counts rows with valid ground truth from that label
+    set -- exactly the rows a VALIDATION run would score, per its partial-labeling rule.
+    """
+
+    label_set_id: str | None
+    total_rows: int
+    labeled_rows: int
+
+
 # -- Background execution -----------------------------------------------------
 
 
@@ -364,6 +378,41 @@ async def compare_runs(a: str, b: str, store: StoreDep) -> CompareOut:
         run_b=RunOut.model_validate(run_b),
         metrics_delta=_metrics_delta(run_a.metrics, run_b.metrics),
         rows=rows,
+    )
+
+
+@router.get("/coverage", response_model=RunCoverageOut)
+async def run_coverage(dataset_id: str, version_id: str, store: StoreDep) -> RunCoverageOut:
+    """Report how many of a dataset's rows have valid ground truth for a version.
+
+    Lets a run launcher warn before submitting: a VALIDATION run only scores rows with
+    valid ground truth (see ``execute_run``), so a caller can show "N of M rows have a
+    label" ahead of time instead of discovering it mid-run. Never raises for a
+    mismatched or absent label set -- that is reported as ``label_set_id: None`` so the
+    launcher can render "validation unavailable" rather than handling an error.
+    """
+    version = store.get_version(version_id)
+    dataset = store.get_dataset(dataset_id)
+    rows = store.list_rows(dataset.id)
+    matched_label_set = find_matching_label_set(
+        store.list_label_sets(dataset.id),
+        score_kind=version.score_kind,
+        score_labels=version.score_labels,
+        score_minimum=version.score_minimum,
+        score_maximum=version.score_maximum,
+    )
+    if matched_label_set is None:
+        return RunCoverageOut(label_set_id=None, total_rows=len(rows), labeled_rows=0)
+
+    annotations = store.list_annotations_for_rows(matched_label_set.id, [row.id for row in rows])
+    annotations_by_row = {a.dataset_row_id: a for a in annotations}
+    labeled_rows = sum(
+        1
+        for row in rows
+        if annotation_ground_truth(matched_label_set, annotations_by_row.get(row.id)) is not None
+    )
+    return RunCoverageOut(
+        label_set_id=matched_label_set.id, total_rows=len(rows), labeled_rows=labeled_rows
     )
 
 

@@ -31,18 +31,19 @@ describe("Layout nav", () => {
     expect(screen.getByRole("link", { name: "Overview" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Evaluators" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Datasets" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Annotations" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Runs" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Compare" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Docs" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();
   });
 
-  it("renders exactly the seven expected nav links and nothing else", () => {
+  it("renders exactly the eight expected nav links and nothing else", () => {
     renderLayout("/");
 
     // Guards against a stray link (e.g. the brand wordmark accidentally becoming
     // a link, or a footer/version badge that this task must not add).
-    expect(screen.getAllByRole("link")).toHaveLength(7);
+    expect(screen.getAllByRole("link")).toHaveLength(8);
   });
 
   it("separates Docs below the app-owned navigation", () => {
@@ -54,6 +55,7 @@ describe("Layout nav", () => {
       "Settings",
       "Evaluators",
       "Datasets",
+      "Annotations",
       "Runs",
       "Compare",
       "Docs",
