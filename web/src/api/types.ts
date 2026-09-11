@@ -35,8 +35,6 @@ export interface LabelSchema {
   maximum: number | null;
 }
 
-export type EmptyLabelSchema = Record<string, never>;
-
 export interface Evaluator {
   id: string;
   created_at: string;
@@ -72,7 +70,13 @@ export interface Dataset {
   name: string;
   description: string;
   columns: string[];
-  label_schema: LabelSchema | EmptyLabelSchema;
+}
+
+// The list response additionally carries each dataset's row and labeled-row counts,
+// which the server can only fill from a grouped query across every dataset at once. A
+// single-dataset fetch returns the plain `Dataset`; read those counts from
+// `datasets.stats(id)` instead.
+export interface DatasetSummary extends Dataset {
   row_count: number;
   labeled_count: number;
 }
@@ -101,15 +105,9 @@ export interface Overview {
 
 export interface DatasetRow {
   id: string;
-  created_at: string;
   dataset_id: string;
   idx: number;
   data: Record<string, unknown>;
-  label: Record<string, unknown> | null;
-  suggested_label: Record<string, unknown> | null;
-  label_reasoning: string | null;
-  label_source: LabelSource | null;
-  note: string | null;
 }
 
 export interface RowsPage {
@@ -119,12 +117,8 @@ export interface RowsPage {
   offset: number;
 }
 
-export interface RowPatch {
-  label?: string | number | null;
-  note?: string | null;
-  accept_suggestion?: boolean;
-  clear_label?: boolean;
-  data?: Record<string, unknown>;
+export interface RowDataUpdate {
+  data: Record<string, unknown>;
 }
 
 export interface DatasetStats {
@@ -137,6 +131,93 @@ export interface DatasetStats {
 export interface DatasetCreated {
   dataset: Dataset;
   row_count: number;
+}
+
+// One label within a label set: its name and the criteria description shown as
+// reference text next to it in the annotation UI.
+export interface AnnotationLabel {
+  name: string;
+  description: string;
+}
+
+export interface LabelSet {
+  id: string;
+  created_at: string;
+  dataset_id: string;
+  name: string;
+  description: string;
+  kind: ScoreKind;
+  labels: AnnotationLabel[] | null;
+  minimum: number | null;
+  maximum: number | null;
+}
+
+// A label set as listed for a dataset, carrying its annotation progress.
+export interface LabelSetProgress extends LabelSet {
+  annotated_count: number;
+  row_count: number;
+}
+
+export interface LabelSetCreate {
+  name: string;
+  description?: string;
+  kind: ScoreKind;
+  labels?: AnnotationLabel[] | null;
+  minimum?: number | null;
+  maximum?: number | null;
+}
+
+export interface LabelSetUpdate {
+  name?: string;
+  description?: string;
+}
+
+// A row's annotation under one label set. `source` is null until the row has ever
+// been confirmed or accepted; `suggested_*` are populated only by generation.
+export interface Annotation {
+  id: string;
+  label_set_id: string;
+  dataset_row_id: string;
+  labels: string[];
+  value: number | null;
+  suggested_labels: string[] | null;
+  suggested_value: number | null;
+  source: LabelSource | null;
+  reasoning: string | null;
+  description: string | null;
+}
+
+// Request body to create or replace a row's annotation. This is a full replace, not a
+// patch: every field is written as sent, so a caller changing only one of
+// labels/value/description must still send the row's current values for the others.
+export interface AnnotationPut {
+  labels?: string[];
+  value?: number | null;
+  description?: string | null;
+}
+
+export interface AnnotationRow {
+  row_id: string;
+  idx: number;
+  data: Record<string, unknown>;
+  annotation: Annotation | null;
+}
+
+export interface AnnotationRowsPage {
+  rows: AnnotationRow[];
+  total: number;
+  annotated_count: number;
+  limit: number;
+  offset: number;
+}
+
+// Whether a VALIDATION run over this dataset/version pairing would have any ground
+// truth to compare against, and how much. `label_set_id` is null when no label set on
+// the dataset matches the version's score contract -- only EVAL can run then.
+export interface RunCoverage {
+  label_set_id: string | null;
+  total_rows: number;
+  labeled_rows: number;
 }
 
 export interface Run {
@@ -270,8 +351,6 @@ export interface DatasetUpdate {
   description?: string;
   columns?: string[];
   column_renames?: Record<string, string>;
-  label_schema?: LabelSchema;
-  force?: boolean;
 }
 
 export interface EvaluatorUpdate {

@@ -2,6 +2,9 @@
 // which parses the uniform `{error:{type,message}}` envelope and throws `ApiError`.
 
 import type {
+  Annotation,
+  AnnotationPut,
+  AnnotationRowsPage,
   Dataset,
   DatasetCreated,
   DatasetGenerateFromVersion,
@@ -10,6 +13,7 @@ import type {
   DatasetLogfirePull,
   DatasetFromLogfire,
   DatasetFromLogfireHosted,
+  DatasetSummary,
   HostedDatasetSummary,
   DatasetRow,
   DatasetStats,
@@ -23,17 +27,22 @@ import type {
   ExportResponse,
   GeneratedConfig,
   LabelMix,
+  LabelSet,
+  LabelSetCreate,
+  LabelSetProgress,
+  LabelSetUpdate,
   LogfirePushResult,
   LabelSchema,
   Overview,
   RefinedConfig,
-  RowPatch,
+  RowDataUpdate,
   RowsGenerate,
   RowsLogfirePull,
   RowsPage,
   CompareOut,
   ResultsPage,
   Run,
+  RunCoverage,
   RunStreamEvent,
   SetupKeysIn,
   SetupStatus,
@@ -124,6 +133,9 @@ export const evaluators = {
     columns?: string[];
     model?: string;
     dataset_id?: string;
+    // Picks which of the dataset's label sets supplies the score space; omit when the
+    // dataset has exactly one (used automatically) or zero (no score space is seeded).
+    label_set_id?: string;
     column_notes?: Record<string, string>;
     // Prescribes the score space instead of inheriting the dataset's. Sending one makes the
     // evaluator EVAL-only against that dataset, since validation compares the label sets.
@@ -151,9 +163,9 @@ export const evaluators = {
 };
 
 export const datasets = {
-  list: () => api<Dataset[]>("/api/datasets"),
+  list: () => api<DatasetSummary[]>("/api/datasets"),
   get: (id: string) => api<Dataset>(`/api/datasets/${id}`),
-  create: (data: Partial<Dataset>) =>
+  create: (data: { name: string; description?: string; columns: string[]; label_schema?: LabelSchema }) =>
     api<Dataset>("/api/datasets", { method: "POST", ...jsonBody(data) }),
   update: (id: string, data: DatasetUpdate) =>
     api<Dataset>(`/api/datasets/${id}`, { method: "PATCH", ...jsonBody(data) }),
@@ -210,8 +222,9 @@ export const datasets = {
     const suffix = query.toString();
     return api<RowsPage>(`/api/datasets/${id}/rows${suffix ? `?${suffix}` : ""}`);
   },
-  // The API patches rows by row id alone; there is no dataset-id path segment.
-  patchRow: (rowId: string, data: RowPatch) =>
+  // The API patches a row's own data by row id alone; there is no dataset-id path
+  // segment, and it never touches annotations (those go through the `annotations` group).
+  patchRowData: (rowId: string, data: RowDataUpdate) =>
     api<DatasetRow>(`/api/datasets/rows/${rowId}`, { method: "PATCH", ...jsonBody(data) }),
   stats: (id: string) => api<DatasetStats>(`/api/datasets/${id}/stats`),
   // "code" emits the Python module with no query params; "json" threads an optional
@@ -235,6 +248,39 @@ export const datasets = {
     api<LogfirePushResult>(`/api/datasets/${id}/logfire/push`, {
       method: "POST",
       ...jsonBody(body),
+    }),
+};
+
+export const labelSets = {
+  list: (datasetId: string) => api<LabelSetProgress[]>(`/api/datasets/${datasetId}/label-sets`),
+  create: (datasetId: string, data: LabelSetCreate) =>
+    api<LabelSet>(`/api/datasets/${datasetId}/label-sets`, { method: "POST", ...jsonBody(data) }),
+  get: (id: string) => api<LabelSet>(`/api/label-sets/${id}`),
+  update: (id: string, data: LabelSetUpdate) =>
+    api<LabelSet>(`/api/label-sets/${id}`, { method: "PATCH", ...jsonBody(data) }),
+  remove: (id: string) => api<void>(`/api/label-sets/${id}`, { method: "DELETE" }),
+  rows: (id: string, params?: { limit?: number; offset?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.limit !== undefined) query.set("limit", String(params.limit));
+    if (params?.offset !== undefined) query.set("offset", String(params.offset));
+    const suffix = query.toString();
+    return api<AnnotationRowsPage>(`/api/label-sets/${id}/rows${suffix ? `?${suffix}` : ""}`);
+  },
+};
+
+export const annotations = {
+  get: (labelSetId: string, rowId: string) =>
+    api<Annotation | null>(`/api/label-sets/${labelSetId}/rows/${rowId}/annotation`),
+  put: (labelSetId: string, rowId: string, data: AnnotationPut) =>
+    api<Annotation>(`/api/label-sets/${labelSetId}/rows/${rowId}/annotation`, {
+      method: "PUT",
+      ...jsonBody(data),
+    }),
+  remove: (labelSetId: string, rowId: string) =>
+    api<void>(`/api/label-sets/${labelSetId}/rows/${rowId}/annotation`, { method: "DELETE" }),
+  accept: (labelSetId: string, rowId: string) =>
+    api<Annotation>(`/api/label-sets/${labelSetId}/rows/${rowId}/annotation/accept`, {
+      method: "POST",
     }),
 };
 
@@ -276,6 +322,10 @@ export const runs = {
   retryFailed: (id: string) => api<Run>(`/api/runs/${id}/retry-failed`, { method: "POST" }),
   compare: (a: string, b: string) =>
     api<CompareOut>(`/api/runs/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`),
+  coverage: (datasetId: string, versionId: string) =>
+    api<RunCoverage>(
+      `/api/runs/coverage?dataset_id=${encodeURIComponent(datasetId)}&version_id=${encodeURIComponent(versionId)}`,
+    ),
   // The API streams *named* SSE events (`status`, `started`, `row`, `finished`, ...),
   // so we attach a listener per name and fold the event name into the payload as
   // `type`. `onmessage` alone would silently miss every named event.
