@@ -1,51 +1,63 @@
-// The hand-labeling surface. A plain table wired for keyboard-driven labeling:
-// j/k move focus, a accepts the suggestion, 1-9 apply categorical labels, u clears,
-// ? shows help. Every change is saved immediately via patchRow with an optimistic
-// update that rolls back on failure. Rows are hand-authorable: cells are editable,
-// an Add row control appends a blank row, and each row can be deleted.
-// Row rendering lives in LabelingRow; this file owns fetching, pagination, the
-// expanded set, the keyboard handler, applyPatch, and the add-row control.
+// The annotation queue: a keyboard-driven table over one label set's rows. j/k move
+// focus, a accepts the suggestion, u clears the annotation, 1-9 toggle a categorical
+// label on/off (multi-select, not replace), ? shows help, Enter opens the focused row's
+// full page. Every change saves immediately with an optimistic update that rolls back on
+// failure. Row rendering lives in LabelingRow; this file owns fetching, pagination, the
+// expanded set, the keyboard handler, and every mutation.
+//
+// Exported here (rather than as its own file) because the spec treats this as the
+// existing LabelingGrid generalized to annotations, not a new component; `AnnotationQueue`
+// is the name AnnotationsPage imports it under.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { datasets } from "../api/client";
-import type { DatasetRow, LabelSchema, RowPatch } from "../api/types";
+import { useNavigate } from "react-router-dom";
+import { annotations, datasets, labelSets } from "../api/client";
+import type { AnnotationPut, AnnotationRow, LabelSetProgress } from "../api/types";
 import LabelingRow from "./LabelingRow";
 import { Button, ConfirmDialog, ErrorBanner, Modal, Spinner } from "./ui";
 
 type Props = {
   datasetId: string;
-  columns: string[];
-  schema: LabelSchema;
-  onChange?: () => void;
+  labelSetId: string;
 };
 
 const PAGE_SIZE = 100;
 
-export default function LabelingGrid({ datasetId, columns, schema, onChange }: Props) {
-  const [rows, setRows] = useState<DatasetRow[]>([]);
+export default function AnnotationQueue({ datasetId, labelSetId }: Props) {
+  const navigate = useNavigate();
+  const [labelSet, setLabelSet] = useState<LabelSetProgress | null>(null);
+  const [rows, setRows] = useState<AnnotationRow[]>([]);
   const [total, setTotal] = useState(0);
+  const [annotatedCount, setAnnotatedCount] = useState(0);
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
   const [focusedIdx, setFocusedIdx] = useState(0);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [showHelp, setShowHelp] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<DatasetRow | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<AnnotationRow | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<unknown>(null);
-  const [focusRowId, setFocusRowId] = useState<string | null>(null);
   const focusedRef = useRef<HTMLTableRowElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
+    labelSets
+      .list(datasetId)
+      .then((items) => setLabelSet(items.find((item) => item.id === labelSetId) ?? null))
+      .catch(setError);
+  }, [datasetId, labelSetId]);
+
+  useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    datasets
-      .rows(datasetId, { limit: PAGE_SIZE, offset })
+    labelSets
+      .rows(labelSetId, { limit: PAGE_SIZE, offset })
       .then((page) => {
         if (cancelled) return;
         setRows(page.rows);
         setTotal(page.total);
+        setAnnotatedCount(page.annotated_count);
         setFocusedIdx(0);
       })
       .catch((err) => {
@@ -57,7 +69,7 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
     return () => {
       cancelled = true;
     };
-  }, [datasetId, offset]);
+  }, [labelSetId, offset]);
 
   useEffect(() => {
     const el = focusedRef.current;
@@ -70,81 +82,147 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
     }
   }, [focusedIdx]);
 
-  // Move keyboard focus into a freshly added row's first cell once it renders.
-  useEffect(() => {
-    if (!focusRowId) return;
-    const el = containerRef.current?.querySelector<HTMLElement>(
-      `[data-row-id="${focusRowId}"] .cell-input`,
-    );
-    el?.focus();
-    setFocusRowId(null);
-  }, [focusRowId, rows]);
+  const toggleExpanded = useCallback((key: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
 
-  const applyPatch = useCallback(
-    async (rowId: string, patch: RowPatch, optimistic: (row: DatasetRow) => DatasetRow) => {
+  const applyPut = useCallback(
+    async (row: AnnotationRow, body: AnnotationPut) => {
+      const hadAnnotation = row.annotation !== null;
       const snapshot = rows;
-      setRows((prev) => prev.map((r) => (r.id === rowId ? optimistic(r) : r)));
+      setRows((prev) =>
+        prev.map((r) =>
+          r.row_id === row.row_id
+            ? {
+                ...r,
+                annotation: {
+                  id: r.annotation?.id ?? "",
+                  label_set_id: labelSetId,
+                  dataset_row_id: r.row_id,
+                  labels: body.labels ?? [],
+                  value: body.value ?? null,
+                  suggested_labels: r.annotation?.suggested_labels ?? null,
+                  suggested_value: r.annotation?.suggested_value ?? null,
+                  source: "manual",
+                  reasoning: r.annotation?.reasoning ?? null,
+                  description: body.description ?? null,
+                },
+              }
+            : r,
+        ),
+      );
       try {
-        const updated = await datasets.patchRow(rowId, patch);
-        setRows((prev) => prev.map((r) => (r.id === rowId ? updated : r)));
-        onChange?.();
+        const saved = await annotations.put(labelSetId, row.row_id, body);
+        setRows((prev) => prev.map((r) => (r.row_id === row.row_id ? { ...r, annotation: saved } : r)));
+        if (!hadAnnotation) setAnnotatedCount((c) => c + 1);
       } catch (err) {
         setRows(snapshot);
         setError(err);
       }
     },
-    [rows, onChange],
+    [rows, labelSetId],
+  );
+
+  const toggleLabel = useCallback(
+    (row: AnnotationRow, name: string) => {
+      const current = row.annotation?.labels ?? [];
+      const next = current.includes(name) ? current.filter((l) => l !== name) : [...current, name];
+      applyPut(row, { labels: next, value: null, description: row.annotation?.description ?? null });
+    },
+    [applyPut],
+  );
+
+  const setValue = useCallback(
+    (row: AnnotationRow, value: number) => {
+      applyPut(row, { labels: [], value, description: row.annotation?.description ?? null });
+    },
+    [applyPut],
+  );
+
+  const setDescription = useCallback(
+    (row: AnnotationRow, description: string) => {
+      applyPut(row, {
+        labels: row.annotation?.labels ?? [],
+        value: row.annotation?.value ?? null,
+        description,
+      });
+    },
+    [applyPut],
+  );
+
+  const clearAnnotation = useCallback(
+    async (row: AnnotationRow) => {
+      if (row.annotation === null) return;
+      const snapshot = rows;
+      setRows((prev) => prev.map((r) => (r.row_id === row.row_id ? { ...r, annotation: null } : r)));
+      try {
+        await annotations.remove(labelSetId, row.row_id);
+        setAnnotatedCount((c) => Math.max(0, c - 1));
+      } catch (err) {
+        setRows(snapshot);
+        setError(err);
+      }
+    },
+    [rows, labelSetId],
   );
 
   const acceptSuggestion = useCallback(
-    (row: DatasetRow) => {
-      if (!row.suggested_label) return;
-      applyPatch(row.id, { accept_suggestion: true }, (r) => ({
-        ...r,
-        label: r.suggested_label,
-        label_source: "accepted",
-      }));
+    async (row: AnnotationRow) => {
+      const a = row.annotation;
+      if (!a) return;
+      const hasSuggestion =
+        labelSet?.kind === "categorical"
+          ? (a.suggested_labels?.length ?? 0) > 0
+          : a.suggested_value !== null && a.suggested_value !== undefined;
+      if (!hasSuggestion) return;
+      const snapshot = rows;
+      setRows((prev) =>
+        prev.map((r) =>
+          r.row_id === row.row_id
+            ? { ...r, annotation: { ...a, labels: a.suggested_labels ?? [], value: a.suggested_value ?? null, source: "accepted" } }
+            : r,
+        ),
+      );
+      try {
+        const saved = await annotations.accept(labelSetId, row.row_id);
+        setRows((prev) => prev.map((r) => (r.row_id === row.row_id ? { ...r, annotation: saved } : r)));
+      } catch (err) {
+        setRows(snapshot);
+        setError(err);
+      }
     },
-    [applyPatch],
-  );
-
-  const setLabel = useCallback(
-    (row: DatasetRow, value: string | number) => {
-      applyPatch(row.id, { label: value }, (r) => ({
-        ...r,
-        label: { value },
-        label_source: "manual",
-      }));
-    },
-    [applyPatch],
-  );
-
-  const clearLabel = useCallback(
-    (row: DatasetRow) => {
-      applyPatch(row.id, { clear_label: true }, (r) => ({
-        ...r,
-        label: null,
-        label_source: null,
-      }));
-    },
-    [applyPatch],
-  );
-
-  const setNote = useCallback(
-    (row: DatasetRow, note: string) => {
-      applyPatch(row.id, { note }, (r) => ({ ...r, note }));
-    },
-    [applyPatch],
+    [rows, labelSetId, labelSet],
   );
 
   const setCell = useCallback(
-    (row: DatasetRow, column: string, value: string) => {
-      applyPatch(row.id, { data: { [column]: value } }, (r) => ({
-        ...r,
-        data: { ...r.data, [column]: value },
-      }));
+    async (row: AnnotationRow, column: string, value: string) => {
+      const snapshot = rows;
+      setRows((prev) =>
+        prev.map((r) => (r.row_id === row.row_id ? { ...r, data: { ...r.data, [column]: value } } : r)),
+      );
+      try {
+        const updated = await datasets.patchRowData(row.row_id, { data: { [column]: value } });
+        setRows((prev) =>
+          prev.map((r) => (r.row_id === row.row_id ? { ...r, data: updated.data } : r)),
+        );
+      } catch (err) {
+        setRows(snapshot);
+        setError(err);
+      }
     },
-    [applyPatch],
+    [rows],
+  );
+
+  const openRow = useCallback(
+    (row: AnnotationRow) => {
+      navigate(`/annotations/${datasetId}/${labelSetId}/rows/${row.row_id}`, { state: { rows } });
+    },
+    [navigate, datasetId, labelSetId, rows],
   );
 
   useEffect(() => {
@@ -175,61 +253,36 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
       const row = rows[focusedIdx];
       if (!row) return;
 
-      if (event.key === "a") {
+      if (event.key === "Enter") {
+        openRow(row);
+        event.preventDefault();
+      } else if (event.key === "a") {
         acceptSuggestion(row);
         event.preventDefault();
       } else if (event.key === "u") {
-        clearLabel(row);
+        clearAnnotation(row);
         event.preventDefault();
-      } else if (schema.kind === "categorical" && /^[1-9]$/.test(event.key)) {
-        const labels = schema.labels ?? [];
+      } else if (labelSet?.kind === "categorical" && /^[1-9]$/.test(event.key)) {
+        const options = labelSet.labels ?? [];
         const index = Number(event.key) - 1;
-        if (index < labels.length) setLabel(row, labels[index]);
+        if (index < options.length) toggleLabel(row, options[index].name);
         event.preventDefault();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [rows, focusedIdx, schema, acceptSuggestion, clearLabel, setLabel]);
-
-  const toggleExpanded = useCallback((key: string) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }, []);
-
-  async function addRow() {
-    const blank: Record<string, unknown> = {};
-    for (const column of columns) blank[column] = "";
-    try {
-      const created = await datasets.addRows(datasetId, [blank]);
-      setRows((prev) => [...prev, ...created]);
-      setTotal((t) => t + created.length);
-      if (created.length > 0) {
-        setFocusedIdx(rows.length);
-        setFocusRowId(created[0].id);
-      }
-      onChange?.();
-    } catch (err) {
-      setError(err);
-    }
-  }
+  }, [rows, focusedIdx, labelSet, acceptSuggestion, clearAnnotation, toggleLabel, openRow]);
 
   async function confirmDelete() {
     if (!deleteTarget) return;
     setDeleteBusy(true);
     setDeleteError(null);
     try {
-      await datasets.deleteRow(deleteTarget.id);
-      setRows((prev) => prev.filter((r) => r.id !== deleteTarget.id));
+      await datasets.deleteRow(deleteTarget.row_id);
+      setRows((prev) => prev.filter((r) => r.row_id !== deleteTarget.row_id));
       setTotal((t) => Math.max(0, t - 1));
-      // Keep focus in range: the deleted row may have been the last one.
       setFocusedIdx((i) => Math.min(i, Math.max(0, rows.length - 2)));
       setDeleteTarget(null);
-      onChange?.();
     } catch (err) {
       setDeleteError(err);
     } finally {
@@ -240,16 +293,14 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
 
-  if (loading) return <Spinner />;
+  if (loading || labelSet === null) return <Spinner />;
 
   return (
     <div className="labeling-grid" ref={containerRef}>
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
       <div className="labeling-toolbar">
-        <span className="muted">
-          Rows {rows.length === 0 ? 0 : offset + 1}–{offset + rows.length} of {total}
-        </span>
+        <span className="muted">{annotatedCount} of {total} annotated</span>
         <Button variant="secondary" onClick={() => setShowHelp(true)}>
           Shortcuts (?)
         </Button>
@@ -258,43 +309,40 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
       <table className="table labeling-table">
         <thead>
           <tr>
-            {columns.map((column) => (
+            {(rows[0] ? Object.keys(rows[0].data) : []).map((column) => (
               <th key={column}>{column}</th>
             ))}
+            <th>Labels</th>
             <th>Suggested</th>
-            <th>Label</th>
             <th>Source</th>
-            <th>Note</th>
+            <th>Description</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((row, index) => (
             <LabelingRow
-              key={row.id}
+              key={row.row_id}
               ref={index === focusedIdx ? focusedRef : null}
               row={row}
-              columns={columns}
-              schema={schema}
+              columns={rows[0] ? Object.keys(rows[0].data) : []}
+              labelSet={labelSet}
               focused={index === focusedIdx}
               expanded={expanded}
               onToggleExpanded={toggleExpanded}
               onFocus={() => setFocusedIdx(index)}
-              onSetLabel={(value) => setLabel(row, value)}
-              onClearLabel={() => clearLabel(row)}
+              onToggleLabel={(name) => toggleLabel(row, name)}
+              onSetValue={(value) => setValue(row, value)}
+              onClearAnnotation={() => clearAnnotation(row)}
               onAcceptSuggestion={() => acceptSuggestion(row)}
-              onSetNote={(note) => setNote(row, note)}
+              onSetDescription={(description) => setDescription(row, description)}
               onSetCell={(column, value) => setCell(row, column, value)}
+              onOpen={() => openRow(row)}
               onDelete={() => setDeleteTarget(row)}
             />
           ))}
         </tbody>
       </table>
-
-      <div className="add-row-bar">
-        <Button variant="secondary" onClick={addRow}>
-          Add row
-        </Button>
-      </div>
 
       <div className="labeling-pagination">
         <Button
@@ -331,21 +379,12 @@ export default function LabelingGrid({ datasetId, columns, schema, onChange }: P
 
       <Modal open={showHelp} title="Keyboard shortcuts" onClose={() => setShowHelp(false)}>
         <ul className="shortcut-list">
-          <li>
-            <kbd>j</kbd> / <kbd>k</kbd> — move between rows
-          </li>
-          <li>
-            <kbd>a</kbd> — accept the suggested label
-          </li>
-          <li>
-            <kbd>1</kbd>–<kbd>9</kbd> — apply the Nth categorical label
-          </li>
-          <li>
-            <kbd>u</kbd> — clear the label
-          </li>
-          <li>
-            <kbd>?</kbd> — toggle this help
-          </li>
+          <li><kbd>j</kbd> / <kbd>k</kbd> — move between rows</li>
+          <li><kbd>a</kbd> — accept the suggested labels/value</li>
+          <li><kbd>1</kbd>–<kbd>9</kbd> — toggle the Nth categorical label</li>
+          <li><kbd>u</kbd> — clear the annotation</li>
+          <li><kbd>Enter</kbd> — open the focused row's full page</li>
+          <li><kbd>?</kbd> — toggle this help</li>
         </ul>
       </Modal>
     </div>

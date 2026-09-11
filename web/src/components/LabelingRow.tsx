@@ -1,25 +1,29 @@
-// One labeling-table row: the editable data cells, the suggested-label cell with
-// its "why?" expander and Accept button, the label control, the source badge, the
-// note input, and the delete action. The grid owns fetching, pagination, the
-// keyboard handler, and the shared optimistic-update path; this file is only the row.
+// One annotation-queue row: the editable data cells, the label control (multi-select
+// chips for categorical, a number input for numeric), the suggested-value cell with its
+// "why?" expander and Accept button, the source badge, the description field, and the
+// row actions (open full page, clear annotation, delete row). The grid owns fetching,
+// pagination, the keyboard handler, and the shared optimistic-update path; this file is
+// only the row.
 
 import { forwardRef } from "react";
-import type { DatasetRow, LabelSchema, LabelSource } from "../api/types";
-import { Badge, Button, Select } from "./ui";
+import type { AnnotationLabel, AnnotationRow, LabelSetProgress, LabelSource } from "../api/types";
+import { Badge, Button } from "./ui";
 
 export type LabelingRowProps = {
-  row: DatasetRow;
+  row: AnnotationRow;
   columns: string[];
-  schema: LabelSchema;
+  labelSet: LabelSetProgress;
   focused: boolean;
   expanded: Set<string>;
   onToggleExpanded: (key: string) => void;
   onFocus: () => void;
-  onSetLabel: (value: string | number) => void;
-  onClearLabel: () => void;
+  onToggleLabel: (name: string) => void;
+  onSetValue: (value: number) => void;
+  onClearAnnotation: () => void;
   onAcceptSuggestion: () => void;
-  onSetNote: (note: string) => void;
+  onSetDescription: (description: string) => void;
   onSetCell: (column: string, value: string) => void;
+  onOpen: () => void;
   onDelete: () => void;
 };
 
@@ -31,45 +35,41 @@ const SOURCE_TONE: Record<LabelSource, "neutral" | "success" | "warning"> = {
   generated: "warning",
 };
 
-function scalar(value: unknown): string | number | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value === "string" || typeof value === "number") return value;
-  if (typeof value === "boolean") return String(value);
+function scalar(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
   return JSON.stringify(value, null, 2);
-}
-
-function labelValue(label: Record<string, unknown> | null): string | number | null {
-  return label ? scalar(label.value) : null;
 }
 
 const LabelingRow = forwardRef<HTMLTableRowElement, LabelingRowProps>(function LabelingRow(
   {
     row,
     columns,
-    schema,
+    labelSet,
     focused,
     expanded,
     onToggleExpanded,
     onFocus,
-    onSetLabel,
-    onClearLabel,
+    onToggleLabel,
+    onSetValue,
+    onClearAnnotation,
     onAcceptSuggestion,
-    onSetNote,
+    onSetDescription,
     onSetCell,
+    onOpen,
     onDelete,
   },
   ref,
 ) {
   function renderCell(column: string) {
-    const key = `${row.id}:${column}`;
-    const text = scalar(row.data[column]);
-    const display = text === null ? "" : String(text);
+    const key = `${row.row_id}:${column}`;
+    const display = scalar(row.data[column]);
     const isLong = display.length > CELL_TRUNCATE;
 
     if (isLong) {
       if (expanded.has(key)) {
-        // Keyed on the value so an optimistic rollback remounts the editor with the
-        // reverted text rather than leaving the failed edit on screen.
         return (
           <textarea
             key={display}
@@ -102,36 +102,37 @@ const LabelingRow = forwardRef<HTMLTableRowElement, LabelingRowProps>(function L
     );
   }
 
-  function renderLabelControl() {
-    const current = labelValue(row.label);
-    if (schema.kind === "categorical") {
-      const options = [
-        { value: "", label: "—" },
-        ...(schema.labels ?? []).map((label) => ({ value: label, label })),
-      ];
+  function renderLabelsControl() {
+    if (labelSet.kind === "categorical") {
+      const selected = row.annotation?.labels ?? [];
+      const options: AnnotationLabel[] = labelSet.labels ?? [];
       return (
-        <Select
-          options={options}
-          aria-label="Label"
-          value={current === null ? "" : String(current)}
-          onChange={(e) =>
-            e.target.value === "" ? onClearLabel() : onSetLabel(e.target.value)
-          }
-        />
+        <div className="chips" role="group" aria-label="Labels">
+          {options.map((label) => (
+            <button
+              key={label.name}
+              type="button"
+              className={`chip ${selected.includes(label.name) ? "chip-selected" : ""}`.trim()}
+              aria-pressed={selected.includes(label.name)}
+              title={label.description || undefined}
+              onClick={() => onToggleLabel(label.name)}
+            >
+              {label.name}
+            </button>
+          ))}
+        </div>
       );
     }
-    // Keyed on the current value so an optimistic rollback remounts the input with
-    // the reverted value rather than leaving the failed edit on screen.
+    const current = row.annotation?.value;
     return (
       <input
-        key={current === null ? "" : String(current)}
+        key={current ?? ""}
         className="select"
         type="number"
-        aria-label="Label"
-        defaultValue={current === null ? "" : String(current)}
+        aria-label="Value"
+        defaultValue={current ?? ""}
         onBlur={(e) => {
-          if (e.target.value === "") onClearLabel();
-          else onSetLabel(Number(e.target.value));
+          if (e.target.value !== "") onSetValue(Number(e.target.value));
         }}
         onKeyDown={(e) => {
           if (e.key === "Enter") (e.target as HTMLInputElement).blur();
@@ -140,13 +141,17 @@ const LabelingRow = forwardRef<HTMLTableRowElement, LabelingRowProps>(function L
     );
   }
 
-  const suggested = labelValue(row.suggested_label);
-  const source = row.label_source;
+  const annotation = row.annotation;
+  const hasSuggestion =
+    labelSet.kind === "categorical"
+      ? (annotation?.suggested_labels?.length ?? 0) > 0
+      : annotation?.suggested_value !== null && annotation?.suggested_value !== undefined;
+  const source = annotation?.source ?? null;
 
   return (
     <tr
       ref={ref}
-      data-row-id={row.id}
+      data-row-id={row.row_id}
       className={focused ? "row-focused" : undefined}
       aria-selected={focused}
       onClick={onFocus}
@@ -154,24 +159,29 @@ const LabelingRow = forwardRef<HTMLTableRowElement, LabelingRowProps>(function L
       {columns.map((column) => (
         <td key={column}>{renderCell(column)}</td>
       ))}
+      <td>{renderLabelsControl()}</td>
       <td>
-        {suggested === null ? (
+        {!hasSuggestion ? (
           <span className="muted">—</span>
         ) : (
           <div className="suggested-cell">
-            <span>{String(suggested)}</span>
-            {row.label_reasoning && (
+            <span>
+              {labelSet.kind === "categorical"
+                ? (annotation?.suggested_labels ?? []).join(", ")
+                : String(annotation?.suggested_value)}
+            </span>
+            {annotation?.reasoning && (
               <button
                 type="button"
                 className="cell-expand"
-                title={row.label_reasoning}
-                onClick={() => onToggleExpanded(`${row.id}:reasoning`)}
+                title={annotation.reasoning}
+                onClick={() => onToggleExpanded(`${row.row_id}:reasoning`)}
               >
                 why?
               </button>
             )}
-            {row.label_reasoning && expanded.has(`${row.id}:reasoning`) && (
-              <div className="reasoning">{row.label_reasoning}</div>
+            {annotation?.reasoning && expanded.has(`${row.row_id}:reasoning`) && (
+              <div className="reasoning">{annotation.reasoning}</div>
             )}
             <Button variant="secondary" onClick={onAcceptSuggestion}>
               Accept
@@ -179,26 +189,47 @@ const LabelingRow = forwardRef<HTMLTableRowElement, LabelingRowProps>(function L
           </div>
         )}
       </td>
-      <td>{renderLabelControl()}</td>
       <td>{source ? <Badge tone={SOURCE_TONE[source]}>{source}</Badge> : null}</td>
       <td>
+        <input
+          key={annotation?.description ?? ""}
+          className="select"
+          aria-label="Description"
+          defaultValue={annotation?.description ?? ""}
+          onBlur={(e) => {
+            if (e.target.value !== (annotation?.description ?? "")) {
+              onSetDescription(e.target.value);
+            }
+          }}
+        />
+      </td>
+      <td>
         <div className="row-actions">
-          <input
-            key={row.note ?? ""}
-            className="select"
-            aria-label="Note"
-            defaultValue={row.note ?? ""}
-            onBlur={(e) => {
-              if (e.target.value !== (row.note ?? "")) onSetNote(e.target.value);
-            }}
-          />
+          <button
+            type="button"
+            className="cell-expand"
+            aria-label={`Open row ${row.idx}`}
+            onClick={onOpen}
+          >
+            Open
+          </button>
+          {annotation !== null && (
+            <button
+              type="button"
+              className="row-delete"
+              aria-label={`Clear annotation for row ${row.idx}`}
+              onClick={onClearAnnotation}
+            >
+              ×
+            </button>
+          )}
           <button
             type="button"
             className="row-delete"
             aria-label={`Delete row ${row.idx}`}
             onClick={onDelete}
           >
-            ×
+            ⌫
           </button>
         </div>
       </td>
