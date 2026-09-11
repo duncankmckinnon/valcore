@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import GenerateMoreRows from "./GenerateMoreRows";
-import { datasets } from "../api/client";
-import type { Dataset, DatasetGeneration, DatasetRow } from "../api/types";
+import { datasets, labelSets } from "../api/client";
+import type { Dataset, DatasetGeneration, DatasetRow, LabelSetProgress } from "../api/types";
 import { GATEWAY_BLOCKER, useSetup } from "./useSetup";
 import type { UseSetupResult } from "./useSetup";
 
@@ -15,6 +15,7 @@ vi.mock("../api/client", async (importOriginal) => {
   return {
     ...actual,
     datasets: { ...actual.datasets, generateRows: vi.fn() },
+    labelSets: { ...actual.labelSets, list: vi.fn() },
   };
 });
 
@@ -24,6 +25,7 @@ vi.mock("./useSetup", async (importOriginal) => {
 });
 
 const generateRowsMock = vi.mocked(datasets.generateRows);
+const listLabelSetsMock = vi.mocked(labelSets.list);
 const useSetupMock = vi.mocked(useSetup);
 
 /** Drives the mocked hook straight to a loaded state, skipping loading/error entirely. */
@@ -38,10 +40,27 @@ function mockGatewayReady(gatewayReady: boolean): void {
   useSetupMock.mockReturnValue(result);
 }
 
+const PASS_FAIL_LABEL_SET: LabelSetProgress = {
+  id: "ls1",
+  created_at: "2026-08-05T00:00:00Z",
+  dataset_id: "d1",
+  name: "quality",
+  description: "",
+  kind: "categorical",
+  labels: [{ name: "pass", description: "" }, { name: "fail", description: "" }],
+  minimum: null,
+  maximum: null,
+  annotated_count: 0,
+  row_count: 0,
+};
+
 beforeEach(() => {
   // Every pre-existing test in this file exercises form validity, not gateway gating, so
   // the default keeps the key "present" and leaves their assertions undisturbed.
   mockGatewayReady(true);
+  // Most tests exercise the mix editor against a pass/fail categorical label set; the one
+  // test that needs no label sets overrides this per-test.
+  listLabelSetsMock.mockResolvedValue([PASS_FAIL_LABEL_SET]);
 });
 
 afterEach(() => {
@@ -56,9 +75,6 @@ function madeDataset(overrides: Partial<Dataset> = {}): Dataset {
     name: "Support QA",
     description: "support questions",
     columns: ["question", "answer"],
-    label_schema: { kind: "categorical", labels: ["pass", "fail"], minimum: null, maximum: null },
-    row_count: 0,
-    labeled_count: 0,
     ...overrides,
   };
 }
@@ -79,19 +95,13 @@ function madeGeneration(overrides: Partial<DatasetGeneration> = {}): DatasetGene
 function madeRows(n: number): DatasetRow[] {
   return Array.from({ length: n }, (_, i) => ({
     id: `r${i}`,
-    created_at: "2026-08-05T00:00:00Z",
     dataset_id: "d1",
     idx: i,
     data: { question: "q", answer: "a" },
-    label: null,
-    suggested_label: null,
-    label_reasoning: null,
-    label_source: null,
-    note: null,
   }));
 }
 
-function renderModal(
+async function renderReady(
   overrides: Partial<React.ComponentProps<typeof GenerateMoreRows>> = {},
 ) {
   const props = {
@@ -104,12 +114,13 @@ function renderModal(
     ...overrides,
   };
   render(<GenerateMoreRows {...props} />);
+  await waitFor(() => expect(listLabelSetsMock).toHaveBeenCalledWith("d1"));
   return props;
 }
 
 describe("GenerateMoreRows", () => {
-  it("prefills every steer from the stored settings", () => {
-    renderModal({
+  it("prefills every steer from the stored settings", async () => {
+    await renderReady({
       generation: madeGeneration({
         count: 7,
         instructions: "be subtle",
@@ -122,27 +133,27 @@ describe("GenerateMoreRows", () => {
     expect(screen.getByLabelText("Instructions")).toHaveValue("be subtle");
     expect(screen.getByLabelText("Note for question")).toHaveValue("a support ticket");
     // Stored proportions come back as the whole percents the editor works in.
-    expect(screen.getByLabelText("Percent for pass")).toHaveValue(25);
+    expect(await screen.findByLabelText("Percent for pass")).toHaveValue(25);
     expect(screen.getByLabelText("Percent for fail")).toHaveValue(75);
   });
 
-  it("enables the mix editor only when a mix was stored", () => {
-    renderModal({ generation: madeGeneration({ label_mix: { pass: 0.5, fail: 0.5 } }) });
+  it("enables the mix editor only when a mix was stored", async () => {
+    await renderReady({ generation: madeGeneration({ label_mix: { pass: 0.5, fail: 0.5 } }) });
 
     expect(screen.getByRole("checkbox", { name: /prescribe label distribution/i })).toBeChecked();
   });
 
-  it("leaves the mix off when none was stored", () => {
-    renderModal({ generation: madeGeneration() });
+  it("leaves the mix off when none was stored", async () => {
+    await renderReady({ generation: madeGeneration() });
 
     expect(
       screen.getByRole("checkbox", { name: /prescribe label distribution/i }),
     ).not.toBeChecked();
   });
 
-  it("falls back to defaults for a dataset that was never generated", () => {
+  it("falls back to defaults for a dataset that was never generated", async () => {
     // An uploaded dataset has no settings; the form still works, just unseeded.
-    renderModal({ generation: null });
+    await renderReady({ generation: null });
 
     expect(screen.getByLabelText("Rows to add")).toHaveValue(20);
     expect(screen.getByLabelText("Instructions")).toHaveValue("");
@@ -151,7 +162,7 @@ describe("GenerateMoreRows", () => {
   it("sends only count when nothing was stored or typed", async () => {
     const user = userEvent.setup();
     generateRowsMock.mockResolvedValue(madeRows(20));
-    renderModal({ generation: null });
+    await renderReady({ generation: null });
 
     await user.click(screen.getByRole("button", { name: "Generate" }));
 
@@ -162,7 +173,7 @@ describe("GenerateMoreRows", () => {
   it("sends the prefilled steers back on submit", async () => {
     const user = userEvent.setup();
     generateRowsMock.mockResolvedValue(madeRows(5));
-    renderModal({
+    await renderReady({
       generation: madeGeneration({
         count: 5,
         instructions: "be subtle",
@@ -170,6 +181,7 @@ describe("GenerateMoreRows", () => {
         label_mix: { pass: 0.5, fail: 0.5 },
       }),
     });
+    await screen.findByLabelText("Percent for pass");
 
     await user.click(screen.getByRole("button", { name: "Generate" }));
 
@@ -188,16 +200,16 @@ describe("GenerateMoreRows", () => {
   it("reports how many rows were added", async () => {
     const user = userEvent.setup();
     generateRowsMock.mockResolvedValue(madeRows(3));
-    const props = renderModal({ generation: madeGeneration({ count: 3 }) });
+    const props = await renderReady({ generation: madeGeneration({ count: 3 }) });
 
     await user.click(screen.getByRole("button", { name: "Generate" }));
 
     await waitFor(() => expect(props.onGenerated).toHaveBeenCalledWith(3));
   });
 
-  it("offers notes for the dataset's own columns and no way to add more", () => {
+  it("offers notes for the dataset's own columns and no way to add more", async () => {
     // Shape is fixed: new rows must match the columns already there.
-    renderModal();
+    await renderReady();
 
     expect(screen.getByLabelText("Note for question")).toBeInTheDocument();
     expect(screen.getByLabelText("Note for answer")).toBeInTheDocument();
@@ -206,7 +218,7 @@ describe("GenerateMoreRows", () => {
 
   it("blocks Generate above the server's cap", async () => {
     const user = userEvent.setup();
-    renderModal({ maxCount: 50 });
+    await renderReady({ maxCount: 50 });
 
     const count = screen.getByLabelText("Rows to add");
     await user.clear(count);
@@ -218,18 +230,18 @@ describe("GenerateMoreRows", () => {
 
   it("blocks Generate while a prescribed mix does not total 100", async () => {
     const user = userEvent.setup();
-    renderModal({ generation: madeGeneration({ label_mix: { pass: 0.5, fail: 0.5 } }) });
+    await renderReady({ generation: madeGeneration({ label_mix: { pass: 0.5, fail: 0.5 } }) });
+    const pass = await screen.findByLabelText("Percent for pass");
 
-    const pass = screen.getByLabelText("Percent for pass");
     await user.clear(pass);
     await user.type(pass, "10");
 
     expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
   });
 
-  it("offers no mix editor when the dataset carries no label space", () => {
-    // An empty schema is the legal "no ground truth" state — nothing to distribute over.
-    renderModal({ dataset: madeDataset({ label_schema: {} }) });
+  it("offers no mix editor when the dataset carries no label sets", async () => {
+    listLabelSetsMock.mockResolvedValue([]);
+    await renderReady();
 
     expect(screen.queryByRole("checkbox", { name: /prescribe label distribution/i })).toBeNull();
   });
@@ -239,7 +251,7 @@ describe("GenerateMoreRows", () => {
     generateRowsMock.mockResolvedValue(madeRows(1));
     // 'context' was in the settings but an edit has since dropped it from the dataset;
     // sending it would fail the server's unknown-column check.
-    renderModal({
+    await renderReady({
       dataset: madeDataset({ columns: ["question"] }),
       generation: madeGeneration({
         count: 1,
@@ -256,7 +268,7 @@ describe("GenerateMoreRows", () => {
   it("keeps the form filled in when generation fails", async () => {
     const user = userEvent.setup();
     generateRowsMock.mockRejectedValue(new Error("boom"));
-    const props = renderModal({ generation: madeGeneration({ instructions: "be subtle" }) });
+    const props = await renderReady({ generation: madeGeneration({ instructions: "be subtle" }) });
 
     await user.click(screen.getByRole("button", { name: "Generate" }));
 
@@ -265,21 +277,18 @@ describe("GenerateMoreRows", () => {
   });
 });
 
-// -- Redesigned modal chrome -------------------------------------------------
-// The redesign adds a description, moves the actions into the footer, and routes the
-// submit gate through FormFooter so a blocked submit says *why* it is blocked instead of
-// staying silently disabled.
+// -- Modal chrome ---------------------------------------------------------------
 
 describe("GenerateMoreRows chrome", () => {
-  it("describes that new rows append and reuse the stored settings", () => {
-    renderModal();
+  it("describes that new rows append and reuse the stored settings", async () => {
+    await renderReady();
 
     expect(screen.getByText(/append|stored settings|reuse/i)).toBeInTheDocument();
   });
 
   it("keeps the Cancel action wired to onClose from the footer", async () => {
     const user = userEvent.setup();
-    const props = renderModal();
+    const props = await renderReady();
 
     await user.click(screen.getByRole("button", { name: "Cancel" }));
 
@@ -288,33 +297,27 @@ describe("GenerateMoreRows chrome", () => {
 
   it("shows the blocking reason in the footer and disables Generate", async () => {
     const user = userEvent.setup();
-    renderModal({ maxCount: 50 });
+    await renderReady({ maxCount: 50 });
 
     const count = screen.getByLabelText("Rows to add");
     await user.clear(count);
     await user.type(count, "51");
 
-    // FormFooter renders the first blocker as a status region rather than leaving the
-    // button silently disabled.
     const blocker = screen.getByRole("status");
     expect(blocker.textContent).toMatch(/50/);
     expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
   });
 
-  it("shows no blocker and enables Generate on a valid state", () => {
-    // The ready path of FormFooter: a satisfiable form carries no status region and the
-    // primary action is live.
-    renderModal();
+  it("shows no blocker and enables Generate on a valid state", async () => {
+    await renderReady();
 
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.getByRole("button", { name: "Generate" })).not.toBeDisabled();
   });
 
   it("surfaces the empty-count blocker and disables Generate at zero rows", async () => {
-    // Emptying the number field drives count below one, which is the first blocker in the
-    // top-to-bottom order.
     const user = userEvent.setup();
-    renderModal();
+    await renderReady();
 
     const count = screen.getByLabelText("Rows to add");
     await user.clear(count);
@@ -325,31 +328,27 @@ describe("GenerateMoreRows chrome", () => {
 });
 
 describe("GenerateMoreRows gateway gating", () => {
-  it("disables Generate and shows the gateway blocker when the key is missing", () => {
+  it("disables Generate and shows the gateway blocker when the key is missing", async () => {
     mockGatewayReady(false);
-    renderModal();
+    await renderReady();
 
     const blocker = screen.getByRole("status");
     expect(blocker.textContent).toBe(GATEWAY_BLOCKER);
     expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
   });
 
-  it("governs Generate by the form's own validity alone once the key is present", () => {
-    // The unmodified "ready" case: a satisfiable form with a present key carries no status
-    // region and the primary action is live.
+  it("governs Generate by the form's own validity alone once the key is present", async () => {
     mockGatewayReady(true);
-    renderModal();
+    await renderReady();
 
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.getByRole("button", { name: "Generate" })).not.toBeDisabled();
   });
 
   it("shows the gateway blocker instead of the row-count blocker when both apply", async () => {
-    // The row count also exceeds the cap, but a missing key blocks regardless of what else
-    // is wrong, and FormFooter shows only one instruction at a time.
     mockGatewayReady(false);
     const user = userEvent.setup();
-    renderModal({ maxCount: 50 });
+    await renderReady({ maxCount: 50 });
 
     const count = screen.getByLabelText("Rows to add");
     await user.clear(count);
@@ -364,7 +363,7 @@ describe("GenerateMoreRows gateway gating", () => {
   it("keeps Rows to add and Instructions editable while the key is missing", async () => {
     mockGatewayReady(false);
     const user = userEvent.setup();
-    renderModal({ generation: null });
+    await renderReady({ generation: null });
 
     const count = screen.getByLabelText("Rows to add");
     await user.clear(count);
@@ -373,7 +372,6 @@ describe("GenerateMoreRows gateway gating", () => {
 
     expect(count).toHaveValue(5);
     expect(screen.getByLabelText("Instructions")).toHaveValue("be subtle");
-    // Still blocked by the missing key even though the form itself is now valid.
     expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
   });
 });
