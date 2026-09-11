@@ -31,6 +31,24 @@ vi.mock("../components/DatasetSettingsModal", () => ({
     ) : null,
 }));
 
+// The rows grid is owned by its own test file; stub it to a marker that reports its
+// props and lets a test trigger the onChange callback DatasetDetail wires to refreshStats.
+vi.mock("../components/DatasetRowsGrid", () => ({
+  default: ({
+    datasetId,
+    columns,
+    onChange,
+  }: {
+    datasetId: string;
+    columns: string[];
+    onChange?: () => void;
+  }) => (
+    <div data-testid="dataset-rows-grid" data-dataset-id={datasetId} data-columns={columns.join(",")}>
+      <button onClick={() => onChange?.()}>trigger row change</button>
+    </div>
+  ),
+}));
+
 vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
   return {
@@ -173,6 +191,28 @@ describe("DatasetDetail", () => {
 
     const link = screen.getByRole("link", { name: "Annotate" });
     expect(link).toHaveAttribute("href", "/annotations/d1");
+  });
+
+  it("renders the rows grid over this dataset's columns", async () => {
+    renderDetail();
+    await ready();
+
+    const grid = screen.getByTestId("dataset-rows-grid");
+    expect(grid).toHaveAttribute("data-dataset-id", "d1");
+    expect(grid).toHaveAttribute("data-columns", "question,answer");
+  });
+
+  it("refreshes stats when the rows grid reports a change", async () => {
+    statsMock
+      .mockResolvedValueOnce({ total: 5, labeled: 5, unlabeled: 0, label_distribution: {} })
+      .mockResolvedValue({ total: 6, labeled: 5, unlabeled: 1, label_distribution: {} });
+    renderDetail();
+    await ready();
+    await waitFor(() => expect(statsMock).toHaveBeenCalledTimes(1));
+
+    await userEvent.click(screen.getByRole("button", { name: "trigger row change" }));
+
+    await waitFor(() => expect(statsMock).toHaveBeenCalledTimes(2));
   });
 
   it("refreshes the stats counts after dataset settings are saved", async () => {

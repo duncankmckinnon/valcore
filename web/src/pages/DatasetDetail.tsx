@@ -17,6 +17,7 @@ import { Button, ConfirmDialog, ErrorBanner, Spinner } from "../components/ui";
 import { useSetup } from "../components/useSetup";
 import { PageHeader } from "../components/PageHeader";
 import { datasetCasesUrl } from "../logfireLinks";
+import DatasetRowsGrid from "../components/DatasetRowsGrid";
 import DatasetSettingsModal from "../components/DatasetSettingsModal";
 import { ExportModal } from "../components/ExportModal";
 import EvaluatorFromDataset from "../components/EvaluatorFromDataset";
@@ -303,6 +304,8 @@ export default function DatasetDetail({ datasetId }: Props) {
 
       <GenerationSettings generation={generation} />
       <LogfirePullSettings pull={logfirePull} />
+
+      <DatasetRowsGrid datasetId={datasetId} columns={dataset.columns} onChange={refreshStats} />
 
       <DatasetSettingsModal
         open={editing}
