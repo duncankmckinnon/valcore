@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypeVar
 
-from sqlalchemy import case, event
+from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, func, select
 from sqlmodel import create_engine as _sqlmodel_create_engine
@@ -15,7 +15,6 @@ from sqlmodel import create_engine as _sqlmodel_create_engine
 from valcore import settings
 from valcore.errors import (
     ContractError,
-    DestructiveChangeError,
     FrozenVersionError,
     NotFoundError,
     ReferencedError,
@@ -30,7 +29,6 @@ from valcore.models import (
     Evaluator,
     EvaluatorVersion,
     ExperimentRun,
-    LabelSchema,
     LabelSet,
     LabelSource,
     Run,
@@ -38,11 +36,12 @@ from valcore.models import (
     RunResult,
     RunStatus,
     ScoreKind,
+    annotation_ground_truth,
     validate_annotation,
     validate_label_set,
     validate_version,
 )
-from valcore.schema_migration import apply_column_changes, invalid_label_ids
+from valcore.schema_migration import apply_column_changes
 
 
 def create_engine(db_path: Path | str | None = None) -> Engine:
@@ -117,7 +116,6 @@ class DatasetSummary:
     name: str
     description: str
     columns: list[str]
-    label_schema: dict
     row_count: int
     labeled_count: int
 
@@ -148,18 +146,6 @@ class Overview:
     labeled_rows: int
     best_accuracy: float | None
     latest_run: LatestRun | None
-
-
-def _labeled_rows_expr() -> object:
-    """A grouped count of rows carrying a real label.
-
-    An unlabeled row persists the JSON text ``'null'`` rather than SQL ``NULL``, so a plain
-    ``COUNT(label)`` would count it. Counting only rows whose JSON type is not ``null`` keeps
-    the SQL count in step with the Python ``label is not None`` check used elsewhere, and
-    still reports ``0`` for a dataset with no rows (a ``LEFT JOIN`` yields SQL ``NULL`` there,
-    whose ``json_type`` is ``NULL`` and so is excluded).
-    """
-    return func.count(case((func.json_type(DatasetRow.label) != "null", DatasetRow.id)))
 
 
 def _read_accuracy(metrics: dict | None) -> float | None:
@@ -315,7 +301,6 @@ class Store:
         name: str,
         description: str,
         columns: list[str],
-        label_schema: dict,
     ) -> Dataset:
         """Create and persist a new dataset."""
         with session_scope(self.engine) as session:
@@ -323,7 +308,6 @@ class Store:
                 name=name,
                 description=description,
                 columns=columns,
-                label_schema=label_schema,
             )
             session.add(dataset)
             return dataset
@@ -336,34 +320,48 @@ class Store:
     def list_datasets(self) -> list[DatasetSummary]:
         """Return every dataset ordered by creation time, each with its row/label counts.
 
-        The counts come from one grouped ``LEFT JOIN`` against the rows table, not a query
-        per dataset: a dataset with no rows still appears, reporting ``0``/``0`` rather than
-        being dropped by an inner join. ``labeled_count`` counts rows whose ``label`` is set.
+        ``labeled_count`` comes from the dataset's primary (oldest) label set's annotations
+        -- a different table from the rows themselves, so unlike the row count it cannot be
+        filled by one grouped join and is resolved per dataset instead.
         """
         with session_scope(self.engine) as session:
-            grouped = session.exec(
-                select(
-                    Dataset,
-                    func.count(DatasetRow.id),
-                    _labeled_rows_expr(),
+            datasets = list(session.exec(select(Dataset).order_by(Dataset.created_at)))
+            row_counts = dict(
+                session.exec(
+                    select(DatasetRow.dataset_id, func.count(DatasetRow.id)).group_by(
+                        DatasetRow.dataset_id
+                    )
+                ).all()
+            )
+            label_sets_by_dataset: dict[str, LabelSet] = {}
+            for label_set in session.exec(select(LabelSet).order_by(LabelSet.created_at)):
+                label_sets_by_dataset.setdefault(label_set.dataset_id, label_set)
+            summaries = []
+            for dataset in datasets:
+                row_count = row_counts.get(dataset.id, 0)
+                primary = label_sets_by_dataset.get(dataset.id)
+                labeled_count = 0
+                if primary is not None:
+                    primary_annotations = session.exec(
+                        select(Annotation).where(Annotation.label_set_id == primary.id)
+                    ).all()
+                    labeled_count = sum(
+                        1
+                        for annotation in primary_annotations
+                        if annotation_ground_truth(primary, annotation) is not None
+                    )
+                summaries.append(
+                    DatasetSummary(
+                        id=dataset.id,
+                        created_at=dataset.created_at,
+                        name=dataset.name,
+                        description=dataset.description,
+                        columns=dataset.columns,
+                        row_count=row_count,
+                        labeled_count=labeled_count,
+                    )
                 )
-                .outerjoin(DatasetRow, DatasetRow.dataset_id == Dataset.id)
-                .group_by(Dataset.id)
-                .order_by(Dataset.created_at)
-            ).all()
-            return [
-                DatasetSummary(
-                    id=dataset.id,
-                    created_at=dataset.created_at,
-                    name=dataset.name,
-                    description=dataset.description,
-                    columns=dataset.columns,
-                    label_schema=dataset.label_schema,
-                    row_count=row_count,
-                    labeled_count=labeled_count,
-                )
-                for dataset, row_count, labeled_count in grouped
-            ]
+            return summaries
 
     def update_dataset(
         self,
@@ -373,8 +371,6 @@ class Store:
         description: str | None = None,
         columns: list[str] | None = None,
         column_renames: dict[str, str] | None = None,
-        label_schema: dict | None = None,
-        force: bool = False,
     ) -> Dataset:
         """Update a dataset's metadata and shape, migrating its rows."""
         with session_scope(self.engine) as session:
@@ -403,23 +399,6 @@ class Store:
                     row.data = apply_column_changes(row.data, renames, final_columns)
                     session.add(row)
                 dataset.columns = final_columns
-
-            if label_schema is not None:
-                schema = LabelSchema.model_validate(label_schema)
-                rows = session.exec(select(DatasetRow).where(DatasetRow.dataset_id == id)).all()
-                invalid = invalid_label_ids(rows, schema)
-                if invalid and not force:
-                    raise DestructiveChangeError(
-                        f"{len(invalid)} labels would become invalid under the new schema.",
-                        detail={"invalid_label_count": len(invalid)},
-                    )
-                invalid_ids = set(invalid)
-                for row in rows:
-                    if row.id in invalid_ids:
-                        row.label = None
-                        row.label_source = None
-                        session.add(row)
-                dataset.label_schema = label_schema
 
             session.add(dataset)
             return dataset
@@ -593,45 +572,6 @@ class Store:
                 session.delete(annotation)
             session.delete(row)
 
-    def set_label(
-        self,
-        row_id: str,
-        label: dict,
-        source: LabelSource,
-        note: str | None = None,
-    ) -> DatasetRow:
-        """Assign a hand- or machine-provided label to a dataset row."""
-        with session_scope(self.engine) as session:
-            row = _require(session, DatasetRow, row_id)
-            row.label = label
-            row.label_source = source
-            row.note = note
-            session.add(row)
-            return row
-
-    def labeled_count(self, dataset_id: str) -> tuple[int, int]:
-        """Return ``(labeled, total)`` row counts for a dataset."""
-        with session_scope(self.engine) as session:
-            labels = session.exec(
-                select(DatasetRow.label).where(DatasetRow.dataset_id == dataset_id)
-            ).all()
-            labeled = sum(1 for label in labels if label is not None)
-            return labeled, len(labels)
-
-    def label_distribution(self, dataset_id: str) -> dict[str, int]:
-        """Return a count of labeled rows keyed by their string label value."""
-        with session_scope(self.engine) as session:
-            labels = session.exec(
-                select(DatasetRow.label).where(DatasetRow.dataset_id == dataset_id)
-            ).all()
-            distribution: dict[str, int] = {}
-            for label in labels:
-                if label is None:
-                    continue
-                key = str(label.get("value"))
-                distribution[key] = distribution.get(key, 0) + 1
-            return distribution
-
     # -- Label sets -------------------------------------------------------------
 
     def create_label_set(
@@ -676,6 +616,23 @@ class Store:
                 )
             )
 
+    def primary_label_set(self, dataset_id: str) -> LabelSet | None:
+        """Return a dataset's oldest label set, or None if it has none.
+
+        Generation, upload, and Logfire-pull flows create at most one label set per
+        dataset, so "oldest" is unambiguous for every dataset those flows produced. A
+        dataset with additional hand-authored label sets still resolves to the one from
+        its original creation flow, which is what continued generation and legacy
+        stats/labeled-count reporting track.
+        """
+        with session_scope(self.engine) as session:
+            _require(session, Dataset, dataset_id)
+            return session.exec(
+                select(LabelSet)
+                .where(LabelSet.dataset_id == dataset_id)
+                .order_by(LabelSet.created_at)
+            ).first()
+
     def update_label_set(
         self, id: str, *, name: str | None = None, description: str | None = None
     ) -> LabelSet:
@@ -709,13 +666,19 @@ class Store:
         value: float | None = None,
         description: str | None = None,
         source: LabelSource | None = None,
+        suggested_labels: list[str] | None = None,
+        suggested_value: float | None = None,
+        reasoning: str | None = None,
     ) -> Annotation:
         """Create or update the single annotation for (label_set_id, dataset_row_id).
 
-        A full replace of ``labels``/``value``/``description``, not a merge -- mirroring
+        A full replace of whichever fields the caller passes, not a merge -- mirroring
         ``set_label``'s replace semantics for the equivalent single-label case today.
-        ``suggested_labels``/``suggested_value`` are untouched here; nothing in this plan
-        writes them yet.
+        ``labels``/``value`` are the confirmed ground truth; ``suggested_labels``/
+        ``suggested_value``/``reasoning`` are provenance a caller (generation, today) can
+        set without touching the confirmed fields, so a suggestion stays unconfirmed until
+        a separate call sets ``labels``/``value`` -- exactly as ``DatasetRow.suggested_label``
+        stayed distinct from ``DatasetRow.label`` until an explicit accept.
         """
         with session_scope(self.engine) as session:
             label_set = _require(session, LabelSet, label_set_id)
@@ -736,6 +699,9 @@ class Store:
                     value=value,
                     description=description,
                     source=source,
+                    suggested_labels=suggested_labels,
+                    suggested_value=suggested_value,
+                    reasoning=reasoning,
                     updated_at=now,
                 )
                 session.add(annotation)
@@ -744,9 +710,47 @@ class Store:
             existing.value = value
             existing.description = description
             existing.source = source
+            if suggested_labels is not None:
+                existing.suggested_labels = suggested_labels
+            if suggested_value is not None:
+                existing.suggested_value = suggested_value
+            if reasoning is not None:
+                existing.reasoning = reasoning
             existing.updated_at = now
             session.add(existing)
             return existing
+
+    def accept_annotation_suggestion(self, label_set_id: str, dataset_row_id: str) -> Annotation:
+        """Promote an annotation's suggested labels/value into its confirmed fields.
+
+        Mirrors the pre-Annotation ``patch_row(accept_suggestion=True)`` flow: copies
+        whatever generation wrote into ``suggested_labels``/``suggested_value`` onto
+        ``labels``/``value``, marking the result ``LabelSource.ACCEPTED``. The suggestion
+        itself is left in place -- accepting is not the same as clearing it. Raises
+        ContractError if there is no annotation, or an annotation with nothing suggested,
+        to accept.
+        """
+        with session_scope(self.engine) as session:
+            label_set = _require(session, LabelSet, label_set_id)
+            annotation = session.exec(
+                select(Annotation).where(
+                    Annotation.label_set_id == label_set_id,
+                    Annotation.dataset_row_id == dataset_row_id,
+                )
+            ).first()
+            has_suggestion = annotation is not None and (
+                annotation.suggested_labels or annotation.suggested_value is not None
+            )
+            if not has_suggestion:
+                raise ContractError("Annotation has no suggested labels/value to accept.")
+            if label_set.kind is ScoreKind.CATEGORICAL:
+                annotation.labels = annotation.suggested_labels or []
+            else:
+                annotation.value = annotation.suggested_value
+            annotation.source = LabelSource.ACCEPTED
+            annotation.updated_at = datetime.now(UTC)
+            session.add(annotation)
+            return annotation
 
     def get_annotation(self, label_set_id: str, dataset_row_id: str) -> Annotation | None:
         """Return the annotation for (label_set_id, dataset_row_id), or None if unset."""
@@ -946,20 +950,36 @@ class Store:
     def overview(self) -> Overview:
         """Return store-wide aggregate counts for the Overview page.
 
-        Entity and row counts are computed by grouped aggregate SQL rather than by looping
-        datasets, avoiding an N+1. Accuracy cannot be aggregated in SQL because it lives in
-        the untyped ``Run.metrics`` JSON, so completed runs are read back and their accuracy
-        parsed defensively in Python — mirroring ``labeled_count`` and ``label_distribution``.
-        Only runs in the completed terminal state contribute to ``best_accuracy`` and are
-        eligible to be the ``latest_run``.
+        Entity and total-row counts are computed by grouped aggregate SQL. ``labeled_rows``
+        cannot be: it comes from each dataset's primary (oldest) label set's annotations, a
+        different table from the rows themselves, so it is summed one label set at a time
+        rather than by a single grouped join -- mirroring ``list_datasets``/``dataset_stats``.
+        Accuracy cannot be aggregated in SQL either, because it lives in the untyped
+        ``Run.metrics`` JSON, so completed runs are read back and their accuracy parsed
+        defensively in Python. Only runs in the completed terminal state contribute to
+        ``best_accuracy`` and are eligible to be the ``latest_run``.
         """
         with session_scope(self.engine) as session:
             evaluator_count = session.exec(select(func.count()).select_from(Evaluator)).one()
             dataset_count = session.exec(select(func.count()).select_from(Dataset)).one()
             run_count = session.exec(select(func.count()).select_from(Run)).one()
-            total_rows, labeled_rows = session.exec(
-                select(func.count(DatasetRow.id), _labeled_rows_expr())
-            ).one()
+            total_rows = session.exec(select(func.count()).select_from(DatasetRow)).one()
+            labeled_rows = 0
+            _seen_datasets: set[str] = set()
+            for label_set in session.exec(select(LabelSet).order_by(LabelSet.created_at)):
+                # Only the first (primary) label set per dataset counts, mirroring
+                # list_datasets/dataset_stats.
+                if label_set.dataset_id in _seen_datasets:
+                    continue
+                _seen_datasets.add(label_set.dataset_id)
+                annotations = session.exec(
+                    select(Annotation).where(Annotation.label_set_id == label_set.id)
+                ).all()
+                labeled_rows += sum(
+                    1
+                    for annotation in annotations
+                    if annotation_ground_truth(label_set, annotation) is not None
+                )
 
             completed = session.exec(
                 select(Run, Dataset.name)

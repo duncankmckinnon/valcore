@@ -24,13 +24,22 @@ from pydantic_evals.dataset import Case
 from valcore.capabilities import VALID_CAPABILITIES
 from valcore.errors import ContractError
 from valcore.factory import build_output_model
+from valcore.models import (
+    Annotation,
+    DatasetRow,
+    EvaluatorVersion,
+    LabelSet,
+    ScoreKind,
+    annotation_ground_truth,
+)
 from valcore.models import Dataset as VDataset
-from valcore.models import DatasetRow, EvaluatorVersion
 
-# The provenance keys copied between a valcore row and a case's ``valcore_row`` metadata block.
-# ``idx`` is written on export but never read back on import: ``add_prepared_rows`` regenerates
-# sequential indices, so a stored ``idx`` would collide with the keyword it assigns.
-_PROVENANCE_KEYS: tuple[str, ...] = ("note", "label_reasoning", "label_source", "suggested_label")
+# The provenance keys copied between a valcore annotation and a case's ``valcore_row``
+# metadata block. Renamed from the pre-Annotation shape (``note``/``label_reasoning``/
+# ``label_source``) to match Annotation's own field names; suggested labels are not
+# round-tripped through export/import -- nothing currently depends on preserving a
+# suggestion once it has been reviewed into a real annotation, or reads one back on import.
+_PROVENANCE_KEYS: tuple[str, ...] = ("description", "reasoning", "source")
 
 # Mirror ``api/routes/datasets.py``'s ``_JSONL_INFER_LIMIT``: inspect at most this many cases
 # when inferring the column union, so a late outlier case cannot silently widen the schema.
@@ -203,30 +212,40 @@ def valcore_meta(version: EvaluatorVersion) -> dict:
 # --- Dataset <-> pydantic_evals.Dataset ---------------------------------------
 
 
-def _row_to_case(row: DatasetRow, wrap_output: bool = False) -> Case:
+def _row_to_case(
+    row: DatasetRow,
+    label_set: LabelSet | None,
+    annotation: Annotation | None,
+    wrap_output: bool = False,
+) -> Case:
     """Map one valcore row to a pydantic-evals case, carrying provenance in ``valcore_row``.
 
-    ``wrap_output`` emits ``expected_output`` as ``{"value": label}`` instead of the bare label.
-    Logfire's hosted datasets API types that field as a dictionary -- a scalar is rejected with
-    ``dict_type: Input should be a valid dictionary``, and its client only passes dicts through
-    untouched, serializing anything else as-is. ``{"value": ...}`` is valcore's own storage shape
-    for ``DatasetRow.label``, so the hosted form matches the database rather than inventing a
-    third representation. Local exports stay scalar for ``EqualsExpected``.
+    ``label_set``/``annotation`` supply this row's ground truth (via
+    ``annotation_ground_truth``) and provenance -- callers pass ``None`` for a dataset with
+    no label set, or when the row carries no annotation under it.
+
+    ``wrap_output`` emits ``expected_output`` as ``{"value": label}`` instead of the bare
+    label. Logfire's hosted datasets API types that field as a dictionary -- a scalar is
+    rejected with ``dict_type: Input should be a valid dictionary``. ``{"value": ...}`` is
+    valcore's own storage shape for a single ground-truth value, so the hosted form matches
+    rather than inventing a third representation. Local exports stay scalar for
+    ``EqualsExpected``.
     """
     valcore_row: dict = {"idx": row.idx}
-    if row.note is not None:
-        valcore_row["note"] = row.note
-    if row.label_reasoning is not None:
-        valcore_row["label_reasoning"] = row.label_reasoning
-    if row.label_source is not None:
-        valcore_row["label_source"] = row.label_source.value
-    if row.suggested_label is not None:
-        valcore_row["suggested_label"] = row.suggested_label
+    if annotation is not None:
+        if annotation.description is not None:
+            valcore_row["description"] = annotation.description
+        if annotation.reasoning is not None:
+            valcore_row["reasoning"] = annotation.reasoning
+        if annotation.source is not None:
+            valcore_row["source"] = annotation.source.value
 
-    # A row with no label omits ``expected_output`` rather than asserting a null ground truth.
+    # A row with no ground truth omits ``expected_output`` rather than asserting a null
+    # ground truth.
     expected = None
-    if row.label is not None:
-        expected = {"value": row.label["value"]} if wrap_output else row.label["value"]
+    ground_truth = annotation_ground_truth(label_set, annotation) if label_set is not None else None
+    if ground_truth is not None:
+        expected = {"value": ground_truth} if wrap_output else ground_truth
     return Case(
         name=row.id,
         inputs=row.data,
@@ -235,27 +254,26 @@ def _row_to_case(row: DatasetRow, wrap_output: bool = False) -> Case:
     )
 
 
-def _output_type(dataset: VDataset, wrap: bool = False) -> Any:
-    """Derive ``OutputT`` from the dataset's label schema so a hosted push carries a real schema.
+def _output_type(label_set: LabelSet | None, wrap: bool = False) -> Any:
+    """Derive ``OutputT`` from a label set so a hosted push carries a real schema.
 
     A bare ``object`` infers to ``{}`` in ``TypeAdapter(...).json_schema()``, which is what
-    ``push_dataset`` reads to build the hosted expected-output schema. valcore knows the label
-    space exactly, so it is encoded here rather than left to infer to nothing.
+    ``push_dataset`` reads to build the hosted expected-output schema. A label set's shape
+    is encoded here rather than left to infer to nothing; ``None`` (no label set) falls back
+    to ``str``, the same as an empty legacy label schema used to.
 
-    With ``wrap``, the scalar is wrapped in a single-field model so the inferred schema is an
-    *object*. Logfire's hosted datasets API requires ``expected_output`` to be a dictionary and
-    rejects a scalar with ``dict_type: Input should be a valid dictionary``; see
-    :func:`_row_to_case`. Only the hosted push wraps -- the exported ``pydantic_evals`` dataset
-    keeps a scalar, which is what ``EqualsExpected`` compares against.
+    With ``wrap``, the scalar is wrapped in a single-field model so the inferred schema is
+    an *object*; see :func:`_row_to_case`. Only the hosted push wraps -- the exported
+    ``pydantic_evals`` dataset keeps a scalar, which is what ``EqualsExpected`` compares
+    against.
     """
-    kind = dataset.label_schema.get("kind")
-    if kind == "categorical":
-        labels = dataset.label_schema.get("labels") or []
-        inner: Any = Literal[tuple(labels)] if labels else str  # type: ignore[valid-type]
-    elif kind == "numeric":
-        inner = float
+    if label_set is None:
+        inner: Any = str
+    elif label_set.kind is ScoreKind.CATEGORICAL:
+        names = [item["name"] for item in (label_set.labels or [])]
+        inner = Literal[tuple(names)] if names else str  # type: ignore[valid-type]
     else:
-        inner = str
+        inner = float
 
     if not wrap:
         return inner
@@ -267,20 +285,28 @@ def dataset_to_evals(
     rows: list[DatasetRow],
     evaluators: list[dict],
     *,
+    label_set: LabelSet | None = None,
+    annotations: list[Annotation] | None = None,
     wrap_output: bool = False,
 ) -> EvalsDataset:
     """Map a valcore dataset and its rows onto a ``pydantic_evals.Dataset``.
 
-    Concrete generics are used deliberately: constructing ``EvalsDataset`` with unparameterized
-    generics emits a ``UserWarning``. ``OutputT`` is derived from the dataset's label schema
-    rather than left as ``object`` so a hosted push infers a real expected-output schema.
+    ``label_set``/``annotations`` supply ground truth and provenance -- typically
+    ``store.primary_label_set(dataset.id)`` (or the label set a validation run matched)
+    and ``store.list_annotations_for_rows(label_set.id, [r.id for r in rows])``. Omit both
+    for a dataset with no ground truth to carry.
 
-    ``wrap_output`` shapes the result for Logfire's hosted datasets API, which requires
-    ``expected_output`` to be an object; see :func:`_row_to_case`. It defaults off so exported
-    ``.dataset.json`` files keep the scalar form that ``EqualsExpected`` compares against.
+    Concrete generics are used deliberately: constructing ``EvalsDataset`` with
+    unparameterized generics emits a ``UserWarning``. ``OutputT`` is derived from
+    ``label_set`` rather than left as ``object`` so a hosted push infers a real
+    expected-output schema.
     """
-    cases = [_row_to_case(row, wrap_output=wrap_output) for row in rows]
-    output_type = _output_type(dataset, wrap=wrap_output)
+    annotations_by_row = {a.dataset_row_id: a for a in (annotations or [])}
+    cases = [
+        _row_to_case(row, label_set, annotations_by_row.get(row.id), wrap_output=wrap_output)
+        for row in rows
+    ]
+    output_type = _output_type(label_set, wrap=wrap_output)
     return EvalsDataset[dict[str, Any], output_type, dict[str, Any]](  # type: ignore[valid-type]
         name=dataset.name, cases=cases, evaluators=evaluators
     )
@@ -341,32 +367,50 @@ def _resolve_label_schema(cases: list[Case], valcore: dict | None) -> dict:
     return {}
 
 
-def _case_to_prepared(case: Case) -> dict:
-    """Map one pydantic-evals case to the prepared-row dict ``Store.add_prepared_rows`` accepts."""
-    data = case.inputs if isinstance(case.inputs, dict) else {"input": case.inputs}
-    fields: dict = {"data": data}
-    label = _expected_label(case)
-    if label is not None:
-        fields["label"] = {"value": label}
+def _case_to_prepared(case: Case) -> tuple[dict, dict | None]:
+    """Map one pydantic-evals case to ``(prepared_row, annotation_fields)``.
 
+    ``prepared_row`` is the shape ``Store.add_prepared_rows`` accepts -- data only, since
+    ``DatasetRow`` carries no label fields. ``annotation_fields`` is ``None`` when the case
+    carries neither a label nor any provenance; otherwise it is the keyword fields
+    ``Store.set_annotation`` needs, built once the row's real id is known (labels/value from
+    ``expected_output``, description/reasoning/source from ``valcore_row`` metadata).
+    """
+    data = case.inputs if isinstance(case.inputs, dict) else {"input": case.inputs}
+    prepared = {"data": data}
+
+    label = _expected_label(case)
     valcore_row = (case.metadata or {}).get("valcore_row") or {}
+    if label is None and not valcore_row:
+        return prepared, None
+
+    fields: dict = {}
+    if isinstance(label, str):
+        fields["labels"] = [label]
+    elif isinstance(label, (int, float)) and not isinstance(label, bool):
+        fields["value"] = label
     for key in _PROVENANCE_KEYS:
         if valcore_row.get(key) is not None:
             fields[key] = valcore_row[key]
-    return fields
+    return prepared, (fields or None)
 
 
 def evals_to_dataset_fields(
     ds: EvalsDataset, valcore: dict | None
-) -> tuple[str, list[str], dict, list[dict]]:
+) -> tuple[str, list[str], dict, list[dict], list[dict | None]]:
     """Decode a ``pydantic_evals.Dataset`` into valcore dataset fields.
 
-    Returns ``(name, columns, label_schema, prepared_rows)`` where ``prepared_rows`` is the
-    shape ``Store.add_prepared_rows`` already accepts. Case ``name``s are ignored — row ids are
-    regenerated on import.
+    Returns ``(name, columns, label_schema, prepared_rows, row_annotations)``.
+    ``prepared_rows`` is the shape ``Store.add_prepared_rows`` already accepts.
+    ``row_annotations`` is positionally parallel to ``prepared_rows``: for each row that
+    carries a label or provenance, the keyword fields ``Store.set_annotation`` needs once
+    a label set exists and the row's real id is known; ``None`` for a row with neither.
+    Case ``name``s are ignored -- row ids are regenerated on import.
     """
     cases = list(ds.cases)
     columns = _infer_columns(cases)
     label_schema = _resolve_label_schema(cases, valcore)
-    prepared = [_case_to_prepared(case) for case in cases]
-    return ds.name, columns, label_schema, prepared
+    pairs = [_case_to_prepared(case) for case in cases]
+    prepared = [p for p, _ in pairs]
+    row_annotations = [a for _, a in pairs]
+    return ds.name, columns, label_schema, prepared, row_annotations

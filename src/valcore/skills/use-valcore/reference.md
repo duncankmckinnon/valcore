@@ -116,8 +116,10 @@ Runs an evaluator version over a dataset.
 
 `EVALUATOR` and `DATASET` resolve by exact name first, then by unique id prefix.
 
-`--kind validation` requires every row to carry a label and fails outright if any row is
-unlabeled. `--kind validation --min-accuracy 0.9` is the CI pattern.
+`--kind validation` needs a matching label set on the dataset, but not every row need be
+labeled under it: rows without a valid label are skipped, and the run scores whatever
+subset has ground truth, failing outright only if none do. `--kind validation
+--min-accuracy 0.9` is the CI pattern.
 
 ### `valcore experiment EVALUATOR DATASET`
 

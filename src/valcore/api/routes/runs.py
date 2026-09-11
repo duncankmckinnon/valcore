@@ -21,7 +21,14 @@ from valcore.api.deps import get_store
 from valcore.api.events import bus
 from valcore.errors import ContractError
 from valcore.experiment import execute_experiment
-from valcore.models import EvaluatorVersion, RunKind, RunStatus, check_dataset_compatibility
+from valcore.models import (
+    EvaluatorVersion,
+    RunKind,
+    RunStatus,
+    annotation_ground_truth,
+    check_dataset_compatibility,
+    find_matching_label_set,
+)
 from valcore.runner import RunEvent, execute_run
 from valcore.settings import is_local_cli_model
 from valcore.store import Store
@@ -144,6 +151,20 @@ class CompareOut(BaseModel):
     rows: list[CompareRow]
 
 
+class RunCoverageOut(BaseModel):
+    """How much of a dataset a version's ground truth actually covers.
+
+    ``label_set_id`` is the label set VALIDATION would use for this dataset/version
+    pairing, or ``None`` when no label set matches (VALIDATION is unavailable; only
+    EVAL can run). ``labeled_rows`` counts rows with valid ground truth from that label
+    set -- exactly the rows a VALIDATION run would score, per its partial-labeling rule.
+    """
+
+    label_set_id: str | None
+    total_rows: int
+    labeled_rows: int
+
+
 # -- Background execution -----------------------------------------------------
 
 
@@ -225,13 +246,6 @@ def _is_disagreement(agreement: bool | float | None) -> bool:
     return float(agreement) != 0.0
 
 
-def _label_value(label: dict | None) -> str | float | None:
-    """Return the scalar value from a row's ``{"value": ...}`` label, if any."""
-    if label is None:
-        return None
-    return label.get("value")
-
-
 def _metrics_delta(a: dict | None, b: dict | None) -> dict[str, float]:
     """Return ``b - a`` for every scalar numeric metric shared by both runs."""
     if not a or not b:
@@ -275,7 +289,8 @@ async def create_run(body: RunCreate, store: StoreDep, agent_factory: AgentFacto
     version = store.get_version(body.version_id)
     if not is_local_cli_model(version.model):
         config.require_gateway_key()
-    check_dataset_compatibility(version, store.get_dataset(body.dataset_id), kind=body.kind)
+    dataset = store.get_dataset(body.dataset_id)
+    check_dataset_compatibility(version, dataset, store.list_label_sets(dataset.id), kind=body.kind)
     run = store.create_run(
         kind=body.kind,
         version_id=body.version_id,
@@ -312,6 +327,26 @@ async def compare_runs(a: str, b: str, store: StoreDep) -> CompareOut:
     results_a = {r.row_id: r for r in store.list_results(a)}
     results_b = {r.row_id: r for r in store.list_results(b)}
 
+    version_a = store.get_version(run_a.version_id)
+    label_sets = store.list_label_sets(run_a.dataset_id)
+    # Ground truth is resolved from run_a's version -- if the two runs use evaluator
+    # versions with different score contracts, this is the label set whose shape matches
+    # run_a's; there is no principled way to pick between two disagreeing runs otherwise.
+    matched_label_set = find_matching_label_set(
+        label_sets,
+        score_kind=version_a.score_kind,
+        score_labels=version_a.score_labels,
+        score_minimum=version_a.score_minimum,
+        score_maximum=version_a.score_maximum,
+    )
+    annotations_by_row = {}
+    if matched_label_set is not None:
+        all_rows = store.list_rows(run_a.dataset_id)
+        annotations = store.list_annotations_for_rows(
+            matched_label_set.id, [r.id for r in all_rows]
+        )
+        annotations_by_row = {a.dataset_row_id: a for a in annotations}
+
     rows: list[CompareRow] = []
     for row in store.list_rows(run_a.dataset_id):
         ra = results_a.get(row.id)
@@ -327,7 +362,11 @@ async def compare_runs(a: str, b: str, store: StoreDep) -> CompareOut:
                 output_b=rb.output if rb is not None else None,
                 score_a=score_a,
                 score_b=score_b,
-                label=_label_value(row.label),
+                label=(
+                    annotation_ground_truth(matched_label_set, annotations_by_row.get(row.id))
+                    if matched_label_set is not None
+                    else None
+                ),
                 disagree=score_a != score_b,
             )
         )
@@ -339,6 +378,41 @@ async def compare_runs(a: str, b: str, store: StoreDep) -> CompareOut:
         run_b=RunOut.model_validate(run_b),
         metrics_delta=_metrics_delta(run_a.metrics, run_b.metrics),
         rows=rows,
+    )
+
+
+@router.get("/coverage", response_model=RunCoverageOut)
+async def run_coverage(dataset_id: str, version_id: str, store: StoreDep) -> RunCoverageOut:
+    """Report how many of a dataset's rows have valid ground truth for a version.
+
+    Lets a run launcher warn before submitting: a VALIDATION run only scores rows with
+    valid ground truth (see ``execute_run``), so a caller can show "N of M rows have a
+    label" ahead of time instead of discovering it mid-run. Never raises for a
+    mismatched or absent label set -- that is reported as ``label_set_id: None`` so the
+    launcher can render "validation unavailable" rather than handling an error.
+    """
+    version = store.get_version(version_id)
+    dataset = store.get_dataset(dataset_id)
+    rows = store.list_rows(dataset.id)
+    matched_label_set = find_matching_label_set(
+        store.list_label_sets(dataset.id),
+        score_kind=version.score_kind,
+        score_labels=version.score_labels,
+        score_minimum=version.score_minimum,
+        score_maximum=version.score_maximum,
+    )
+    if matched_label_set is None:
+        return RunCoverageOut(label_set_id=None, total_rows=len(rows), labeled_rows=0)
+
+    annotations = store.list_annotations_for_rows(matched_label_set.id, [row.id for row in rows])
+    annotations_by_row = {a.dataset_row_id: a for a in annotations}
+    labeled_rows = sum(
+        1
+        for row in rows
+        if annotation_ground_truth(matched_label_set, annotations_by_row.get(row.id)) is not None
+    )
+    return RunCoverageOut(
+        label_set_id=matched_label_set.id, total_rows=len(rows), labeled_rows=labeled_rows
     )
 
 
@@ -360,6 +434,23 @@ async def list_run_results(
     """Return a paginated slice of a run's results joined with their row data."""
     run = store.get_run(id)
     rows_by_id = {row.id: row for row in store.list_rows(run.dataset_id)}
+
+    version = store.get_version(run.version_id)
+    label_sets = store.list_label_sets(run.dataset_id)
+    matched_label_set = find_matching_label_set(
+        label_sets,
+        score_kind=version.score_kind,
+        score_labels=version.score_labels,
+        score_minimum=version.score_minimum,
+        score_maximum=version.score_maximum,
+    )
+    annotations_by_row = {}
+    if matched_label_set is not None:
+        all_rows = store.list_rows(run.dataset_id)
+        annotations = store.list_annotations_for_rows(
+            matched_label_set.id, [r.id for r in all_rows]
+        )
+        annotations_by_row = {a.dataset_row_id: a for a in annotations}
 
     kept: list[ResultRow] = []
     for result in store.list_results(id):
@@ -387,7 +478,13 @@ async def list_run_results(
                 agreement=result.agreement,
                 error=result.error,
                 latency_ms=result.latency_ms,
-                label=_label_value(row.label) if row is not None else None,
+                label=(
+                    annotation_ground_truth(
+                        matched_label_set, annotations_by_row.get(result.row_id)
+                    )
+                    if matched_label_set is not None
+                    else None
+                ),
             )
         )
 

@@ -23,14 +23,11 @@ from pydantic_ai.models.test import TestModel
 from valcore import tracing
 from valcore.errors import ContractError
 from valcore.factory import build_output_model
-from valcore.models import LabelSource, RunKind, RunStatus, ScoreKind
+from valcore.models import RunKind, RunStatus, ScoreKind
 from valcore.runner import RunEvent, execute_run
 from valcore.store import Store, create_engine, init_db
 
 _LOGFIRE_PRESENT = importlib.util.find_spec("logfire") is not None
-
-CATEGORICAL_SCHEMA = {"kind": "categorical", "labels": ["pass", "fail"]}
-NUMERIC_SCHEMA = {"kind": "numeric"}
 
 CATEGORICAL_VERSION_FIELDS = {
     "version_name": "v1",
@@ -92,21 +89,40 @@ def make_dataset(
     labels: list[str | float | None],
     *,
     columns: list[str] | None = None,
-    schema: dict | None = None,
+    label_set_kind: ScoreKind = ScoreKind.CATEGORICAL,
+    with_label_set: bool = True,
 ):
-    """Create a dataset with one row per entry in ``labels`` (None = unlabeled)."""
+    """Create a dataset with one row per entry in ``labels`` (None = unannotated).
+
+    When ``with_label_set`` is True (the default), also creates a LabelSet matching the
+    categorical or numeric version fixtures' score contract and records each non-None
+    entry as that row's confirmed ground-truth annotation.
+    """
     dataset = store.create_dataset(
-        "ds",
-        "",
-        columns if columns is not None else ["input", "output"],
-        schema if schema is not None else CATEGORICAL_SCHEMA,
+        "ds", "", columns if columns is not None else ["input", "output"]
     )
     rows = store.add_rows(
         dataset.id, [{"input": f"in{i}", "output": f"out{i}"} for i in range(len(labels))]
     )
-    for row, label in zip(rows, labels, strict=True):
-        if label is not None:
-            store.set_label(row.id, {"value": label}, LabelSource.MANUAL)
+    if with_label_set:
+        if label_set_kind is ScoreKind.CATEGORICAL:
+            label_set = store.create_label_set(
+                dataset.id,
+                "quality",
+                "",
+                ScoreKind.CATEGORICAL,
+                labels=[{"name": "pass", "description": ""}, {"name": "fail", "description": ""}],
+            )
+            for row, label in zip(rows, labels, strict=True):
+                if label is not None:
+                    store.set_annotation(label_set.id, row.id, labels=[label])
+        else:
+            label_set = store.create_label_set(
+                dataset.id, "score", "", ScoreKind.NUMERIC, minimum=None, maximum=None
+            )
+            for row, label in zip(rows, labels, strict=True):
+                if label is not None:
+                    store.set_annotation(label_set.id, row.id, value=label)
     return dataset
 
 
@@ -177,9 +193,9 @@ def capture_evaluators(monkeypatch: pytest.MonkeyPatch) -> list:
     captured: list = []
     original = experiment_module.dataset_to_evals
 
-    def spy(dataset, rows, evaluators):
+    def spy(dataset, rows, evaluators, **kwargs):
         captured.append(evaluators)
-        return original(dataset, rows, evaluators)
+        return original(dataset, rows, evaluators, **kwargs)
 
     monkeypatch.setattr(experiment_module, "dataset_to_evals", spy)
     return captured
@@ -211,23 +227,32 @@ async def test_experiment_and_run_agree(store: Store, monkeypatch: pytest.Monkey
     experiment_scores = {r.row_id: r.score_value for r in store.list_results(run_via_experiment.id)}
     assert runner_scores == experiment_scores
 
+    # Per-row ``agreement`` is now also compared: ``PersistResults.teardown`` derives it
+    # from ``result.expected_output``, which ``dataset_to_evals``/``_row_to_case`` now
+    # build from the matched LabelSet's Annotations -- the same ground truth
+    # ``runner.execute_run`` reads via ``ground_truth_by_row`` -- so the two engines must
+    # agree row-for-row, not just on the aggregate metrics asserted above.
     runner_agreement = {r.row_id: r.agreement for r in store.list_results(run_via_runner.id)}
     experiment_agreement = {
         r.row_id: r.agreement for r in store.list_results(run_via_experiment.id)
     }
     assert runner_agreement == experiment_agreement
+    assert any(v is not None for v in experiment_agreement.values())
 
 
 @pytest.mark.anyio
 async def test_experiment_and_run_agree_numeric(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The same equivalence holds for numeric scores, exercising NumericDelta end to end."""
+    """The same metrics equivalence holds for numeric scores, exercising NumericDelta end to end."""
     from valcore.experiment import execute_experiment
 
     version = make_numeric_version(store)
     dataset = make_dataset(
-        store, [1.0, 4.0, 2.5, 9.0, 0.0], columns=["input", "output"], schema=NUMERIC_SCHEMA
+        store,
+        [1.0, 4.0, 2.5, 9.0, 0.0],
+        columns=["input", "output"],
+        label_set_kind=ScoreKind.NUMERIC,
     )
 
     run_via_runner = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=2)
@@ -242,13 +267,17 @@ async def test_experiment_and_run_agree_numeric(
 
     assert runner_result.metrics == experiment_result.metrics
 
+    # Runner-side agreement reflects real signed deltas computed from Annotation ground
+    # truth; at least one row has a non-zero delta.
     runner_agreement = {r.row_id: r.agreement for r in store.list_results(run_via_runner.id)}
+    assert any(v != 0 for v in runner_agreement.values())
+
+    # Experiment-side agreement is now sourced from the same Annotation ground truth (see
+    # test_experiment_and_run_agree above), so it must match the runner row-for-row.
     experiment_agreement = {
         r.row_id: r.agreement for r in store.list_results(run_via_experiment.id)
     }
     assert runner_agreement == experiment_agreement
-    # Signed deltas, not booleans; at least one row has a non-zero delta.
-    assert any(v != 0 for v in experiment_agreement.values())
 
 
 # -- NumericDelta matches runner._agreement --------------------------------------
@@ -310,13 +339,15 @@ async def test_categorical_agreement_is_exact_match(
     assert isinstance(evaluators[0], EqualsExpected)
 
     assert result.status is RunStatus.COMPLETED
-    rows = store.list_rows(dataset.id)
     results = {r.row_id: r for r in store.list_results(run.id)}
-    expected_agreement = [True, False, True, False, True]
-    for row, expected in zip(rows, expected_agreement, strict=True):
-        assert results[row.id].agreement is expected
-        assert isinstance(results[row.id].agreement, bool)
-        assert results[row.id].score_value == "pass"
+    for result_row in results.values():
+        assert result_row.score_value == "pass"
+    # Per-row ``agreement`` is now sourced from Annotation ground truth and is exact-match,
+    # exactly what EqualsExpected implements: True where the row's label is "pass", False
+    # where it is "fail".
+    labels = ["pass", "fail", "pass", "fail", "pass"]
+    rows = store.list_rows(dataset.id)
+    assert [results[row.id].agreement for row in rows] == [label == "pass" for label in labels]
     assert result.metrics is not None
     assert result.metrics["n"] == 5
     assert result.metrics["accuracy"] == pytest.approx(3 / 5)
@@ -334,7 +365,9 @@ async def test_numeric_run_attaches_numeric_delta(
     from valcore.experiment import NumericDelta, execute_experiment
 
     version = make_numeric_version(store)
-    dataset = make_dataset(store, [1.0, 2.0], columns=["input", "output"], schema=NUMERIC_SCHEMA)
+    dataset = make_dataset(
+        store, [1.0, 2.0], columns=["input", "output"], label_set_kind=ScoreKind.NUMERIC
+    )
     run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=2)
 
     evaluator_calls = capture_evaluators(monkeypatch)
@@ -601,19 +634,17 @@ async def test_incompatible_dataset_fails(store: Store, monkeypatch: pytest.Monk
     assert store.get_experiment(run.id) is None
 
 
-# -- Missing labels -----------------------------------------------------------------
+# -- Partial labeling / missing labels ------------------------------------------------
 
 
 @pytest.mark.anyio
-async def test_partially_unlabeled_validation_dataset_raises(
+async def test_partial_labeling_scores_subset(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A VALIDATION run must reject a dataset with even one unlabeled row.
+    """Partial labeling is allowed: a VALIDATION run scores exactly the annotated rows.
 
-    ``runner.execute_run`` raises ``ContractError`` before entering ``RUNNING`` for this
-    exact case; without the matching check here, this engine would silently evaluate the
-    unlabeled row, persist ``agreement=None`` for it, and quietly compute metrics over
-    only the labeled subset instead of refusing to run at all.
+    Mirrors ``runner.execute_run``'s partial-labeling behavior: 1 of 3 rows here has no
+    annotation, so it is silently excluded rather than aborting the whole run.
     """
     from valcore.experiment import execute_experiment
 
@@ -622,19 +653,19 @@ async def test_partially_unlabeled_validation_dataset_raises(
     run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=2)
 
     patch_build_agent(monkeypatch, constant_agent(version))
-    with pytest.raises(ContractError):
-        await execute_experiment(store, run.id)
+    result = await execute_experiment(store, run.id)
 
-    assert store.list_results(run.id) == []
-    assert store.get_run(run.id).status is RunStatus.PENDING
-    assert store.get_experiment(run.id) is None
+    assert result.status is RunStatus.COMPLETED
+    assert len(store.list_results(run.id)) == 2
+    assert result.metrics is not None
+    assert result.metrics["n"] == 2
 
 
 @pytest.mark.anyio
 async def test_wholly_unlabeled_validation_dataset_raises(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The same rejection holds when no row at all carries a label."""
+    """With no row carrying a valid annotation, there is nothing to validate."""
     from valcore.experiment import execute_experiment
 
     version = make_version(store)
@@ -650,10 +681,31 @@ async def test_wholly_unlabeled_validation_dataset_raises(
 
 
 @pytest.mark.anyio
+async def test_validation_zero_label_sets_raises(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dataset with no label sets at all is legal for check_dataset_compatibility (nothing
+    to reconcile), but a VALIDATION experiment still has nothing to validate against, so it
+    raises -- one level down from where a mismatched-but-present label set would."""
+    from valcore.experiment import execute_experiment
+
+    version = make_version(store)
+    dataset = make_dataset(store, [None, None, None], with_label_set=False)
+    assert store.list_label_sets(dataset.id) == []
+    run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=2)
+
+    patch_build_agent(monkeypatch, constant_agent(version))
+    with pytest.raises(ContractError):
+        await execute_experiment(store, run.id)
+
+    assert store.list_results(run.id) == []
+
+
+@pytest.mark.anyio
 async def test_eval_run_tolerates_unlabeled_rows(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The missing-label check is VALIDATION-only -- an EVAL run has no labels by design."""
+    """The missing-ground-truth check is VALIDATION-only -- an EVAL run has none by design."""
     from valcore.experiment import execute_experiment
 
     version = make_version(store)
@@ -666,26 +718,57 @@ async def test_eval_run_tolerates_unlabeled_rows(
     assert result.status is RunStatus.COMPLETED
 
 
+@pytest.mark.anyio
+async def test_eval_run_needs_no_label_set(store: Store, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An EVAL run needs no label set at all -- the dataset here has zero."""
+    from valcore.experiment import execute_experiment
+
+    version = make_version(store)
+    dataset = make_dataset(store, [None, None, None], with_label_set=False)
+    assert store.list_label_sets(dataset.id) == []
+    run = store.create_run(RunKind.EVAL, version.id, dataset.id, concurrency=2)
+
+    patch_build_agent(monkeypatch, constant_agent(version))
+    result = await execute_experiment(store, run.id)
+
+    assert result.status is RunStatus.COMPLETED
+
+
 # -- Unexpected lifecycle failures leave the run FAILED, not stuck RUNNING ---------
 
 
 @pytest.mark.anyio
-async def test_malformed_numeric_label_fails_run_not_stuck_running(
+async def test_agreement_computation_failure_fails_run_not_stuck_running(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A label that can't be coerced to a float breaks ``_agreement`` inside ``teardown``.
+    """A failure computing agreement inside ``teardown`` breaks the whole run.
 
     ``pydantic_evals`` explicitly propagates a lifecycle's exceptions to ``evaluate()``'s
     caller, so this must resolve to a terminal ``FAILED`` status with ``finished_at`` set
     and an ``error`` event -- not leave the run permanently ``RUNNING``.
+
+    Before Task 3, this was reproduced with a malformed legacy ``DatasetRow.label`` value
+    that broke ``_agreement`` once ``dataset_to_evals`` built ``expected_output`` from it.
+    That route is now closed: ``Annotation.value`` is a typed ``float``, so
+    ``Store.set_annotation`` itself rejects anything that can't be coerced to one. So
+    ``_agreement`` is monkeypatched to raise directly instead. ``NumericDelta.evaluate``
+    also calls ``_agreement`` and also raises here, but pydantic-evals catches an
+    evaluator's own exception as an ``EvaluatorFailure`` rather than letting it escape --
+    only ``teardown``'s direct call is what actually crashes the run.
     """
+    import valcore.experiment as experiment_module
     from valcore.experiment import execute_experiment
 
     version = make_numeric_version(store)
-    dataset = store.create_dataset("ds", "", ["input", "output"], NUMERIC_SCHEMA)
-    rows = store.add_rows(dataset.id, [{"input": "in0", "output": "out0"}])
-    store.set_label(rows[0].id, {"value": "not-a-number"}, LabelSource.MANUAL)
+    dataset = make_dataset(
+        store, [0.5], columns=["input", "output"], label_set_kind=ScoreKind.NUMERIC
+    )
     run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=1)
+
+    def boom(score_kind, predicted, label):
+        raise ValueError("cannot compute agreement")
+
+    monkeypatch.setattr(experiment_module, "_agreement", boom)
 
     events: list[RunEvent] = []
 
@@ -810,17 +893,26 @@ class TestExperimentSpans:
     async def test_evaluate_failure_still_marks_the_run_failed(
         self, store: Store, traced, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A malformed label breaks ``_agreement`` inside ``teardown``, which
-        ``pydantic_evals`` propagates out of ``evaluate()`` itself -- the run must still end
-        ``FAILED`` rather than stuck ``RUNNING``."""
+        """A failure computing agreement inside ``teardown``, which ``pydantic_evals``
+        propagates out of ``evaluate()`` itself, must still end the run ``FAILED`` rather
+        than stuck ``RUNNING``. See
+        ``test_agreement_computation_failure_fails_run_not_stuck_running`` for why
+        ``_agreement`` (rather than a malformed label, no longer persistable through the
+        typed ``Annotation.value`` field) is what's monkeypatched here.
+        """
+        import valcore.experiment as experiment_module
         from valcore.experiment import execute_experiment
 
         version = make_numeric_version(store)
-        dataset = store.create_dataset("ds", "", ["input", "output"], NUMERIC_SCHEMA)
-        rows = store.add_rows(dataset.id, [{"input": "in0", "output": "out0"}])
-        store.set_label(rows[0].id, {"value": "not-a-number"}, LabelSource.MANUAL)
+        dataset = make_dataset(
+            store, [0.5], columns=["input", "output"], label_set_kind=ScoreKind.NUMERIC
+        )
         run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=1)
 
+        def boom(score_kind, predicted, label):
+            raise ValueError("cannot compute agreement")
+
+        monkeypatch.setattr(experiment_module, "_agreement", boom)
         patch_build_agent(monkeypatch, constant_numeric_agent(version, 1.0))
         result = await execute_experiment(store, run.id)
 

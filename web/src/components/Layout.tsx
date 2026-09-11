@@ -1,6 +1,7 @@
 import type { ComponentType } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import {
+  AnnotationIcon,
   CompareIcon,
   DatasetIcon,
   DocsIcon,
@@ -26,6 +27,7 @@ const SECTIONS: NavSection[] = [
     items: [
       { to: "/evaluators", label: "Evaluators", Icon: EvaluatorIcon },
       { to: "/datasets", label: "Datasets", Icon: DatasetIcon },
+      { to: "/annotations", label: "Annotations", Icon: AnnotationIcon },
     ],
   },
   {

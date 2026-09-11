@@ -24,30 +24,49 @@ from pydantic import TypeAdapter
 
 from valcore.config import FileConfig, save_config
 from valcore.errors import ConfigError, ContractError
+from valcore.models import Annotation, DatasetRow, LabelSet, LabelSource, ScoreKind
 from valcore.models import Dataset as VDataset
-from valcore.models import DatasetRow, LabelSource
 
 
 def make_rows() -> list[DatasetRow]:
-    """One row labeled with a value from the dataset's categorical label space."""
+    """One row of data, with no annotation attached; tests attach one via a LabelSet as needed."""
     return [
         DatasetRow(
             dataset_id="d1",
             idx=0,
             data={"question": "Q1", "answer": "A1"},
-            label={"value": "a"},
-            label_source=LabelSource.MANUAL,
         ),
     ]
 
 
 def make_dataset() -> VDataset:
-    """A categorical dataset whose label enum must survive into the pushed schema."""
-    return VDataset(
-        name="refusal-quality",
-        columns=["question", "answer"],
-        label_schema={"kind": "categorical", "labels": ["a", "b"]},
-    )
+    """A dataset whose columns match the row data above."""
+    return VDataset(name="refusal-quality", columns=["question", "answer"])
+
+
+def make_label_set(**overrides: object) -> LabelSet:
+    """A categorical label set whose label enum must survive into the pushed schema."""
+    base: dict[str, object] = {
+        "dataset_id": "d1",
+        "name": "refusal-quality",
+        "description": "",
+        "kind": ScoreKind.CATEGORICAL,
+        "labels": [{"name": "a", "description": "d"}, {"name": "b", "description": "d"}],
+    }
+    base.update(overrides)
+    return LabelSet(**base)
+
+
+def make_annotation(row: DatasetRow, label_set: LabelSet, **overrides: object) -> Annotation:
+    """An annotation on ``row`` under ``label_set``, labeled with a value from its label space."""
+    base: dict[str, object] = {
+        "label_set_id": label_set.id,
+        "dataset_row_id": row.id,
+        "labels": ["a"],
+        "source": LabelSource.MANUAL,
+    }
+    base.update(overrides)
+    return Annotation(**base)
 
 
 @dataclass
@@ -212,7 +231,10 @@ async def test_pushed_dataset_output_schema_is_an_object_carrying_the_label_enum
     from valcore.logfire_io import push_dataset
 
     save_config(FileConfig(logfire_api_key="lf-key"))
-    await push_dataset(make_dataset(), make_rows())
+    rows = make_rows()
+    label_set = make_label_set()
+    annotation = make_annotation(rows[0], label_set)
+    await push_dataset(make_dataset(), rows, label_set=label_set, annotations=[annotation])
 
     pushed = recorder.calls[0]["dataset"]
     output_type = pushed.__class__.__pydantic_generic_metadata__["args"][1]
@@ -232,7 +254,10 @@ async def test_pushed_cases_wrap_expected_output_in_a_dict(recorder: _Recorder) 
     from valcore.logfire_io import push_dataset
 
     save_config(FileConfig(logfire_api_key="lf-key"))
-    await push_dataset(make_dataset(), make_rows())
+    rows = make_rows()
+    label_set = make_label_set()
+    annotation = make_annotation(rows[0], label_set)
+    await push_dataset(make_dataset(), rows, label_set=label_set, annotations=[annotation])
 
     for case in recorder.calls[0]["dataset"].cases:
         assert isinstance(case.expected_output, dict), case.expected_output
@@ -539,9 +564,11 @@ async def test_fetch_hosted_dataset_maps_cases_and_unwraps_hosted_labels(
     assert result.columns == ["question"]
     assert result.label_schema == {"kind": "categorical", "labels": ["yes"]}
     assert result.prepared[0]["data"] == {"question": "Q1"}
-    assert result.prepared[0]["label"] == {"value": "yes"}
+    assert "label" not in result.prepared[0]
+    assert result.row_annotations[0] is not None
+    assert result.row_annotations[0]["labels"] == ["yes"]
     assert result.prepared[1]["data"] == {"question": "Q2"}
-    assert "label" not in result.prepared[1]
+    assert result.row_annotations[1] is None
 
 
 @pytest.mark.anyio

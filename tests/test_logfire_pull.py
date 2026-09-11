@@ -125,13 +125,14 @@ def test_sample_trees_rejects_non_positive_n() -> None:
 
 
 def test_trees_to_rows_omits_children_column_when_every_root_is_a_leaf() -> None:
-    columns, prepared = trees_to_rows(
+    columns, prepared, row_annotations = trees_to_rows(
         [{"span_id": "a", "message": "x"}, {"span_id": "b", "message": "y"}],
         ["span_id", "message"],
     )
     assert columns == ["span_id", "message"]
     assert prepared[0]["data"] == {"span_id": "a", "message": "x"}
     assert "children" not in prepared[0]["data"]
+    assert row_annotations == [None, None]
 
 
 def test_trees_to_rows_adds_json_children_column_when_any_root_has_descendants() -> None:
@@ -142,12 +143,15 @@ def test_trees_to_rows_adds_json_children_column_when_any_root_has_descendants()
             _span("leaf", None, message="alone"),
         ]
     )
-    columns, prepared = trees_to_rows(trees, ["span_id", "parent_span_id", "message"])
+    columns, prepared, row_annotations = trees_to_rows(
+        trees, ["span_id", "parent_span_id", "message"]
+    )
     assert columns[-1] == "children"
     by_id = {row["data"]["span_id"]: row["data"] for row in prepared}
     kids = json.loads(by_id["root"]["children"])
     assert kids[0]["span_id"] == "c1"
     assert json.loads(by_id["leaf"]["children"]) == []
+    assert row_annotations == [None, None]
 
 
 def test_trees_to_rows_children_json_is_itself_a_nested_tree() -> None:
@@ -158,7 +162,7 @@ def test_trees_to_rows_children_json_is_itself_a_nested_tree() -> None:
             _span("leaf", "mid", message="l"),
         ]
     )
-    _, prepared = trees_to_rows(trees, ["span_id", "parent_span_id", "message"])
+    _, prepared, _ = trees_to_rows(trees, ["span_id", "parent_span_id", "message"])
     kids = json.loads(prepared[0]["data"]["children"])
     assert kids[0]["children"][0]["span_id"] == "leaf"
 
@@ -175,15 +179,14 @@ def test_trees_to_rows_lifts_label_column_off_the_root_only() -> None:
             _span("c1", "root", message="k", verdict="bad"),
         ]
     )
-    columns, prepared = trees_to_rows(
+    columns, prepared, row_annotations = trees_to_rows(
         trees,
         ["span_id", "parent_span_id", "message", "verdict"],
         label_column="verdict",
     )
     assert "verdict" not in columns
     assert "verdict" not in prepared[0]["data"]
-    assert prepared[0]["label"] == {"value": "good"}
-    assert prepared[0]["label_source"] is LabelSource.MANUAL
+    assert row_annotations[0] == {"labels": ["good"], "source": LabelSource.MANUAL}
     kids = json.loads(prepared[0]["data"]["children"])
     assert kids[0]["verdict"] == "bad"
 

@@ -289,9 +289,7 @@ async def test_delete_referenced_version_409(app, store: Store) -> None:
             await client.post(f"/api/evaluators/{eval_id}/versions", json=_valid_version_body())
         ).json()["id"]
 
-        dataset = store.create_dataset(
-            "ds", "", ["input", "output"], {"kind": "categorical", "labels": ["pass", "fail"]}
-        )
+        dataset = store.create_dataset("ds", "", ["input", "output"])
         store.create_run(RunKind.VALIDATION, vid, dataset.id, concurrency=1)
 
         conflict = await client.delete(f"/api/evaluators/versions/{vid}")
@@ -313,9 +311,7 @@ async def test_delete_referenced_evaluator_409(app, store: Store) -> None:
             await client.post(f"/api/evaluators/{eval_id}/versions", json=_valid_version_body())
         ).json()["id"]
 
-        dataset = store.create_dataset(
-            "ds", "", ["input", "output"], {"kind": "categorical", "labels": ["pass", "fail"]}
-        )
+        dataset = store.create_dataset("ds", "", ["input", "output"])
         store.create_run(RunKind.VALIDATION, vid, dataset.id, concurrency=1)
 
         conflict = await client.delete(f"/api/evaluators/{eval_id}")
@@ -654,9 +650,7 @@ async def test_generate_dataset_id_fills_columns(app, store: Store, monkeypatch)
     calls: list[dict] = []
     monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
 
-    dataset = store.create_dataset(
-        "ds", "", ["question", "answer"], {"kind": "categorical", "labels": ["good", "bad"]}
-    )
+    dataset = store.create_dataset("ds", "", ["question", "answer"])
 
     async with _client(app) as client:
         response = await client.post(
@@ -676,8 +670,13 @@ async def test_generate_dataset_id_passes_categorical_schema(
     calls: list[dict] = []
     monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
 
-    dataset = store.create_dataset(
-        "ds", "", ["question", "answer"], {"kind": "categorical", "labels": ["good", "bad"]}
+    dataset = store.create_dataset("ds", "", ["question", "answer"])
+    store.create_label_set(
+        dataset.id,
+        "quality",
+        "",
+        ScoreKind.CATEGORICAL,
+        labels=[{"name": "good", "description": ""}, {"name": "bad", "description": ""}],
     )
 
     async with _client(app) as client:
@@ -699,7 +698,7 @@ async def test_generate_dataset_id_empty_schema_passes_none(app, store: Store, m
     monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
 
     # An empty label_schema is a legal "no ground truth" dataset; it yields no constraint.
-    dataset = store.create_dataset("ds", "", ["question", "answer"], {})
+    dataset = store.create_dataset("ds", "", ["question", "answer"])
 
     async with _client(app) as client:
         response = await client.post(
@@ -723,8 +722,13 @@ async def test_generate_columns_narrow_the_dataset_seed(app, store: Store, monke
     calls: list[dict] = []
     monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
 
-    dataset = store.create_dataset(
-        "ds", "", ["question", "answer"], {"kind": "categorical", "labels": ["good", "bad"]}
+    dataset = store.create_dataset("ds", "", ["question", "answer"])
+    store.create_label_set(
+        dataset.id,
+        "quality",
+        "",
+        ScoreKind.CATEGORICAL,
+        labels=[{"name": "good", "description": ""}, {"name": "bad", "description": ""}],
     )
 
     async with _client(app) as client:
@@ -750,9 +754,7 @@ async def test_generate_rejects_a_column_absent_from_the_dataset(
     calls: list[dict] = []
     monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
 
-    dataset = store.create_dataset(
-        "ds", "", ["question", "answer"], {"kind": "categorical", "labels": ["good", "bad"]}
-    )
+    dataset = store.create_dataset("ds", "", ["question", "answer"])
 
     async with _client(app) as client:
         response = await client.post(
@@ -786,9 +788,7 @@ async def test_generate_column_notes_unknown_key_rejected(app, store: Store, mon
     calls: list[dict] = []
     monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
 
-    dataset = store.create_dataset(
-        "ds", "", ["question", "answer"], {"kind": "categorical", "labels": ["good", "bad"]}
-    )
+    dataset = store.create_dataset("ds", "", ["question", "answer"])
 
     async with _client(app) as client:
         response = await client.post(
@@ -873,8 +873,13 @@ async def test_generate_column_notes_valid_against_dataset_columns(
     calls: list[dict] = []
     monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
 
-    dataset = store.create_dataset(
-        "ds", "", ["question", "answer"], {"kind": "categorical", "labels": ["good", "bad"]}
+    dataset = store.create_dataset("ds", "", ["question", "answer"])
+    store.create_label_set(
+        dataset.id,
+        "quality",
+        "",
+        ScoreKind.CATEGORICAL,
+        labels=[{"name": "good", "description": ""}, {"name": "bad", "description": ""}],
     )
 
     async with _client(app) as client:
@@ -895,6 +900,237 @@ async def test_generate_column_notes_valid_against_dataset_columns(
     assert isinstance(calls[0]["label_schema"], LabelSchema)
 
 
+# -- Label set resolution: which of a dataset's label sets seeds generation ----
+
+
+@pytest.mark.anyio
+async def test_generate_single_label_set_used_automatically(app, store: Store, monkeypatch) -> None:
+    """With exactly one label set and no ``label_set_id``, that label set is the seed."""
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    dataset = store.create_dataset("ds", "", ["question", "answer"])
+    store.create_label_set(
+        dataset.id,
+        "quality",
+        "",
+        ScoreKind.CATEGORICAL,
+        labels=[{"name": "good", "description": ""}, {"name": "bad", "description": ""}],
+    )
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={"criteria": "grade it", "dataset_id": dataset.id},
+        )
+
+    assert response.status_code == 200
+    schema = calls[0]["label_schema"]
+    assert isinstance(schema, LabelSchema)
+    assert schema.kind is ScoreKind.CATEGORICAL
+    assert schema.labels == ["good", "bad"]
+
+
+@pytest.mark.anyio
+async def test_generate_zero_label_sets_seeds_none(app, store: Store, monkeypatch) -> None:
+    """A dataset with no label sets at all seeds a None score space."""
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    dataset = store.create_dataset("ds", "", ["question", "answer"])
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={"criteria": "grade it", "dataset_id": dataset.id},
+        )
+
+    assert response.status_code == 200
+    assert calls[0]["columns"] == ["question", "answer"]
+    assert calls[0]["label_schema"] is None
+
+
+@pytest.mark.anyio
+async def test_generate_two_label_sets_no_id_is_ambiguous(app, store: Store, monkeypatch) -> None:
+    """Two label sets with no ``label_set_id`` is ambiguous and names both choices."""
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    dataset = store.create_dataset("ds", "", ["question", "answer"])
+    first = store.create_label_set(
+        dataset.id,
+        "quality",
+        "",
+        ScoreKind.CATEGORICAL,
+        labels=[{"name": "good", "description": ""}, {"name": "bad", "description": ""}],
+    )
+    second = store.create_label_set(
+        dataset.id, "relevance", "", ScoreKind.NUMERIC, minimum=0, maximum=5
+    )
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={"criteria": "grade it", "dataset_id": dataset.id},
+        )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["type"] == "ContractError"
+    # The caller needs enough to disambiguate: both label sets' names and ids.
+    assert first.name in error["message"]
+    assert second.name in error["message"]
+    assert first.id in error["message"]
+    assert second.id in error["message"]
+    assert calls == []
+
+
+@pytest.mark.anyio
+async def test_generate_two_label_sets_with_id_uses_chosen(app, store: Store, monkeypatch) -> None:
+    """Two label sets with an explicit ``label_set_id`` seeds from that one."""
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    dataset = store.create_dataset("ds", "", ["question", "answer"])
+    store.create_label_set(
+        dataset.id,
+        "quality",
+        "",
+        ScoreKind.CATEGORICAL,
+        labels=[{"name": "good", "description": ""}, {"name": "bad", "description": ""}],
+    )
+    chosen = store.create_label_set(
+        dataset.id, "relevance", "", ScoreKind.NUMERIC, minimum=0, maximum=5
+    )
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={
+                "criteria": "grade it",
+                "dataset_id": dataset.id,
+                "label_set_id": chosen.id,
+            },
+        )
+
+    assert response.status_code == 200
+    schema = calls[0]["label_schema"]
+    assert isinstance(schema, LabelSchema)
+    assert schema.kind is ScoreKind.NUMERIC
+    assert schema.minimum == 0
+    assert schema.maximum == 5
+
+
+@pytest.mark.anyio
+async def test_generate_explicit_label_schema_overrides_label_set_seed(
+    app, store: Store, monkeypatch
+) -> None:
+    """An explicit ``label_schema`` in the request still wins over the dataset's label set."""
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    dataset = store.create_dataset("ds", "", ["question", "answer"])
+    store.create_label_set(
+        dataset.id,
+        "quality",
+        "",
+        ScoreKind.CATEGORICAL,
+        labels=[{"name": "good", "description": ""}, {"name": "bad", "description": ""}],
+    )
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={
+                "criteria": "grade it",
+                "dataset_id": dataset.id,
+                "label_schema": {"kind": "numeric", "minimum": 1, "maximum": 10},
+            },
+        )
+
+    assert response.status_code == 200
+    schema = calls[0]["label_schema"]
+    assert isinstance(schema, LabelSchema)
+    assert schema.kind is ScoreKind.NUMERIC
+    assert schema.minimum == 1
+    assert schema.maximum == 10
+
+
+@pytest.mark.anyio
+async def test_generate_label_set_id_from_a_different_dataset_rejected(
+    app, store: Store, monkeypatch
+) -> None:
+    """A ``label_set_id`` that belongs to another dataset must not silently be used."""
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    dataset_a = store.create_dataset("ds-a", "", ["question", "answer"])
+    dataset_b = store.create_dataset("ds-b", "", ["question", "answer"])
+    other_label_set = store.create_label_set(
+        dataset_b.id,
+        "quality",
+        "",
+        ScoreKind.CATEGORICAL,
+        labels=[{"name": "good", "description": ""}, {"name": "bad", "description": ""}],
+    )
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={
+                "criteria": "grade it",
+                "dataset_id": dataset_a.id,
+                "label_set_id": other_label_set.id,
+            },
+        )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["type"] == "ContractError"
+    assert other_label_set.id in error["message"]
+    assert dataset_a.id in error["message"]
+    assert dataset_b.id in error["message"]
+    assert calls == []
+
+
+@pytest.mark.anyio
+async def test_generate_explicit_label_schema_bypasses_ambiguity_check(
+    app, store: Store, monkeypatch
+) -> None:
+    """An explicit ``label_schema`` makes label-set choice moot, even with 2+ label sets."""
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+
+    dataset = store.create_dataset("ds", "", ["question", "answer"])
+    store.create_label_set(
+        dataset.id,
+        "quality",
+        "",
+        ScoreKind.CATEGORICAL,
+        labels=[{"name": "good", "description": ""}, {"name": "bad", "description": ""}],
+    )
+    store.create_label_set(dataset.id, "relevance", "", ScoreKind.NUMERIC, minimum=0, maximum=5)
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={
+                "criteria": "grade it",
+                "dataset_id": dataset.id,
+                "label_schema": {"kind": "numeric", "minimum": 1, "maximum": 10},
+            },
+        )
+
+    # No 422 ambiguity error: the explicit schema overrides whatever label set would have
+    # been chosen, so the caller was never blocked on disambiguating between them.
+    assert response.status_code == 200
+    schema = calls[0]["label_schema"]
+    assert isinstance(schema, LabelSchema)
+    assert schema.kind is ScoreKind.NUMERIC
+    assert schema.minimum == 1
+    assert schema.maximum == 10
+
+
 # -- Generate seeded on POST /{id}/generate ------------------------------------
 
 
@@ -903,8 +1139,13 @@ async def test_generate_version_dataset_id_fills_columns(app, store: Store, monk
     calls: list[dict] = []
     monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
 
-    dataset = store.create_dataset(
-        "ds", "", ["question", "answer"], {"kind": "categorical", "labels": ["good", "bad"]}
+    dataset = store.create_dataset("ds", "", ["question", "answer"])
+    store.create_label_set(
+        dataset.id,
+        "quality",
+        "",
+        ScoreKind.CATEGORICAL,
+        labels=[{"name": "good", "description": ""}, {"name": "bad", "description": ""}],
     )
 
     async with _client(app) as client:
@@ -926,7 +1167,7 @@ async def test_generate_version_empty_schema_passes_none(app, store: Store, monk
     calls: list[dict] = []
     monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
 
-    dataset = store.create_dataset("ds", "", ["question", "answer"], {})
+    dataset = store.create_dataset("ds", "", ["question", "answer"])
 
     async with _client(app) as client:
         eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]
@@ -947,9 +1188,7 @@ async def test_generate_version_columns_narrow_the_dataset_seed(
     calls: list[dict] = []
     monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
 
-    dataset = store.create_dataset(
-        "ds", "", ["question", "answer"], {"kind": "categorical", "labels": ["good", "bad"]}
-    )
+    dataset = store.create_dataset("ds", "", ["question", "answer"])
 
     async with _client(app) as client:
         eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]
@@ -988,9 +1227,7 @@ async def test_generate_version_column_notes_unknown_key_rejected(
     calls: list[dict] = []
     monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
 
-    dataset = store.create_dataset(
-        "ds", "", ["question", "answer"], {"kind": "categorical", "labels": ["good", "bad"]}
-    )
+    dataset = store.create_dataset("ds", "", ["question", "answer"])
 
     async with _client(app) as client:
         eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]

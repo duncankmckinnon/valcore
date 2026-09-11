@@ -29,13 +29,11 @@ async def client(store: Store) -> AsyncIterator[httpx.AsyncClient]:
 
 
 async def _make_dataset(client: httpx.AsyncClient) -> str:
+    # No label_schema: these tests create their own label sets explicitly, and a
+    # label_schema here would auto-create an extra "Labels" label set alongside them.
     resp = await client.post(
         "/api/datasets",
-        json={
-            "name": "ds",
-            "columns": ["q"],
-            "label_schema": {"kind": "categorical", "labels": ["a"]},
-        },
+        json={"name": "ds", "columns": ["q"]},
     )
     assert resp.status_code == 200, resp.text
     return resp.json()["id"]
@@ -296,4 +294,53 @@ async def test_delete_annotation_wrong_dataset_row_is_422(client: httpx.AsyncCli
 
     # Try to delete annotation for row from dataset B with label set from dataset A
     resp = await client.delete(f"/api/label-sets/{label_set['id']}/rows/{row_b_id}/annotation")
+    assert resp.status_code == 422
+
+
+# -- Accept annotation suggestion -------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_accept_annotation_promotes_suggestion(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    from valcore.models import LabelSource
+
+    dataset_id = await _make_dataset(client)
+    rows_resp = await client.post(f"/api/datasets/{dataset_id}/rows", json={"rows": [{"q": "1"}]})
+    row_id = rows_resp.json()[0]["id"]
+    label_set = await _make_label_set(client, dataset_id)
+    store.set_annotation(
+        label_set["id"], row_id, suggested_labels=["good"], source=LabelSource.GENERATED
+    )
+
+    resp = await client.post(f"/api/label-sets/{label_set['id']}/rows/{row_id}/annotation/accept")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["labels"] == ["good"]
+    assert body["source"] == "accepted"
+
+
+@pytest.mark.anyio
+async def test_accept_annotation_without_suggestion_is_422(client: httpx.AsyncClient) -> None:
+    dataset_id = await _make_dataset(client)
+    rows_resp = await client.post(f"/api/datasets/{dataset_id}/rows", json={"rows": [{"q": "1"}]})
+    row_id = rows_resp.json()[0]["id"]
+    label_set = await _make_label_set(client, dataset_id)
+
+    resp = await client.post(f"/api/label-sets/{label_set['id']}/rows/{row_id}/annotation/accept")
+    assert resp.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_accept_annotation_wrong_dataset_row_is_422(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+
+    dataset_a_id = await _make_dataset(client)
+    dataset_b_id = await _make_dataset(client)
+    label_set = await _make_label_set(client, dataset_a_id)
+    row_b = store.add_rows(dataset_b_id, [{"q": "1"}])[0]
+
+    resp = await client.post(f"/api/label-sets/{label_set['id']}/rows/{row_b.id}/annotation/accept")
     assert resp.status_code == 422

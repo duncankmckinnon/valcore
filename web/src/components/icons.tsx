@@ -81,6 +81,15 @@ export function CompareIcon(props: IconProps): JSX.Element {
   );
 }
 
+export function AnnotationIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <rect x="4" y="4" width="16" height="16" rx="2" />
+      <path d="M8 12 L11 15 L16 9" />
+    </Svg>
+  );
+}
+
 export function InfoIcon(props: IconProps): JSX.Element {
   return (
     <Svg {...props}>

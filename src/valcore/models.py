@@ -301,6 +301,59 @@ def find_matching_label_set(
     return match
 
 
+def label_set_fields_from_schema(schema: LabelSchema) -> dict:
+    """Return LabelSet constructor keyword fields (kind/labels/minimum/maximum) for a LabelSchema.
+
+    Categorical labels carry no per-label description in a LabelSchema, so each gets an
+    empty one -- generation and import never had per-label descriptions to preserve, and a
+    human can add them later by editing the label set.
+    """
+    if schema.kind is ScoreKind.CATEGORICAL:
+        return {
+            "kind": ScoreKind.CATEGORICAL,
+            "labels": [{"name": label, "description": ""} for label in (schema.labels or [])],
+            "minimum": None,
+            "maximum": None,
+        }
+    return {
+        "kind": ScoreKind.NUMERIC,
+        "labels": None,
+        "minimum": schema.minimum,
+        "maximum": schema.maximum,
+    }
+
+
+def label_schema_from_label_set(label_set: LabelSet) -> LabelSchema:
+    """Return the LabelSchema shape a LabelSet describes.
+
+    For code that only needs kind/labels/bounds (seeded generation, evaluator seeding) and
+    has no use for a label set's name, description, or per-label descriptions.
+    """
+    if label_set.kind is ScoreKind.CATEGORICAL:
+        return LabelSchema(
+            kind=ScoreKind.CATEGORICAL,
+            labels=[item["name"] for item in (label_set.labels or [])],
+        )
+    return LabelSchema(kind=ScoreKind.NUMERIC, minimum=label_set.minimum, maximum=label_set.maximum)
+
+
+def annotation_ground_truth(
+    label_set: LabelSet, annotation: "Annotation | None"
+) -> str | float | None:
+    """Return the single ground-truth value an annotation supplies, or None if it has none.
+
+    Categorical: exactly one selected label is unambiguous ground truth; zero or multiple
+    selected labels count as unlabeled for validation purposes (the annotation itself is
+    still a legitimate multi-select record -- it just can't supply a single comparison
+    value). Numeric: the annotation's value, if set.
+    """
+    if annotation is None:
+        return None
+    if label_set.kind is ScoreKind.CATEGORICAL:
+        return annotation.labels[0] if len(annotation.labels) == 1 else None
+    return annotation.value
+
+
 class Evaluator(SQLModel, table=True):
     """A named evaluator with a pointer to its currently active version."""
 
@@ -342,7 +395,6 @@ class Dataset(SQLModel, table=True):
     name: str
     description: str = ""
     columns: list[str] = Field(default_factory=list, sa_column=Column(JSON))
-    label_schema: dict = Field(default_factory=dict, sa_column=Column(JSON))
 
 
 class DatasetGeneration(SQLModel, table=True):
@@ -402,18 +454,13 @@ class DatasetHostedFetch(SQLModel, table=True):
 
 
 class DatasetRow(SQLModel, table=True):
-    """A single row of a dataset with its (optional) hand-assigned label."""
+    """A single row of a dataset."""
 
     id: str = Field(default_factory=lambda: uuid4().hex, primary_key=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     dataset_id: str
     idx: int
     data: dict = Field(default_factory=dict, sa_column=Column(JSON))
-    label: dict | None = Field(default=None, sa_column=Column(JSON))
-    suggested_label: dict | None = Field(default=None, sa_column=Column(JSON))
-    label_reasoning: str | None = None
-    label_source: LabelSource | None = None
-    note: str | None = None
 
 
 class Run(SQLModel, table=True):
@@ -543,18 +590,26 @@ def validate_version(version: EvaluatorVersion) -> None:
 
 
 def check_dataset_compatibility(
-    version: EvaluatorVersion, dataset: Dataset, *, kind: RunKind = RunKind.VALIDATION
-) -> None:
+    version: EvaluatorVersion,
+    dataset: Dataset,
+    label_sets: list[LabelSet],
+    *,
+    kind: RunKind = RunKind.VALIDATION,
+) -> LabelSet | None:
     """Raise ContractError with an actionable message if the dataset and version disagree.
 
-    Required columns must always be present -- the prompt template reads them, so their absence
-    breaks any run. The *label space* checks apply only to ``VALIDATION``, where predictions are
-    compared against ground truth and a mismatched vocabulary would make agreement meaningless.
-    An ``EVAL`` run never compares, so its score space is free to differ from the dataset's: the
-    evaluator can carry finer labels, different wording, or a different kind entirely.
+    Required columns must always be present -- the prompt template reads them, so their
+    absence breaks any run. The label-space check applies only to VALIDATION, where
+    predictions are compared against ground truth: it searches ``label_sets`` (typically
+    ``Store.list_label_sets(dataset.id)``) for one whose shape exactly matches the
+    version's score contract, via ``find_matching_label_set``. An EVAL run never compares,
+    so its score space is free to differ from every label set's, and it needs no match.
 
-    ``kind`` defaults to ``VALIDATION`` so a caller that does not say what it is running gets the
-    stricter contract rather than silently skipping a check it wanted.
+    Returns the matched label set for a VALIDATION run (the caller's single source of
+    truth for reading ground truth), or None for EVAL. An empty ``label_sets`` list is the
+    legal "no ground truth declared" state and returns None without raising, mirroring the
+    old empty ``label_schema``; only a dataset that has label sets, none of which match,
+    raises.
     """
     missing = [c for c in version.required_columns if c not in dataset.columns]
     if missing:
@@ -564,30 +619,25 @@ def check_dataset_compatibility(
         )
 
     if kind is RunKind.EVAL:
-        return
+        return None
 
-    # An empty label schema is the legal "no ground truth" state: the dataset asserts no
-    # label space, so there is nothing to reconcile with the evaluator's score space and
-    # the dataset stays runnable (only VALIDATION runs require labels).
-    if not dataset.label_schema:
-        return
-
-    schema = LabelSchema.model_validate(dataset.label_schema)
-
-    if schema.kind is not version.score_kind:
-        raise ContractError(
-            f"Dataset label kind {schema.kind.value!r} does not match evaluator score kind "
-            f"{version.score_kind.value!r}."
+    match = find_matching_label_set(
+        label_sets,
+        score_kind=version.score_kind,
+        score_labels=version.score_labels,
+        score_minimum=version.score_minimum,
+        score_maximum=version.score_maximum,
+    )
+    if match is None and label_sets:
+        space = (
+            f"labels {version.score_labels}"
+            if version.score_kind is ScoreKind.CATEGORICAL
+            else f"bounds [{version.score_minimum}, {version.score_maximum}]"
         )
-
-    if version.score_kind is ScoreKind.CATEGORICAL:
-        version_labels = set(version.score_labels or [])
-        dataset_labels = set(schema.labels or [])
-        if version_labels != dataset_labels:
-            only_version = sorted(version_labels - dataset_labels)
-            only_dataset = sorted(dataset_labels - version_labels)
-            raise ContractError(
-                "Categorical label sets differ. "
-                f"Labels only on the evaluator: {only_version}; "
-                f"labels only on the dataset: {only_dataset}."
-            )
+        existing = [(ls.name, ls.kind.value) for ls in label_sets]
+        raise ContractError(
+            f"No label set on dataset {dataset.name!r} matches evaluator score kind "
+            f"{version.score_kind.value!r} and {space}; validation cannot run. "
+            f"Existing label sets: {existing}."
+        )
+    return match

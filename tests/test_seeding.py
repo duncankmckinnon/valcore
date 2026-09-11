@@ -3,7 +3,7 @@
 import pytest
 
 from valcore.errors import ContractError
-from valcore.models import Dataset, EvaluatorVersion, LabelSchema, ScoreKind
+from valcore.models import Dataset, EvaluatorVersion, LabelSchema, LabelSet, ScoreKind
 from valcore.seeding import dataset_shape_from_version, evaluator_seed_from_dataset
 
 
@@ -53,10 +53,21 @@ def make_dataset(**overrides: object) -> Dataset:
     base: dict[str, object] = {
         "name": "my dataset",
         "columns": ["question", "answer"],
-        "label_schema": {"kind": "categorical", "labels": ["pass", "fail"]},
     }
     base.update(overrides)
     return Dataset(**base)
+
+
+def make_label_set(**overrides: object) -> LabelSet:
+    """Build a categorical LabelSet, applying any field overrides."""
+    base: dict[str, object] = {
+        "dataset_id": "ds1",
+        "name": "quality",
+        "kind": ScoreKind.CATEGORICAL,
+        "labels": [{"name": "pass", "description": ""}, {"name": "fail", "description": ""}],
+    }
+    base.update(overrides)
+    return LabelSet(**base)
 
 
 # --- dataset_shape_from_version: columns --------------------------------------
@@ -141,44 +152,41 @@ class TestDatasetShapeLabelSchema:
 
 
 class TestEvaluatorSeedFromDataset:
-    """Deriving evaluator columns and optional score space from a dataset."""
+    """Deriving evaluator columns and optional score space from a dataset's label set."""
 
     def test_returns_dataset_columns_unchanged(self) -> None:
         dataset = make_dataset(columns=["question", "answer", "context"])
-        columns, _ = evaluator_seed_from_dataset(dataset)
+        columns, _ = evaluator_seed_from_dataset(dataset, None)
         assert columns == ["question", "answer", "context"]
 
-    def test_parses_categorical_label_schema(self) -> None:
-        dataset = make_dataset(label_schema={"kind": "categorical", "labels": ["pass", "fail"]})
-        _, schema = evaluator_seed_from_dataset(dataset)
+    def test_parses_categorical_label_set(self) -> None:
+        dataset = make_dataset()
+        label_set = make_label_set(
+            kind=ScoreKind.CATEGORICAL,
+            labels=[{"name": "pass", "description": ""}, {"name": "fail", "description": ""}],
+        )
+        _, schema = evaluator_seed_from_dataset(dataset, label_set)
         assert isinstance(schema, LabelSchema)
         assert schema.kind is ScoreKind.CATEGORICAL
         assert schema.labels == ["pass", "fail"]
 
-    def test_parses_numeric_label_schema(self) -> None:
-        dataset = make_dataset(label_schema={"kind": "numeric", "minimum": 0, "maximum": 10})
-        _, schema = evaluator_seed_from_dataset(dataset)
+    def test_parses_numeric_label_set(self) -> None:
+        dataset = make_dataset()
+        label_set = make_label_set(kind=ScoreKind.NUMERIC, labels=None, minimum=0, maximum=10)
+        _, schema = evaluator_seed_from_dataset(dataset, label_set)
         assert isinstance(schema, LabelSchema)
         assert schema.kind is ScoreKind.NUMERIC
         assert schema.minimum == 0
         assert schema.maximum == 10
 
-    def test_empty_label_schema_yields_none(self) -> None:
-        dataset = make_dataset(label_schema={})
-        _, schema = evaluator_seed_from_dataset(dataset)
-        assert schema is None
-
-    def test_empty_label_schema_does_not_raise(self) -> None:
-        dataset = make_dataset(label_schema={})
-        columns, schema = evaluator_seed_from_dataset(dataset)
-        assert columns == dataset.columns
+    def test_no_label_set_yields_none_score_space(self) -> None:
+        dataset = make_dataset()
+        columns, schema = evaluator_seed_from_dataset(dataset, None)
+        assert columns == list(dataset.columns)
         assert schema is None
 
     def test_does_not_mutate_dataset(self) -> None:
-        dataset = make_dataset(
-            columns=["question", "answer"],
-            label_schema={"kind": "categorical", "labels": ["pass", "fail"]},
-        )
-        evaluator_seed_from_dataset(dataset)
+        dataset = make_dataset(columns=["question", "answer"])
+        label_set = make_label_set()
+        evaluator_seed_from_dataset(dataset, label_set)
         assert dataset.columns == ["question", "answer"]
-        assert dataset.label_schema == {"kind": "categorical", "labels": ["pass", "fail"]}

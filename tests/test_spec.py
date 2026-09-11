@@ -16,14 +16,16 @@ from pydantic_evals.dataset import Case
 
 from valcore.errors import ContractError
 from valcore.factory import build_output_model
-from valcore.models import Dataset as VDataset
 from valcore.models import (
+    Annotation,
     DatasetRow,
     EvaluatorVersion,
+    LabelSet,
     LabelSource,
     OutputField,
     ScoreKind,
 )
+from valcore.models import Dataset as VDataset
 from valcore.spec import (
     dataset_to_evals,
     evals_to_dataset_fields,
@@ -246,15 +248,12 @@ def test_valcore_meta_produces_the_valcore_block() -> None:
 
 
 def make_rows() -> list[DatasetRow]:
-    """Two rows: one fully labeled with a note, one with no label at all."""
+    """Two rows of data with no annotations attached; tests attach annotations as needed."""
     return [
         DatasetRow(
             dataset_id="d1",
             idx=0,
             data={"question": "Q1", "answer": "A1"},
-            label={"value": "refusal"},
-            label_source=LabelSource.MANUAL,
-            note="a note",
         ),
         DatasetRow(
             dataset_id="d1",
@@ -264,9 +263,42 @@ def make_rows() -> list[DatasetRow]:
     ]
 
 
+def make_label_set(**overrides: object) -> LabelSet:
+    """Build a valid categorical LabelSet, applying any field overrides."""
+    base: dict[str, object] = {
+        "dataset_id": "d1",
+        "name": "refusal-quality",
+        "description": "",
+        "kind": ScoreKind.CATEGORICAL,
+        "labels": [
+            {"name": "refusal", "description": "d"},
+            {"name": "partial", "description": "d"},
+            {"name": "answer", "description": "d"},
+        ],
+    }
+    base.update(overrides)
+    return LabelSet(**base)
+
+
+def make_annotation(row: DatasetRow, label_set: LabelSet, **overrides: object) -> Annotation:
+    """Build an Annotation on ``row`` under ``label_set``, carrying full provenance by default."""
+    base: dict[str, object] = {
+        "label_set_id": label_set.id,
+        "dataset_row_id": row.id,
+        "labels": ["refusal"],
+        "source": LabelSource.MANUAL,
+        "description": "a note",
+    }
+    base.update(overrides)
+    return Annotation(**base)
+
+
 def test_dataset_to_evals_maps_rows_to_cases() -> None:
     dataset = VDataset(name="refusal-quality", columns=["question", "answer"])
-    evals = dataset_to_evals(dataset, make_rows(), [])
+    rows = make_rows()
+    label_set = make_label_set()
+    annotation = make_annotation(rows[0], label_set)
+    evals = dataset_to_evals(dataset, rows, [], label_set=label_set, annotations=[annotation])
     assert isinstance(evals, EvalsDataset)
     assert evals.name == "refusal-quality"
 
@@ -275,11 +307,10 @@ def test_dataset_to_evals_maps_rows_to_cases() -> None:
     assert labeled.expected_output == "refusal"
     valcore_row = labeled.metadata["valcore_row"]
     assert valcore_row["idx"] == 0
-    assert valcore_row["note"] == "a note"
-    assert valcore_row["label_source"] == "manual"
+    assert valcore_row["description"] == "a note"
+    assert valcore_row["source"] == "manual"
     # Only non-None provenance keys are written.
-    assert "label_reasoning" not in valcore_row
-    assert "suggested_label" not in valcore_row
+    assert "reasoning" not in valcore_row
 
 
 def test_dataset_to_evals_row_id_becomes_case_name() -> None:
@@ -291,27 +322,38 @@ def test_dataset_to_evals_row_id_becomes_case_name() -> None:
 
 def test_dataset_to_evals_unlabeled_row_has_no_expected_output() -> None:
     dataset = VDataset(name="d", columns=["question", "answer"])
-    evals = dataset_to_evals(dataset, make_rows(), [])
+    rows = make_rows()
+    label_set = make_label_set()
+    annotation = make_annotation(rows[0], label_set)
+    evals = dataset_to_evals(dataset, rows, [], label_set=label_set, annotations=[annotation])
     assert evals.cases[1].expected_output is None
 
 
-def test_row_case_round_trip_preserves_data_label_source_and_note() -> None:
+def test_row_case_round_trip_preserves_data_source_and_description() -> None:
     dataset = VDataset(name="refusal-quality", columns=["question", "answer"])
-    evals = dataset_to_evals(dataset, make_rows(), [])
-    name, columns, _label_schema, prepared = evals_to_dataset_fields(
+    rows = make_rows()
+    label_set = make_label_set()
+    annotation = make_annotation(rows[0], label_set)
+    evals = dataset_to_evals(dataset, rows, [], label_set=label_set, annotations=[annotation])
+    name, columns, _label_schema, prepared, row_annotations = evals_to_dataset_fields(
         evals, valcore_meta(make_version())
     )
 
     assert name == "refusal-quality"
     assert columns == ["question", "answer"]
 
-    labeled, unlabeled = prepared
+    labeled, _unlabeled = prepared
     assert labeled["data"] == {"question": "Q1", "answer": "A1"}
-    assert labeled["label"] == {"value": "refusal"}
-    assert labeled["label_source"] == "manual"
-    assert labeled["note"] == "a note"
-    # An unlabeled row omits the label key entirely rather than emitting label=None.
-    assert "label" not in unlabeled
+    # Labels/provenance now live in row_annotations, never in the prepared row itself.
+    assert "label" not in labeled
+
+    labeled_ann, unlabeled_ann = row_annotations
+    assert labeled_ann is not None
+    assert labeled_ann["labels"] == ["refusal"]
+    assert labeled_ann["source"] == "manual"
+    assert labeled_ann["description"] == "a note"
+    # A row with neither a label nor provenance gets None, not an empty dict.
+    assert unlabeled_ann is None
 
 
 # --- scalar inputs ------------------------------------------------------------
@@ -321,7 +363,7 @@ def test_scalar_inputs_wrapped_on_import() -> None:
     ds = EvalsDataset[str, str, dict](
         name="s", cases=[Case(name="r", inputs="hello", expected_output="refusal")]
     )
-    _name, columns, _schema, prepared = evals_to_dataset_fields(ds, None)
+    _name, columns, _schema, prepared, _row_annotations = evals_to_dataset_fields(ds, None)
     assert columns == ["input"]
     assert prepared[0]["data"] == {"input": "hello"}
 
@@ -338,7 +380,7 @@ def test_column_inference_takes_first_seen_order() -> None:
             Case(name="3", inputs={"c": 4}),
         ],
     )
-    _name, columns, _schema, _prepared = evals_to_dataset_fields(ds, None)
+    _name, columns, _schema, _prepared, _row_annotations = evals_to_dataset_fields(ds, None)
     assert columns == ["a", "b", "c"]
 
 
@@ -347,7 +389,7 @@ def test_column_inference_stops_at_fifty_cases() -> None:
     # The 51st case introduces a new key, which must be ignored by the 50-case inference limit.
     cases.append(Case(name="late", inputs={"q": 50, "late": 1}))
     ds = EvalsDataset[dict, str, dict](name="c", cases=cases)
-    _name, columns, _schema, _prepared = evals_to_dataset_fields(ds, None)
+    _name, columns, _schema, _prepared, _row_annotations = evals_to_dataset_fields(ds, None)
     assert columns == ["q"]
 
 
@@ -360,7 +402,9 @@ def test_label_schema_from_explicit_valcore_block() -> None:
         cases=[Case(name="1", inputs={"q": "x"}, expected_output="refusal")],
     )
     valcore = {"score_kind": "categorical", "score_labels": ["refusal", "answer"]}
-    _name, _columns, label_schema, _prepared = evals_to_dataset_fields(ds, valcore)
+    _name, _columns, label_schema, _prepared, _row_annotations = evals_to_dataset_fields(
+        ds, valcore
+    )
     assert label_schema["kind"] == "categorical"
     assert label_schema["labels"] == ["refusal", "answer"]
 
@@ -374,7 +418,7 @@ def test_label_schema_inferred_categorical() -> None:
             Case(name="3", inputs={"q": "z"}, expected_output="a"),
         ],
     )
-    _name, _columns, label_schema, _prepared = evals_to_dataset_fields(ds, None)
+    _name, _columns, label_schema, _prepared, _row_annotations = evals_to_dataset_fields(ds, None)
     assert label_schema["kind"] == "categorical"
     assert label_schema["labels"] == ["a", "b"]
 
@@ -388,7 +432,7 @@ def test_label_schema_inferred_numeric() -> None:
             Case(name="3", inputs={"q": "z"}, expected_output=3),
         ],
     )
-    _name, _columns, label_schema, _prepared = evals_to_dataset_fields(ds, None)
+    _name, _columns, label_schema, _prepared, _row_annotations = evals_to_dataset_fields(ds, None)
     assert label_schema["kind"] == "numeric"
     assert label_schema["minimum"] == 1
     assert label_schema["maximum"] == 5
@@ -399,7 +443,7 @@ def test_label_schema_empty_when_no_case_has_a_label() -> None:
         name="c",
         cases=[Case(name="1", inputs={"q": "x"}), Case(name="2", inputs={"q": "y"})],
     )
-    _name, _columns, label_schema, _prepared = evals_to_dataset_fields(ds, None)
+    _name, _columns, label_schema, _prepared, _row_annotations = evals_to_dataset_fields(ds, None)
     assert label_schema == {}
 
 
@@ -413,7 +457,7 @@ def test_label_schema_bool_labels_fall_through_to_empty() -> None:
             Case(name="2", inputs={"q": "y"}, expected_output=False),
         ],
     )
-    _name, _columns, label_schema, _prepared = evals_to_dataset_fields(ds, None)
+    _name, _columns, label_schema, _prepared, _row_annotations = evals_to_dataset_fields(ds, None)
     assert label_schema == {}
 
 
@@ -421,39 +465,58 @@ def test_label_schema_bool_labels_fall_through_to_empty() -> None:
 
 
 def test_prepared_rows_load_into_store(tmp_path) -> None:
-    """The prepared-row shape must be exactly what ``Store.add_prepared_rows`` accepts.
+    """The prepared-row and row-annotation shapes must be exactly what the real store accepts.
 
-    The other tests assert the dict shape in isolation; this drives it through the real store
-    to prove the keys are valid ``DatasetRow`` fields and that a string ``label_source`` is
-    accepted (SQLModel table rows store it as the raw enum value, which compares equal).
+    The other tests assert the dict shapes in isolation; this drives them through the real
+    store to prove ``prepared_rows`` are valid ``Store.add_prepared_rows`` fields and
+    ``row_annotations`` are valid ``Store.set_annotation`` keyword fields once the row's real
+    id and a real label set both exist.
     """
     engine = create_engine(tmp_path / "eval.db")
     init_db(engine)
     store = Store(engine)
 
     source = VDataset(name="refusal-quality", columns=["question", "answer"])
-    evals = dataset_to_evals(source, make_rows(), [])
-    name, columns, _label_schema, prepared = evals_to_dataset_fields(
+    rows = make_rows()
+    label_set = make_label_set()
+    annotation = make_annotation(rows[0], label_set)
+    evals = dataset_to_evals(source, rows, [], label_set=label_set, annotations=[annotation])
+    name, columns, _label_schema, prepared, row_annotations = evals_to_dataset_fields(
         evals, valcore_meta(make_version())
     )
 
-    dataset = store.create_dataset(name=name, description="", columns=columns, label_schema={})
+    dataset = store.create_dataset(name=name, description="", columns=columns)
     created = store.add_prepared_rows(dataset.id, prepared)
+    real_label_set = store.create_label_set(
+        dataset.id,
+        name="refusal-quality",
+        description="",
+        kind=ScoreKind.CATEGORICAL,
+        labels=[
+            {"name": "refusal", "description": "d"},
+            {"name": "partial", "description": "d"},
+            {"name": "answer", "description": "d"},
+        ],
+    )
+    for row, fields in zip(created, row_annotations, strict=True):
+        if fields is not None:
+            store.set_annotation(real_label_set.id, row.id, **fields)
 
     assert [r.data for r in created] == [
         {"question": "Q1", "answer": "A1"},
         {"question": "Q2", "answer": "A2"},
     ]
     labeled, unlabeled = created
-    assert labeled.label == {"value": "refusal"}
-    assert labeled.label_source == LabelSource.MANUAL
-    assert labeled.note == "a note"
+    stored = store.list_annotations_for_rows(real_label_set.id, [r.id for r in created])
+    assert len(stored) == 1
+    assert stored[0].dataset_row_id == labeled.id
+    assert stored[0].labels == ["refusal"]
+    assert stored[0].source == LabelSource.MANUAL
+    assert stored[0].description == "a note"
     # ids are regenerated on import; original case names are not reused.
-    assert labeled.id != make_rows()[0].id
-    # An unlabeled row carries no label and no provenance.
-    assert unlabeled.label is None
-    assert unlabeled.label_source is None
-    assert unlabeled.note is None
+    assert labeled.id != rows[0].id
+    # An unlabeled row carries no annotation at all.
+    assert unlabeled.id not in {a.dataset_row_id for a in stored}
     # Indices are assigned by the store, not carried from the exported ``idx``.
     assert [r.idx for r in created] == [0, 1]
 
@@ -499,42 +562,49 @@ def _resolved_output_type(evals: EvalsDataset) -> object:
 
 
 def test_output_type_schema_is_label_enum_for_categorical_dataset() -> None:
-    dataset = VDataset(
-        name="d",
-        columns=["question", "answer"],
-        label_schema={"kind": "categorical", "labels": ["a", "b"]},
+    dataset = VDataset(name="d", columns=["question", "answer"])
+    label_set = make_label_set(
+        labels=[{"name": "a", "description": "d"}, {"name": "b", "description": "d"}]
     )
-    evals = dataset_to_evals(dataset, make_rows(), [])
+    evals = dataset_to_evals(dataset, make_rows(), [], label_set=label_set)
     schema = TypeAdapter(_resolved_output_type(evals)).json_schema()
     assert schema == {"enum": ["a", "b"], "type": "string"}
 
 
 def test_output_type_schema_is_number_for_numeric_dataset() -> None:
-    dataset = VDataset(name="d", columns=["question", "answer"], label_schema={"kind": "numeric"})
-    evals = dataset_to_evals(dataset, make_rows(), [])
+    dataset = VDataset(name="d", columns=["question", "answer"])
+    label_set = make_label_set(kind=ScoreKind.NUMERIC, labels=None)
+    evals = dataset_to_evals(dataset, make_rows(), [], label_set=label_set)
     schema = TypeAdapter(_resolved_output_type(evals)).json_schema()
     assert schema == {"type": "number"}
 
 
-def test_output_type_schema_is_string_for_empty_label_schema() -> None:
-    dataset = VDataset(name="d", columns=["question", "answer"], label_schema={})
+def test_output_type_schema_is_string_for_no_label_set() -> None:
+    dataset = VDataset(name="d", columns=["question", "answer"])
     evals = dataset_to_evals(dataset, make_rows(), [])
     schema = TypeAdapter(_resolved_output_type(evals)).json_schema()
     assert schema == {"type": "string"}
 
 
 @pytest.mark.parametrize(
-    "label_schema",
+    "label_set_kwargs",
     [
-        pytest.param({"kind": "categorical", "labels": ["a", "b"]}, id="categorical"),
-        pytest.param({"kind": "numeric"}, id="numeric"),
-        pytest.param({}, id="empty"),
+        pytest.param(
+            {
+                "kind": ScoreKind.CATEGORICAL,
+                "labels": [{"name": "a", "description": "d"}, {"name": "b", "description": "d"}],
+            },
+            id="categorical",
+        ),
+        pytest.param({"kind": ScoreKind.NUMERIC, "labels": None}, id="numeric"),
+        pytest.param(None, id="no-label-set"),
     ],
 )
-def test_output_type_schema_is_never_the_empty_schema(label_schema: dict) -> None:
+def test_output_type_schema_is_never_the_empty_schema(label_set_kwargs: dict | None) -> None:
     # The bug this fixes: `object` infers to `{}`, which must never come back for any label kind.
-    dataset = VDataset(name="d", columns=["q"], label_schema=label_schema)
-    evals = dataset_to_evals(dataset, make_rows(), [])
+    dataset = VDataset(name="d", columns=["q"])
+    label_set = make_label_set(**label_set_kwargs) if label_set_kwargs is not None else None
+    evals = dataset_to_evals(dataset, make_rows(), [], label_set=label_set)
     assert TypeAdapter(_resolved_output_type(evals)).json_schema() != {}
 
 
@@ -548,15 +618,15 @@ def test_dataset_to_evals_serialization_is_byte_identical_to_object_generic() ->
     implementation produces, rather than hardcoding a blob, so the comparison tracks the
     real row mapping instead of a frozen snapshot of it.
     """
-    dataset = VDataset(
-        name="refusal-quality",
-        columns=["question", "answer"],
-        label_schema={"kind": "categorical", "labels": ["refusal", "partial", "answer"]},
-    )
+    dataset = VDataset(name="refusal-quality", columns=["question", "answer"])
     rows = make_rows()
+    label_set = make_label_set()
+    annotation = make_annotation(rows[0], label_set)
     evaluators: list[dict] = []
 
-    fixed = dataset_to_evals(dataset, rows, evaluators)
+    fixed = dataset_to_evals(
+        dataset, rows, evaluators, label_set=label_set, annotations=[annotation]
+    )
     baseline = EvalsDataset[dict, object, dict](
         name=dataset.name, cases=fixed.cases, evaluators=evaluators
     )
@@ -573,12 +643,11 @@ def test_from_dict_still_parses_dataset_to_evals_output() -> None:
     """The importer always reads back through the plain ``object`` generic (see ``config_io``);
     the fix must not disturb that path.
     """
-    dataset = VDataset(
-        name="refusal-quality",
-        columns=["question", "answer"],
-        label_schema={"kind": "categorical", "labels": ["refusal", "partial", "answer"]},
-    )
-    evals = dataset_to_evals(dataset, make_rows(), [])
+    dataset = VDataset(name="refusal-quality", columns=["question", "answer"])
+    rows = make_rows()
+    label_set = make_label_set()
+    annotation = make_annotation(rows[0], label_set)
+    evals = dataset_to_evals(dataset, rows, [], label_set=label_set, annotations=[annotation])
     dumped = evals.model_dump(mode="json", by_alias=True)
 
     reloaded = EvalsDataset[dict, object, dict].from_dict(dumped)
@@ -591,23 +660,24 @@ def test_label_outside_categorical_set_still_serializes_and_reimports() -> None:
     """Pins that ``OutputT`` is descriptive metadata only, never a validating constraint.
 
     ``expected_output="nope"`` against a declared ``["refusal", "answer"]`` label set must not
-    raise: hand-labeled data with a stray value must still export and re-import.
+    raise: hand-labeled data with a stray value must still export and re-import. Constructing
+    the ``Annotation`` directly (bypassing ``Store.set_annotation``'s validation) is what lets
+    the stray value exist here.
     """
-    dataset = VDataset(
-        name="d",
-        columns=["question", "answer"],
-        label_schema={"kind": "categorical", "labels": ["refusal", "answer"]},
+    dataset = VDataset(name="d", columns=["question", "answer"])
+    label_set = make_label_set(
+        labels=[{"name": "refusal", "description": "d"}, {"name": "answer", "description": "d"}]
     )
     rows = [
         DatasetRow(
             dataset_id="d1",
             idx=0,
             data={"question": "Q1", "answer": "A1"},
-            label={"value": "nope"},
         )
     ]
+    annotation = Annotation(label_set_id=label_set.id, dataset_row_id=rows[0].id, labels=["nope"])
 
-    evals = dataset_to_evals(dataset, rows, [])
+    evals = dataset_to_evals(dataset, rows, [], label_set=label_set, annotations=[annotation])
     assert evals.cases[0].expected_output == "nope"
 
     dumped = evals.model_dump(mode="json", by_alias=True)

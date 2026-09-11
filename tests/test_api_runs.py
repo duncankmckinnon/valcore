@@ -18,7 +18,7 @@ from valcore.api.deps import get_store
 from valcore.api.main import create_app
 from valcore.api.routes.runs import _tasks, get_agent_factory
 from valcore.factory import build_output_model
-from valcore.models import LabelSource, RunKind, RunStatus, ScoreKind
+from valcore.models import RunKind, RunStatus, ScoreKind
 from valcore.store import Store, create_engine, init_db
 
 CATEGORICAL_SCHEMA = {"kind": "categorical", "labels": ["pass", "fail"]}
@@ -91,14 +91,22 @@ def make_version(store: Store, **overrides):
 
 def make_dataset(store: Store, labels: list[str | None], *, inputs: list[str] | None = None):
     """Create a dataset with one row per label entry (None = unlabeled)."""
-    dataset = store.create_dataset("ds", "", ["input", "output"], CATEGORICAL_SCHEMA)
+    dataset = store.create_dataset("ds", "", ["input", "output"])
     inputs = inputs if inputs is not None else [f"in{i}" for i in range(len(labels))]
     rows = store.add_rows(
         dataset.id, [{"input": inp, "output": f"out{i}"} for i, inp in enumerate(inputs)]
     )
+    # Create a LabelSet for the dataset
+    label_set = store.create_label_set(
+        dataset.id,
+        "quality",
+        "",
+        ScoreKind.CATEGORICAL,
+        labels=[{"name": "pass", "description": ""}, {"name": "fail", "description": ""}],
+    )
     for row, label in zip(rows, labels, strict=True):
         if label is not None:
-            store.set_label(row.id, {"value": label}, LabelSource.MANUAL)
+            store.set_annotation(label_set.id, row.id, labels=[label])
     return dataset, rows
 
 
@@ -451,15 +459,80 @@ async def test_compare_orders_disagreements_first(store: Store) -> None:
     assert all(not row["disagree"] for row in body["rows"][1:])
 
 
+# -- Coverage ------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_coverage_reports_partial_labeling(store: Store) -> None:
+    version = make_version(store)
+    dataset, _ = make_dataset(store, ["pass", None, "fail"])
+
+    async with _client(store, constant_factory()) as client:
+        resp = await client.get(
+            "/api/runs/coverage", params={"dataset_id": dataset.id, "version_id": version.id}
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total_rows"] == 3
+    assert body["labeled_rows"] == 2
+    assert body["label_set_id"] is not None
+
+
+@pytest.mark.anyio
+async def test_coverage_reports_no_match_as_null_label_set(store: Store) -> None:
+    # A version whose score space matches no label set on the dataset.
+    version = make_version(
+        store,
+        score_labels=["yes", "no"],
+        output_fields=[
+            {
+                "name": "verdict",
+                "type": "enum",
+                "description": "yes or no",
+                "enum_values": ["yes", "no"],
+            }
+        ],
+    )
+    dataset, _ = make_dataset(store, ["pass", "fail"])
+
+    async with _client(store, constant_factory()) as client:
+        resp = await client.get(
+            "/api/runs/coverage", params={"dataset_id": dataset.id, "version_id": version.id}
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["label_set_id"] is None
+    assert body["labeled_rows"] == 0
+    assert body["total_rows"] == 2
+
+
+@pytest.mark.anyio
+async def test_coverage_on_fully_unlabeled_dataset(store: Store) -> None:
+    version = make_version(store)
+    dataset, _ = make_dataset(store, [None, None])
+
+    async with _client(store, constant_factory()) as client:
+        resp = await client.get(
+            "/api/runs/coverage", params={"dataset_id": dataset.id, "version_id": version.id}
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["labeled_rows"] == 0
+    assert body["total_rows"] == 2
+
+
 # -- Background failure --------------------------------------------------------
 
 
 @pytest.mark.anyio
 async def test_background_task_failure_marks_run_failed(store: Store) -> None:
     version = make_version(store)
-    # A validation run over a partially labeled dataset makes the runner raise
+    # A validation run over a completely unlabeled dataset makes the runner raise
     # ContractError; the background wrapper must record it as FAILED.
-    dataset, _ = make_dataset(store, ["pass", None, "fail"])
+    dataset, _ = make_dataset(store, [None, None, None])
 
     async with _client(store, constant_factory()) as client:
         body = await _start_run(client, version.id, dataset.id)

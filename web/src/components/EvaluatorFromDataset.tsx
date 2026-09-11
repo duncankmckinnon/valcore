@@ -1,3 +1,4 @@
+// web/src/components/EvaluatorFromDataset.tsx
 // Seeded generation, dataset -> evaluator direction. Given an existing dataset, derive an
 // evaluator draft whose column set *is* the dataset's columns (the fixed, required set)
 // while the user supplies criteria and per-column notes to steer the generated judge.
@@ -6,11 +7,17 @@
 // array paired with `dataset_id`, so this modal sends `dataset_id` and `column_notes` and
 // never a `columns` key. The result is an editable draft handed back through `onGenerated`;
 // the modal persists nothing — it neither creates an evaluator nor saves a version.
+//
+// The label space comes from one of the dataset's label sets (mirroring
+// `_resolve_seed` in routes/evaluators.py): none declared, exactly one (used
+// automatically), or more than one (the user must pick, defaulting to the first).
+// Checking "prescribe my own" always overrides with a custom LabelSchema instead,
+// regardless of how many label sets exist.
 
-import { useState } from "react";
-import { evaluators } from "../api/client";
-import type { Dataset, GeneratedConfig, LabelSchema } from "../api/types";
-import { Button, ErrorBanner, Modal, TextArea } from "./ui";
+import { useEffect, useState } from "react";
+import { evaluators, labelSets as labelSetsApi } from "../api/client";
+import type { Dataset, GeneratedConfig, LabelSchema, LabelSetProgress } from "../api/types";
+import { Button, ErrorBanner, Modal, Select, TextArea } from "./ui";
 import { ColumnNotesEditor } from "./ColumnNotesEditor";
 import LabelSchemaEditor from "./LabelSchemaEditor";
 import { GATEWAY_BLOCKER, useSetup } from "./useSetup";
@@ -22,11 +29,7 @@ type EvaluatorFromDatasetProps = {
   onClose: () => void;
 };
 
-// The API represents "no ground truth" as a literal empty object. Presence of `kind`, not
-// labels or bounds, distinguishes a declared schema (including an unbounded numeric one).
-function declaresLabelSpace(schema: Dataset["label_schema"]): schema is LabelSchema {
-  return Object.keys(schema).length > 0 && "kind" in schema;
-}
+const DEFAULT_SCHEMA: LabelSchema = { kind: "categorical", labels: [], minimum: null, maximum: null };
 
 export function EvaluatorFromDataset({
   open,
@@ -36,26 +39,26 @@ export function EvaluatorFromDataset({
 }: EvaluatorFromDatasetProps) {
   const [criteria, setCriteria] = useState("");
   const [notes, setNotes] = useState<Record<string, string>>({});
-  // Every column is exposed by default: narrowing is the deliberate act, and defaulting to all
-  // preserves the behaviour this modal had before the subset could be chosen.
   const [selected, setSelected] = useState<string[]>(dataset.columns);
-  // Checked by default: inheriting the dataset's label space is the behaviour this modal had,
-  // and the one that keeps the evaluator validatable against this dataset.
+  const [availableLabelSets, setAvailableLabelSets] = useState<LabelSetProgress[] | null>(null);
+  const [labelSetId, setLabelSetId] = useState<string>("");
   const [useDatasetLabels, setUseDatasetLabels] = useState(true);
-  // Seeded from the dataset so unchecking starts from its labels rather than an empty editor.
-  const [labelSchema, setLabelSchema] = useState<LabelSchema>(
-    declaresLabelSpace(dataset.label_schema)
-      ? dataset.label_schema
-      : { kind: "categorical", labels: [], minimum: null, maximum: null },
-  );
+  const [labelSchema, setLabelSchema] = useState<LabelSchema>(DEFAULT_SCHEMA);
   const [error, setError] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
   const { gatewayReady } = useSetup();
 
-  const schema = dataset.label_schema;
-  const hasLabelSpace = declaresLabelSpace(schema);
-  // An evaluator must require at least one column -- `validate_version` rejects an empty
-  // `required_columns` -- so deselecting everything blocks rather than failing server-side.
+  useEffect(() => {
+    if (!open) return;
+    labelSetsApi
+      .list(dataset.id)
+      .then((sets) => {
+        setAvailableLabelSets(sets);
+        setLabelSetId(sets[0]?.id ?? "");
+      })
+      .catch(() => setAvailableLabelSets([]));
+  }, [open, dataset.id]);
+
   const canSubmit =
     criteria.trim() !== "" && selected.length > 0 && !submitting && gatewayReady;
 
@@ -64,9 +67,6 @@ export function EvaluatorFromDataset({
     setSubmitting(true);
     setError(null);
     try {
-      // Only annotated *and still selected* columns travel as notes: the server rejects a note
-      // keyed outside the resolved column set, so a note left behind by a deselected column
-      // would fail the whole request.
       const column_notes = Object.fromEntries(
         Object.entries(notes).filter(
           ([column, note]) => note.trim() !== "" && selected.includes(column),
@@ -75,13 +75,13 @@ export function EvaluatorFromDataset({
       const draft = await evaluators.generate({
         criteria: criteria.trim(),
         dataset_id: dataset.id,
-        // Narrows the dataset-derived set so the evaluator need not require every column the
-        // dataset carries.
         columns: selected,
         column_notes,
-        // Omitted while the checkbox is on, so the server seeds the label space from the
-        // dataset; sent only as a deliberate override.
-        ...(useDatasetLabels ? {} : { label_schema: labelSchema }),
+        ...(useDatasetLabels
+          ? labelSetId
+            ? { label_set_id: labelSetId }
+            : {}
+          : { label_schema: labelSchema }),
       });
       onGenerated(draft);
     } catch (err) {
@@ -90,6 +90,9 @@ export function EvaluatorFromDataset({
       setSubmitting(false);
     }
   };
+
+  const hasLabelSets = (availableLabelSets?.length ?? 0) > 0;
+  const ambiguous = (availableLabelSets?.length ?? 0) > 1;
 
   return (
     <Modal
@@ -147,7 +150,7 @@ export function EvaluatorFromDataset({
 
       <div className="field">
         <span className="field-label">Label space</span>
-        {hasLabelSpace ? (
+        {availableLabelSets === null ? null : hasLabelSets ? (
           <>
             <label className="field-inline">
               <input
@@ -155,51 +158,41 @@ export function EvaluatorFromDataset({
                 checked={useDatasetLabels}
                 onChange={(event) => setUseDatasetLabels(event.target.checked)}
               />
-              Use this dataset&apos;s label space
+              Use one of this dataset&apos;s label sets
             </label>
 
             {useDatasetLabels ? (
               <>
-                {schema.kind === "categorical" ? (
-                  <div className="chips">
-                    {(schema.labels ?? []).map((label) => (
-                      <span key={label} className="chip">
-                        {label}
-                      </span>
-                    ))}
-                  </div>
-                ) : (
-                  <p>
-                    Minimum: {schema.minimum ?? "unbounded"}; Maximum:{" "}
-                    {schema.maximum ?? "unbounded"}
-                  </p>
+                {ambiguous && (
+                  <Select
+                    aria-label="Label set"
+                    value={labelSetId}
+                    options={(availableLabelSets ?? []).map((set) => ({ value: set.id, label: set.name }))}
+                    onChange={(e) => setLabelSetId(e.target.value)}
+                  />
                 )}
                 <p className="muted">
-                  The generated evaluator will use this dataset&apos;s label space.
+                  The generated evaluator will use{" "}
+                  {availableLabelSets?.find((s) => s.id === labelSetId)?.name ?? "this label set"}.
                 </p>
               </>
             ) : (
               <>
                 <LabelSchemaEditor value={labelSchema} onChange={setLabelSchema} />
-                {/* Stated where the choice is made, not discovered when a run fails: a
-                    differing label space is exactly what check_dataset_compatibility refuses
-                    for a VALIDATION run. */}
                 <p className="form-footer-blocker" role="status">
-                  Prescribing a label space means this evaluator can score{" "}
-                  {dataset.name} but cannot be validated against it, since validation compares
-                  its labels to the dataset&apos;s.
+                  Prescribing a label space means this evaluator can score {dataset.name} but
+                  cannot be validated against it, since validation compares its labels to a
+                  matching label set on the dataset.
                 </p>
               </>
             )}
           </>
         ) : (
           <p className="muted">
-            This dataset declares no label space, so the generated evaluator will define its
-            own.
+            This dataset has no label sets, so the generated evaluator will define its own.
           </p>
         )}
       </div>
-
     </Modal>
   );
 }

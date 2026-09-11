@@ -3,6 +3,7 @@ import Layout from "./components/Layout";
 import OverviewPage from "./pages/OverviewPage";
 import EvaluatorsPage from "./pages/EvaluatorsPage";
 import DatasetsPage from "./pages/DatasetsPage";
+import AnnotationsPage from "./pages/AnnotationsPage";
 import RunsPage from "./pages/RunsPage";
 import DocsRedirect from "./pages/DocsRedirect";
 import SettingsPage from "./pages/SettingsPage";
@@ -18,6 +19,13 @@ export default function App() {
         <Route path="/evaluators/:id" element={<EvaluatorsPage />} />
         <Route path="/datasets" element={<DatasetsPage />} />
         <Route path="/datasets/:id" element={<DatasetsPage />} />
+        <Route path="/annotations" element={<AnnotationsPage />} />
+        <Route path="/annotations/:datasetId" element={<AnnotationsPage />} />
+        <Route path="/annotations/:datasetId/:labelSetId" element={<AnnotationsPage />} />
+        <Route
+          path="/annotations/:datasetId/:labelSetId/rows/:rowId"
+          element={<AnnotationsPage />}
+        />
         <Route path="/runs" element={<RunsPage />} />
         <Route path="/runs/compare" element={<RunsPage />} />
         <Route path="/runs/:id" element={<RunsPage />} />

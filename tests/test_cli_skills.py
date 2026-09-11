@@ -136,7 +136,7 @@ def test_unlabeled_dataset_claim_is_backed_by_check_dataset_compatibility() -> N
     dataset = Dataset(name="unlabeled", columns=["answer"], label_schema={})
 
     # Must not raise: no label space means nothing to reconcile with the score space.
-    check_dataset_compatibility(version, dataset)
+    check_dataset_compatibility(version, dataset, [])
 
 
 def test_empty_label_schema_does_not_waive_the_required_columns_check() -> None:
@@ -161,7 +161,7 @@ def test_empty_label_schema_does_not_waive_the_required_columns_check() -> None:
     dataset = Dataset(name="wrong-shape", columns=["question"], label_schema={})
 
     with pytest.raises(ContractError):
-        check_dataset_compatibility(version, dataset)
+        check_dataset_compatibility(version, dataset, [])
 
 
 # -- reference.md (CLI) content -----------------------------------------------
