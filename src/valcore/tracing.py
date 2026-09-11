@@ -85,6 +85,10 @@ def configure_tracing(cfg: FileConfig) -> None:
         send_to_logfire="if-token-present",
         service_name="valcore",
         console=False,
+        # Valcore emits traces, not custom or system metrics. Avoid starting
+        # OpenTelemetry's metrics-export thread, whose shutdown can otherwise
+        # be interrupted by a second Ctrl-C while the server is closing.
+        metrics=False,
     )
 
     # After configure, never before: instrumenting an uninitialized instance emits
@@ -118,6 +122,7 @@ def reconfigure_logfire_token(cfg: FileConfig) -> None:
         send_to_logfire="if-token-present",
         service_name="valcore",
         console=False,
+        metrics=False,
     )
 
 

@@ -298,18 +298,23 @@ async def test_concurrency_is_bounded(store: Store) -> None:
     run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=2)
 
     state = {"inflight": 0, "peak": 0}
+    both_requests_started = asyncio.Event()
 
     async def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         state["inflight"] += 1
         state["peak"] = max(state["peak"], state["inflight"])
-        await asyncio.sleep(0.02)
+        if state["inflight"] == 2:
+            both_requests_started.set()
+        await both_requests_started.wait()
         state["inflight"] -= 1
         name = info.output_tools[0].name
         return ModelResponse(parts=[ToolCallPart(tool_name=name, args={"verdict": "pass"})])
 
     agent = Agent(FunctionModel(respond), output_type=build_output_model(version))
 
-    result = await execute_run(store, run.id, agent=agent)
+    # If the runner stops launching a second request, the barrier must turn that
+    # regression into a test failure rather than stalling the whole suite.
+    result = await asyncio.wait_for(execute_run(store, run.id, agent=agent), timeout=1)
 
     assert result.status is RunStatus.COMPLETED
     assert len(store.list_results(run.id)) == 6
