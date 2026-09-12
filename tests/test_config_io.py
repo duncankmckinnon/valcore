@@ -17,15 +17,17 @@ from pydantic_evals.evaluators import Evaluator, EvaluatorContext
 
 from valcore.config_io import EvalPackage, ValcoreMeta
 from valcore.errors import ContractError
-from valcore.models import Dataset as VDataset
 from valcore.models import (
+    Annotation,
     DatasetRow,
     EvaluatorVersion,
     FieldType,
+    LabelSet,
     LabelSource,
     OutputField,
     ScoreKind,
 )
+from valcore.models import Dataset as VDataset
 from valcore.spec import output_fields_to_schema
 
 STEM = "refusal_quality"
@@ -62,15 +64,12 @@ def make_version(**overrides: object) -> EvaluatorVersion:
 
 
 def make_rows() -> list[DatasetRow]:
-    """Two rows: one fully labeled with a note, one with no label at all."""
+    """Two rows of data, with no annotations attached; tests attach one where needed."""
     return [
         DatasetRow(
             dataset_id="d1",
             idx=0,
             data={"question": "Q1", "answer": "A1"},
-            label={"value": "refusal"},
-            label_source=LabelSource.MANUAL,
-            note="a note",
         ),
         DatasetRow(
             dataset_id="d1",
@@ -83,6 +82,36 @@ def make_rows() -> list[DatasetRow]:
 def make_dataset() -> VDataset:
     """Build the valcore dataset the rows belong to."""
     return VDataset(name="refusal-quality", columns=["question", "answer"])
+
+
+def make_label_set(**overrides: object) -> LabelSet:
+    """Build a valid categorical LabelSet matching ``make_version``'s score space."""
+    base: dict[str, object] = {
+        "dataset_id": "d1",
+        "name": "refusal-quality",
+        "description": "",
+        "kind": ScoreKind.CATEGORICAL,
+        "labels": [
+            {"name": "refusal", "description": "d"},
+            {"name": "partial", "description": "d"},
+            {"name": "answer", "description": "d"},
+        ],
+    }
+    base.update(overrides)
+    return LabelSet(**base)
+
+
+def make_annotation(row: DatasetRow, label_set: LabelSet, **overrides: object) -> Annotation:
+    """Build an Annotation on ``row`` under ``label_set``, carrying full provenance by default."""
+    base: dict[str, object] = {
+        "label_set_id": label_set.id,
+        "dataset_row_id": row.id,
+        "labels": ["refusal"],
+        "source": LabelSource.MANUAL,
+        "description": "a note",
+    }
+    base.update(overrides)
+    return Annotation(**base)
 
 
 def full_package() -> EvalPackage:
@@ -222,25 +251,37 @@ def test_bundled_round_trip_preserves_output_field_order() -> None:
     assert [f["name"] for f in fields["output_fields"]] == ["score", "reason", "ok"]
 
 
-def test_bundled_round_trip_reconstructs_dataset_rows_and_labels() -> None:
+def test_bundled_round_trip_reconstructs_dataset_rows_and_annotations() -> None:
+    rows = make_rows()
+    label_set = make_label_set()
+    annotation = make_annotation(rows[0], label_set)
     pkg = EvalPackage.from_version(make_version()).merge(
-        EvalPackage.from_dataset(make_dataset(), make_rows())
+        EvalPackage.from_dataset(
+            make_dataset(), rows, label_set=label_set, annotations=[annotation]
+        )
     )
     content = pkg.to_text(STEM)["refusal_quality.json"]
 
-    name, columns, label_schema, prepared = EvalPackage.from_text(content).to_dataset_fields()
+    name, columns, label_schema, prepared, row_annotations = EvalPackage.from_text(
+        content
+    ).to_dataset_fields()
     assert name == "refusal-quality"
     assert columns == ["question", "answer"]
     # The valcore block wins over inference, so the full label space survives.
     assert label_schema["kind"] == "categorical"
     assert label_schema["labels"] == ["refusal", "partial", "answer"]
 
-    labeled, unlabeled = prepared
+    labeled, _unlabeled = prepared
     assert labeled["data"] == {"question": "Q1", "answer": "A1"}
-    assert labeled["label"] == {"value": "refusal"}
-    assert labeled["label_source"] == "manual"
-    assert labeled["note"] == "a note"
-    assert "label" not in unlabeled
+    # Labels/provenance now live in row_annotations, never in the prepared row itself.
+    assert "label" not in labeled
+
+    labeled_ann, unlabeled_ann = row_annotations
+    assert labeled_ann is not None
+    assert labeled_ann["labels"] == ["refusal"]
+    assert labeled_ann["source"] == "manual"
+    assert labeled_ann["description"] == "a note"
+    assert unlabeled_ann is None
 
 
 # --- split mode ---------------------------------------------------------------
@@ -335,7 +376,7 @@ def test_from_text_detects_bare_dataset() -> None:
     pkg = EvalPackage.from_text(dataset_file)
     assert pkg.dataset is not None
     assert pkg.spec is None
-    name, _columns, _schema, _prepared = pkg.to_dataset_fields()
+    name, _columns, _schema, _prepared, _row_annotations = pkg.to_dataset_fields()
     assert name == "refusal-quality"
 
 

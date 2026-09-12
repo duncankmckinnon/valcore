@@ -224,6 +224,7 @@ class TestConfigureTracingIdempotent:
         assert calls[0]["send_to_logfire"] == "if-token-present"
         assert calls[0]["service_name"] == "valcore"
         assert calls[0]["console"] is False
+        assert calls[0]["metrics"] is False
 
     def test_applies_token_to_environment_before_configuring(
         self, monkeypatch: pytest.MonkeyPatch
@@ -439,6 +440,7 @@ class TestReconfigureLogfireToken:
         assert calls[1]["send_to_logfire"] == "if-token-present"
         assert calls[1]["service_name"] == "valcore"
         assert calls[1]["console"] is False
+        assert calls[1]["metrics"] is False
 
     def test_does_not_reinstrument_pydantic_ai(self, monkeypatch: pytest.MonkeyPatch) -> None:
         instrument_calls: list[object] = []

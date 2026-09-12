@@ -620,9 +620,18 @@ async def test_ungated_endpoints_still_work_with_no_gateway_key(
     assert appended.status_code == 200, appended.text
     row_id = appended.json()[0]["id"]
 
-    patched = await client.patch(f"/api/datasets/rows/{row_id}", json={"label": "good"})
-    assert patched.status_code == 200, patched.text
-    assert patched.json()["label"] == {"value": "good"}
+    # Ground truth lives on a LabelSet/Annotation now, not a PATCH to the row itself; the
+    # dataset's label_schema above auto-created one label set to annotate against.
+    label_sets = await client.get(f"/api/datasets/{ds_id}/label-sets")
+    assert label_sets.status_code == 200, label_sets.text
+    label_set_id = label_sets.json()[0]["id"]
+
+    annotated = await client.put(
+        f"/api/label-sets/{label_set_id}/rows/{row_id}/annotation",
+        json={"labels": ["good"]},
+    )
+    assert annotated.status_code == 200, annotated.text
+    assert annotated.json()["labels"] == ["good"]
 
     eval_created = await client.post("/api/evaluators", json={"name": "E"})
     assert eval_created.status_code == 200, eval_created.text

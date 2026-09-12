@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, api, datasets, evaluators, overview, setup } from "./client";
-import type { Dataset, Overview, SetupStatus } from "./types";
+import { ApiError, annotations, api, datasets, evaluators, labelSets, overview, runs, setup } from "./client";
+import type { DatasetSummary, Overview, SetupStatus } from "./types";
 
 function jsonResponse(body: unknown, init: { status?: number } = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -79,16 +79,17 @@ describe("resource helpers", () => {
     expect(new Headers(init?.headers).get("Content-Type")).toBe("application/json");
   });
 
-  it("datasets.patchRow PATCHes the row URL", async () => {
+  it("datasets.patchRowData PATCHes the row URL", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse({ id: "r1" }));
+      .mockResolvedValue(jsonResponse({ id: "r1", dataset_id: "d1", idx: 0, data: { note: "off" } }));
 
-    await datasets.patchRow("r1", { note: "off" });
+    await datasets.patchRowData("r1", { data: { note: "off" } });
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/datasets/rows/r1");
     expect(init?.method).toBe("PATCH");
+    expect(init?.body).toBe(JSON.stringify({ data: { note: "off" } }));
   });
 });
 
@@ -328,12 +329,12 @@ describe("manual CRUD helpers", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse({ id: "d1", name: "Renamed" }));
 
-    await datasets.update("d1", { name: "Renamed", force: true });
+    await datasets.update("d1", { name: "Renamed" });
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/datasets/d1");
     expect(init?.method).toBe("PATCH");
-    expect(init?.body).toBe(JSON.stringify({ name: "Renamed", force: true }));
+    expect(init?.body).toBe(JSON.stringify({ name: "Renamed" }));
   });
 
   it("datasets.addRows POSTs {rows} to /api/datasets/{id}/rows and returns the rows", async () => {
@@ -684,19 +685,17 @@ describe("setup client helper", () => {
   });
 });
 
-// The dataset list items now carry row and label counts. This exercises that the
-// Dataset type accepts the two new required fields and that a list response round-trips
-// them unchanged.
+// The dataset list items carry row and labeled-row counts (DatasetSummary), unlike a
+// single-dataset fetch (Dataset). This exercises that the type round-trips both fields.
 describe("dataset count fields", () => {
   it("datasets.list round-trips row_count and labeled_count on each item", async () => {
-    const items: Dataset[] = [
+    const items: DatasetSummary[] = [
       {
         id: "d1",
         created_at: "2026-08-07T00:00:00Z",
         name: "Support tickets",
         description: "",
         columns: ["input", "output"],
-        label_schema: { kind: "categorical", labels: ["pass", "fail"], minimum: null, maximum: null },
         row_count: 42,
         labeled_count: 30,
       },
@@ -710,5 +709,133 @@ describe("dataset count fields", () => {
     expect(result).toEqual(items);
     expect(result[0].row_count).toBe(42);
     expect(result[0].labeled_count).toBe(30);
+  });
+});
+
+describe("label set client helpers", () => {
+  it("labelSets.list GETs /api/datasets/{id}/label-sets", async () => {
+    const items = [
+      {
+        id: "ls1",
+        created_at: "2026-01-01T00:00:00Z",
+        dataset_id: "d1",
+        name: "quality",
+        description: "",
+        kind: "categorical",
+        labels: [{ name: "good", description: "" }],
+        minimum: null,
+        maximum: null,
+        annotated_count: 2,
+        row_count: 5,
+      },
+    ];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(items));
+
+    const result = await labelSets.list("d1");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/datasets/d1/label-sets");
+    expect(result).toEqual(items);
+  });
+
+  it("labelSets.create POSTs to /api/datasets/{id}/label-sets", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ id: "ls1", created_at: "2026-01-01T00:00:00Z", dataset_id: "d1", name: "quality", description: "", kind: "categorical", labels: [], minimum: null, maximum: null }),
+    );
+
+    const body = { name: "quality", kind: "categorical" as const, labels: [] };
+    await labelSets.create("d1", body);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/datasets/d1/label-sets");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe(JSON.stringify(body));
+  });
+
+  it("labelSets.get GETs /api/label-sets/{id}", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ id: "ls1" }));
+    await labelSets.get("ls1");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/label-sets/ls1");
+  });
+
+  it("labelSets.update PATCHes /api/label-sets/{id}", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ id: "ls1" }));
+    await labelSets.update("ls1", { name: "renamed" });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/label-sets/ls1");
+    expect(init?.method).toBe("PATCH");
+    expect(init?.body).toBe(JSON.stringify({ name: "renamed" }));
+  });
+
+  it("labelSets.remove DELETEs /api/label-sets/{id}", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(noContentResponse());
+    await labelSets.remove("ls1");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/label-sets/ls1");
+    expect(init?.method).toBe("DELETE");
+  });
+
+  it("labelSets.rows GETs /api/label-sets/{id}/rows with limit/offset", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ rows: [], total: 0, annotated_count: 0, limit: 100, offset: 0 }),
+    );
+    await labelSets.rows("ls1", { limit: 100, offset: 0 });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/label-sets/ls1/rows?limit=100&offset=0");
+  });
+
+  it("labelSets.rows GETs the bare path when no params are given", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ rows: [], total: 0, annotated_count: 0, limit: 100, offset: 0 }),
+    );
+    await labelSets.rows("ls1");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/label-sets/ls1/rows");
+  });
+});
+
+describe("annotation client helpers", () => {
+  it("annotations.get GETs the row's annotation", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(null));
+    await annotations.get("ls1", "r1");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/label-sets/ls1/rows/r1/annotation");
+  });
+
+  it("annotations.put PUTs the annotation body", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ id: "a1", label_set_id: "ls1", dataset_row_id: "r1", labels: ["good"], value: null, suggested_labels: null, suggested_value: null, source: "manual", reasoning: null, description: null }),
+    );
+    const body = { labels: ["good"], value: null, description: null };
+    await annotations.put("ls1", "r1", body);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/label-sets/ls1/rows/r1/annotation");
+    expect(init?.method).toBe("PUT");
+    expect(init?.body).toBe(JSON.stringify(body));
+  });
+
+  it("annotations.remove DELETEs the annotation", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(noContentResponse());
+    await annotations.remove("ls1", "r1");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/label-sets/ls1/rows/r1/annotation");
+    expect(init?.method).toBe("DELETE");
+  });
+
+  it("annotations.accept POSTs to the accept endpoint", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ id: "a1", label_set_id: "ls1", dataset_row_id: "r1", labels: ["good"], value: null, suggested_labels: ["good"], suggested_value: null, source: "accepted", reasoning: null, description: null }),
+    );
+    await annotations.accept("ls1", "r1");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/label-sets/ls1/rows/r1/annotation/accept");
+    expect(init?.method).toBe("POST");
+  });
+});
+
+describe("runs.coverage client helper", () => {
+  it("GETs /api/runs/coverage with dataset_id and version_id", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ label_set_id: "ls1", total_rows: 10, labeled_rows: 6 }),
+    );
+    const result = await runs.coverage("d1", "v1");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/runs/coverage?dataset_id=d1&version_id=v1");
+    expect(result).toEqual({ label_set_id: "ls1", total_rows: 10, labeled_rows: 6 });
   });
 });

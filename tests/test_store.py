@@ -8,7 +8,6 @@ from sqlmodel import select
 
 from valcore.errors import (
     ContractError,
-    DestructiveChangeError,
     FrozenVersionError,
     NotFoundError,
     ReferencedError,
@@ -19,6 +18,7 @@ from valcore.models import (
     DatasetRow,
     EvaluatorVersion,
     ExperimentRun,
+    LabelSet,
     LabelSource,
     Run,
     RunKind,
@@ -211,9 +211,8 @@ def test_freeze_version_missing_raises(store: Store) -> None:
 
 
 def test_dataset_crud(store: Store) -> None:
-    ds = store.create_dataset("d", "desc", ["question", "answer"], LABEL_SCHEMA)
+    ds = store.create_dataset("d", "desc", ["question", "answer"])
     assert ds.columns == ["question", "answer"]
-    assert ds.label_schema == LABEL_SCHEMA
 
     assert store.get_dataset(ds.id).id == ds.id
     assert [d.id for d in store.list_datasets()] == [ds.id]
@@ -230,7 +229,7 @@ def test_get_dataset_missing_raises(store: Store) -> None:
 
 
 def test_add_rows_assigns_sequential_idx_across_calls(store: Store) -> None:
-    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
+    ds = store.create_dataset("d", "", ["question"])
     first = store.add_rows(ds.id, [{"question": "a"}, {"question": "b"}])
     assert [r.idx for r in first] == [0, 1]
 
@@ -243,7 +242,7 @@ def test_add_rows_assigns_sequential_idx_across_calls(store: Store) -> None:
 
 
 def test_add_rows_empty_first_call_starts_at_zero(store: Store) -> None:
-    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
+    ds = store.create_dataset("d", "", ["question"])
     assert store.add_rows(ds.id, []) == []
     rows = store.add_rows(ds.id, [{"question": "a"}])
     assert [r.idx for r in rows] == [0]
@@ -254,30 +253,312 @@ def test_add_rows_missing_dataset_raises(store: Store) -> None:
         store.add_rows("nope", [{"question": "a"}])
 
 
-def test_set_label_and_labeled_count(store: Store) -> None:
-    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
-    rows = store.add_rows(ds.id, [{"question": "a"}, {"question": "b"}, {"question": "c"}])
-
-    assert store.labeled_count(ds.id) == (0, 3)
-
-    labeled = store.set_label(rows[0].id, {"verdict": "pass"}, LabelSource.MANUAL, note="ok")
-    assert labeled.label == {"verdict": "pass"}
-    assert labeled.label_source is LabelSource.MANUAL
-    assert labeled.note == "ok"
-    assert store.labeled_count(ds.id) == (1, 3)
-
-    store.set_label(rows[1].id, {"verdict": "fail"}, LabelSource.ACCEPTED)
-    assert store.labeled_count(ds.id) == (2, 3)
+# -- Label sets ----------------------------------------------------------
 
 
-def test_labeled_count_empty_dataset(store: Store) -> None:
-    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
-    assert store.labeled_count(ds.id) == (0, 0)
+def test_create_and_get_label_set(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    created = store.create_label_set(
+        dataset.id,
+        name="quality",
+        description="human review",
+        kind=ScoreKind.CATEGORICAL,
+        labels=[{"name": "good", "description": "meets the bar"}],
+    )
+    assert created.id
+    assert created.dataset_id == dataset.id
+    assert created.kind is ScoreKind.CATEGORICAL
+
+    fetched = store.get_label_set(created.id)
+    assert fetched.name == "quality"
+    assert fetched.labels == [{"name": "good", "description": "meets the bar"}]
 
 
-def test_set_label_missing_row_raises(store: Store) -> None:
+def test_create_label_set_rejects_invalid_shape(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    with pytest.raises(ContractError):
+        store.create_label_set(
+            dataset.id, name="bad", description="", kind=ScoreKind.CATEGORICAL, labels=None
+        )
+
+
+def test_list_label_sets_ordered_by_creation(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    first = store.create_label_set(
+        dataset.id,
+        name="a",
+        description="",
+        kind=ScoreKind.CATEGORICAL,
+        labels=[{"name": "x", "description": "d"}],
+    )
+    second = store.create_label_set(
+        dataset.id,
+        name="b",
+        description="",
+        kind=ScoreKind.NUMERIC,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    listed = store.list_label_sets(dataset.id)
+    assert [ls.id for ls in listed] == [first.id, second.id]
+
+
+def test_update_label_set_renames(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    created = store.create_label_set(
+        dataset.id,
+        name="a",
+        description="",
+        kind=ScoreKind.CATEGORICAL,
+        labels=[{"name": "x", "description": "d"}],
+    )
+    updated = store.update_label_set(created.id, name="renamed", description="new desc")
+    assert updated.name == "renamed"
+    assert updated.description == "new desc"
+
+
+def test_delete_label_set_removes_it(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    label_set = store.create_label_set(
+        dataset.id,
+        name="a",
+        description="",
+        kind=ScoreKind.CATEGORICAL,
+        labels=[{"name": "x", "description": "d"}],
+    )
+    store.delete_label_set(label_set.id)
     with pytest.raises(NotFoundError):
-        store.set_label("nope", {"verdict": "pass"}, LabelSource.MANUAL)
+        store.get_label_set(label_set.id)
+
+
+def test_primary_label_set_returns_oldest(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    first = store.create_label_set(
+        dataset.id,
+        name="a",
+        description="",
+        kind=ScoreKind.CATEGORICAL,
+        labels=[{"name": "x", "description": "d"}],
+    )
+    store.create_label_set(
+        dataset.id,
+        name="b",
+        description="",
+        kind=ScoreKind.NUMERIC,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    assert store.primary_label_set(dataset.id).id == first.id
+
+
+def test_primary_label_set_none_when_dataset_has_none(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    assert store.primary_label_set(dataset.id) is None
+
+
+# -- Annotations ---------------------------------------------------------
+
+
+def _categorical_label_set(store: Store, dataset_id: str) -> LabelSet:
+    return store.create_label_set(
+        dataset_id,
+        name="quality",
+        description="",
+        kind=ScoreKind.CATEGORICAL,
+        labels=[{"name": "good", "description": "d"}, {"name": "bad", "description": "d"}],
+    )
+
+
+def test_set_annotation_creates_then_updates_in_place(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = _categorical_label_set(store, dataset.id)
+
+    created = store.set_annotation(
+        label_set.id,
+        rows[0].id,
+        labels=["good"],
+        description="looks right",
+        source=LabelSource.MANUAL,
+    )
+    assert created.labels == ["good"]
+    assert created.description == "looks right"
+    assert created.source is LabelSource.MANUAL
+
+    updated = store.set_annotation(
+        label_set.id, rows[0].id, labels=["good", "bad"], description="revised"
+    )
+    assert updated.id == created.id
+    assert updated.labels == ["good", "bad"]
+    assert updated.description == "revised"
+
+    all_annotations = store.list_annotations_for_rows(label_set.id, [rows[0].id])
+    assert len(all_annotations) == 1
+
+
+def test_set_annotation_rejects_invalid_labels(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = _categorical_label_set(store, dataset.id)
+    with pytest.raises(ContractError):
+        store.set_annotation(label_set.id, rows[0].id, labels=["unknown"])
+
+
+def test_get_annotation_returns_none_when_absent(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = _categorical_label_set(store, dataset.id)
+    assert store.get_annotation(label_set.id, rows[0].id) is None
+
+
+def test_clear_annotation_removes_it(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = _categorical_label_set(store, dataset.id)
+    store.set_annotation(label_set.id, rows[0].id, labels=["good"])
+    store.clear_annotation(label_set.id, rows[0].id)
+    assert store.get_annotation(label_set.id, rows[0].id) is None
+
+
+def test_set_annotation_writes_suggested_fields_without_confirming(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = _categorical_label_set(store, dataset.id)
+
+    annotation = store.set_annotation(
+        label_set.id,
+        rows[0].id,
+        suggested_labels=["good"],
+        reasoning="looks right",
+        source=LabelSource.GENERATED,
+    )
+    assert annotation.suggested_labels == ["good"]
+    assert annotation.reasoning == "looks right"
+    assert annotation.source is LabelSource.GENERATED
+    # Confirmed fields are untouched by a suggestion-only call.
+    assert annotation.labels == []
+    assert annotation.value is None
+
+
+def test_set_annotation_suggested_value_for_numeric(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = store.create_label_set(
+        dataset.id,
+        name="score",
+        description="",
+        kind=ScoreKind.NUMERIC,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    annotation = store.set_annotation(label_set.id, rows[0].id, suggested_value=0.7)
+    assert annotation.suggested_value == 0.7
+    assert annotation.value is None
+
+
+def test_set_annotation_confirming_a_suggestion_is_a_separate_call(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = _categorical_label_set(store, dataset.id)
+
+    store.set_annotation(
+        label_set.id, rows[0].id, suggested_labels=["good"], source=LabelSource.GENERATED
+    )
+    confirmed = store.set_annotation(
+        label_set.id, rows[0].id, labels=["good"], source=LabelSource.ACCEPTED
+    )
+    assert confirmed.labels == ["good"]
+    assert confirmed.suggested_labels == ["good"]  # untouched by the confirming call
+    assert confirmed.source is LabelSource.ACCEPTED
+
+
+def test_list_annotations_for_rows_filters_by_row_ids(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    rows = store.add_rows(dataset.id, [{"q": "1"}, {"q": "2"}])
+    label_set = _categorical_label_set(store, dataset.id)
+    store.set_annotation(label_set.id, rows[0].id, labels=["good"])
+    store.set_annotation(label_set.id, rows[1].id, labels=["bad"])
+    only_first = store.list_annotations_for_rows(label_set.id, [rows[0].id])
+    assert [a.dataset_row_id for a in only_first] == [rows[0].id]
+
+
+def test_list_annotations_for_rows_empty_ids_returns_empty(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    label_set = _categorical_label_set(store, dataset.id)
+    assert store.list_annotations_for_rows(label_set.id, []) == []
+
+
+def test_accept_annotation_suggestion_categorical(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = _categorical_label_set(store, dataset.id)
+    store.set_annotation(
+        label_set.id, rows[0].id, suggested_labels=["good"], source=LabelSource.GENERATED
+    )
+
+    accepted = store.accept_annotation_suggestion(label_set.id, rows[0].id)
+    assert accepted.labels == ["good"]
+    assert accepted.source is LabelSource.ACCEPTED
+    assert accepted.suggested_labels == ["good"]  # the suggestion itself is preserved, not cleared
+
+
+def test_accept_annotation_suggestion_numeric(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = store.create_label_set(
+        dataset.id,
+        name="score",
+        description="",
+        kind=ScoreKind.NUMERIC,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    store.set_annotation(
+        label_set.id, rows[0].id, suggested_value=0.7, source=LabelSource.GENERATED
+    )
+
+    accepted = store.accept_annotation_suggestion(label_set.id, rows[0].id)
+    assert accepted.value == 0.7
+    assert accepted.source is LabelSource.ACCEPTED
+
+
+def test_accept_annotation_suggestion_raises_when_no_annotation(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = _categorical_label_set(store, dataset.id)
+    with pytest.raises(ContractError, match="no suggested"):
+        store.accept_annotation_suggestion(label_set.id, rows[0].id)
+
+
+def test_accept_annotation_suggestion_raises_when_annotation_has_no_suggestion(
+    store: Store,
+) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = _categorical_label_set(store, dataset.id)
+    store.set_annotation(label_set.id, rows[0].id, labels=["good"], source=LabelSource.MANUAL)
+    with pytest.raises(ContractError, match="no suggested"):
+        store.accept_annotation_suggestion(label_set.id, rows[0].id)
+
+
+def test_annotation_progress_counts_annotated_and_total(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    rows = store.add_rows(dataset.id, [{"q": "1"}, {"q": "2"}, {"q": "3"}])
+    label_set = _categorical_label_set(store, dataset.id)
+    store.set_annotation(label_set.id, rows[0].id, labels=["good"])
+    annotated, total = store.annotation_progress(label_set.id)
+    assert (annotated, total) == (1, 3)
+
+
+def test_delete_label_set_cascades_annotations(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    rows = store.add_rows(dataset.id, [{"q": "1"}])
+    label_set = _categorical_label_set(store, dataset.id)
+    store.set_annotation(label_set.id, rows[0].id, labels=["good"])
+    store.delete_label_set(label_set.id)
+    with pytest.raises(NotFoundError):
+        store.get_label_set(label_set.id)
+    assert store.get_annotation(label_set.id, rows[0].id) is None
 
 
 # -- Runs --------------------------------------------------------------------
@@ -287,7 +568,7 @@ def _make_run_prereqs(store: Store) -> tuple[str, str]:
     """Create an evaluator+version and a dataset, returning (version_id, dataset_id)."""
     evaluator = store.create_evaluator("e")
     version = store.create_version(evaluator.id, **version_fields())
-    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
+    ds = store.create_dataset("d", "", ["question"])
     return version.id, ds.id
 
 
@@ -400,7 +681,7 @@ def test_delete_evaluator_cascades_versions(store: Store) -> None:
 
 
 def test_delete_dataset_cascades_rows(store: Store) -> None:
-    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
+    ds = store.create_dataset("d", "", ["question"])
     store.add_rows(ds.id, [{"question": "a"}, {"question": "b"}])
 
     store.delete_dataset(ds.id)
@@ -410,6 +691,35 @@ def test_delete_dataset_cascades_rows(store: Store) -> None:
         from sqlmodel import select
 
         assert session.exec(select(DatasetRow)).all() == []
+
+
+def test_delete_row_cascades_annotations(store: Store) -> None:
+    dataset = store.create_dataset("ds", "", ["q"])
+    rows = store.add_rows(dataset.id, [{"q": "1"}, {"q": "2"}])
+    label_set = _categorical_label_set(store, dataset.id)
+    store.set_annotation(label_set.id, rows[0].id, labels=["good"])
+    store.set_annotation(label_set.id, rows[1].id, labels=["bad"])
+
+    store.delete_row(rows[0].id)
+
+    assert store.get_annotation(label_set.id, rows[0].id) is None
+    annotated, total = store.annotation_progress(label_set.id)
+    assert (annotated, total) == (1, 1)
+    # Verify the other row's annotation still exists
+    assert store.get_annotation(label_set.id, rows[1].id) is not None
+
+
+def test_delete_dataset_cascades_label_sets_and_annotations(store: Store) -> None:
+    ds = store.create_dataset("d", "", ["question"])
+    rows = store.add_rows(ds.id, [{"question": "a"}])
+    label_set = _categorical_label_set(store, ds.id)
+    store.set_annotation(label_set.id, rows[0].id, labels=["good"])
+
+    store.delete_dataset(ds.id)
+
+    with pytest.raises(NotFoundError):
+        store.get_label_set(label_set.id)
+    assert store.get_annotation(label_set.id, rows[0].id) is None
 
 
 # -- Cross-thread access (WAL / check_same_thread=False) ---------------------
@@ -507,7 +817,7 @@ def test_delete_version_missing_raises(store: Store) -> None:
 def test_delete_version_referenced_by_run_raises(store: Store) -> None:
     evaluator = store.create_evaluator("e")
     version = store.create_version(evaluator.id, **version_fields())
-    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
+    ds = store.create_dataset("d", "", ["question"])
     run = _run_referencing_version(store, version.id, ds.id)
 
     with pytest.raises(ReferencedError) as exc:
@@ -524,7 +834,7 @@ def test_delete_version_referenced_by_run_raises(store: Store) -> None:
 def test_delete_evaluator_referenced_by_run_raises(store: Store) -> None:
     evaluator = store.create_evaluator("e")
     version = store.create_version(evaluator.id, **version_fields())
-    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
+    ds = store.create_dataset("d", "", ["question"])
     run = _run_referencing_version(store, version.id, ds.id)
 
     with pytest.raises(ReferencedError) as exc:
@@ -539,7 +849,7 @@ def test_delete_evaluator_referenced_by_run_raises(store: Store) -> None:
 def test_delete_dataset_referenced_by_run_raises(store: Store) -> None:
     evaluator = store.create_evaluator("e")
     version = store.create_version(evaluator.id, **version_fields())
-    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
+    ds = store.create_dataset("d", "", ["question"])
     run = _run_referencing_version(store, version.id, ds.id)
 
     with pytest.raises(ReferencedError) as exc:
@@ -555,7 +865,7 @@ def test_delete_dataset_referenced_by_run_raises(store: Store) -> None:
 def test_runs_for_versions_returns_matching_runs(store: Store) -> None:
     evaluator = store.create_evaluator("e")
     version = store.create_version(evaluator.id, **version_fields())
-    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
+    ds = store.create_dataset("d", "", ["question"])
     run = _run_referencing_version(store, version.id, ds.id)
 
     assert [r.id for r in store.runs_for_versions([version.id])] == [run.id]
@@ -566,7 +876,7 @@ def test_runs_for_versions_returns_matching_runs(store: Store) -> None:
 def test_runs_for_dataset_returns_matching_runs(store: Store) -> None:
     evaluator = store.create_evaluator("e")
     version = store.create_version(evaluator.id, **version_fields())
-    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
+    ds = store.create_dataset("d", "", ["question"])
     run = _run_referencing_version(store, version.id, ds.id)
 
     assert [r.id for r in store.runs_for_dataset(ds.id)] == [run.id]
@@ -578,7 +888,7 @@ def test_runs_for_dataset_returns_matching_runs(store: Store) -> None:
 
 def _dataset_with_rows(store: Store) -> tuple[str, list[DatasetRow]]:
     """A two-column dataset with three rows carrying data for both columns."""
-    ds = store.create_dataset("d", "", ["question", "answer"], LABEL_SCHEMA)
+    ds = store.create_dataset("d", "", ["question", "answer"])
     rows = store.add_rows(
         ds.id,
         [
@@ -594,7 +904,6 @@ def test_update_dataset_all_none_is_noop(store: Store) -> None:
     ds_id, _ = _dataset_with_rows(store)
     result = store.update_dataset(ds_id)
     assert result.columns == ["question", "answer"]
-    assert result.label_schema == LABEL_SCHEMA
     rows = store.list_rows(ds_id)
     assert [set(r.data) for r in rows] == [{"question", "answer"}] * 3
 
@@ -644,76 +953,6 @@ def test_update_dataset_unknown_rename_key_raises(store: Store) -> None:
     assert store.get_dataset(ds_id).columns == ["question", "answer"]
 
 
-def test_update_dataset_rename_untouched_by_schema_keeps_labels(store: Store) -> None:
-    ds = store.create_dataset("d", "", ["question", "answer"], LABEL_SCHEMA)
-    rows = store.add_rows(ds.id, [{"question": "q1", "answer": "a1"}])
-    store.set_label(rows[0].id, {"value": "pass"}, LabelSource.MANUAL)
-
-    store.update_dataset(ds.id, column_renames={"question": "prompt"})
-
-    reloaded = store.list_rows(ds.id)[0]
-    assert reloaded.label == {"value": "pass"}
-    assert reloaded.label_source is LabelSource.MANUAL
-
-
-def test_update_dataset_zero_rows_shape_change_needs_no_force(store: Store) -> None:
-    schema = {"kind": "categorical", "labels": ["pass", "fail", "maybe"]}
-    ds = store.create_dataset("d", "", ["question"], schema)
-    narrowed = {"kind": "categorical", "labels": ["pass", "fail"]}
-    result = store.update_dataset(ds.id, columns=["question", "answer"], label_schema=narrowed)
-    assert result.columns == ["question", "answer"]
-    assert result.label_schema == narrowed
-
-
-def _narrowing_dataset(store: Store) -> tuple[str, list[DatasetRow]]:
-    """A categorical dataset whose third row holds a label about to become invalid."""
-    schema = {"kind": "categorical", "labels": ["pass", "fail", "maybe"]}
-    ds = store.create_dataset("d", "", ["question"], schema)
-    rows = store.add_rows(ds.id, [{"question": "q1"}, {"question": "q2"}, {"question": "q3"}])
-    store.set_label(rows[0].id, {"value": "pass"}, LabelSource.MANUAL)
-    store.set_label(rows[1].id, {"value": "fail"}, LabelSource.ACCEPTED)
-    store.set_label(rows[2].id, {"value": "maybe"}, LabelSource.MANUAL)
-    return ds.id, rows
-
-
-def test_update_dataset_narrowing_without_force_raises_and_rolls_back(store: Store) -> None:
-    ds_id, _rows = _narrowing_dataset(store)
-    narrowed = {"kind": "categorical", "labels": ["pass", "fail"]}
-
-    with pytest.raises(DestructiveChangeError) as exc:
-        store.update_dataset(ds_id, columns=["prompt"], label_schema=narrowed)
-    assert exc.value.detail["invalid_label_count"] == 1
-
-    # Full rollback: neither the schema/columns nor any label changed.
-    reloaded = store.get_dataset(ds_id)
-    assert reloaded.columns == ["question"]
-    assert reloaded.label_schema == {"kind": "categorical", "labels": ["pass", "fail", "maybe"]}
-    persisted = store.list_rows(ds_id)
-    assert [r.label for r in persisted] == [
-        {"value": "pass"},
-        {"value": "fail"},
-        {"value": "maybe"},
-    ]
-
-
-def test_update_dataset_narrowing_with_force_clears_only_invalid_labels(store: Store) -> None:
-    ds_id, rows = _narrowing_dataset(store)
-    narrowed = {"kind": "categorical", "labels": ["pass", "fail"]}
-
-    result = store.update_dataset(ds_id, label_schema=narrowed, force=True)
-    assert result.label_schema == narrowed
-
-    persisted = {r.id: r for r in store.list_rows(ds_id)}
-    # The valid labels are untouched, including their source.
-    assert persisted[rows[0].id].label == {"value": "pass"}
-    assert persisted[rows[0].id].label_source is LabelSource.MANUAL
-    assert persisted[rows[1].id].label == {"value": "fail"}
-    assert persisted[rows[1].id].label_source is LabelSource.ACCEPTED
-    # Exactly the invalid row is cleared.
-    assert persisted[rows[2].id].label is None
-    assert persisted[rows[2].id].label_source is None
-
-
 def test_update_dataset_missing_raises(store: Store) -> None:
     with pytest.raises(NotFoundError):
         store.update_dataset("nope", name="x")
@@ -757,45 +996,12 @@ def test_update_dataset_columns_and_renames_together(store: Store) -> None:
         assert "answer" not in row.data
 
 
-def test_update_dataset_force_clears_invalid_and_migrates_columns(store: Store) -> None:
-    """A single forced call may both migrate shape and clear the now-invalid labels."""
-    ds_id, rows = _narrowing_dataset(store)
-    narrowed = {"kind": "categorical", "labels": ["pass", "fail"]}
-
-    result = store.update_dataset(
-        ds_id,
-        column_renames={"question": "prompt"},
-        label_schema=narrowed,
-        force=True,
-    )
-    assert result.columns == ["prompt"]
-    assert result.label_schema == narrowed
-
-    persisted = {r.id: r for r in store.list_rows(ds_id)}
-    for row in persisted.values():
-        assert set(row.data) == {"prompt"}
-    assert persisted[rows[0].id].label == {"value": "pass"}
-    assert persisted[rows[1].id].label == {"value": "fail"}
-    assert persisted[rows[2].id].label is None
-    assert persisted[rows[2].id].label_source is None
-
-
-def test_update_dataset_name_only_leaves_shape_and_labels(store: Store) -> None:
-    """A metadata-only edit must not touch columns, rows, or labels."""
-    ds_id, rows = _narrowing_dataset(store)
-    result = store.update_dataset(ds_id, name="renamed")
-    assert result.name == "renamed"
-    assert result.columns == ["question"]
-    persisted = {r.id: r for r in store.list_rows(ds_id)}
-    assert persisted[rows[2].id].label == {"value": "maybe"}
-
-
 def test_delete_version_referenced_leaves_active_pointer(store: Store) -> None:
     """A blocked version delete must not disturb the active pointer."""
     evaluator = store.create_evaluator("e")
     v1 = store.create_version(evaluator.id, **version_fields(version_name="v1"))
     v2 = store.create_version(evaluator.id, **version_fields(version_name="v2"))
-    ds = store.create_dataset("d", "", ["question"], LABEL_SCHEMA)
+    ds = store.create_dataset("d", "", ["question"])
     _run_referencing_version(store, v2.id, ds.id)
 
     with pytest.raises(ReferencedError):
@@ -808,13 +1014,13 @@ def test_delete_version_referenced_leaves_active_pointer(store: Store) -> None:
 
 
 def test_generation_absent_for_a_dataset_that_was_never_generated(store: Store) -> None:
-    dataset = store.create_dataset(name="uploaded", description="", columns=["a"], label_schema={})
+    dataset = store.create_dataset(name="uploaded", description="", columns=["a"])
 
     assert store.get_generation(dataset.id) is None
 
 
 def test_set_generation_round_trips_every_field(store: Store) -> None:
-    dataset = store.create_dataset(name="gen", description="", columns=["a"], label_schema={})
+    dataset = store.create_dataset(name="gen", description="", columns=["a"])
 
     store.set_generation(
         dataset.id,
@@ -840,7 +1046,7 @@ def test_set_generation_round_trips_every_field(store: Store) -> None:
 
 def test_set_generation_replaces_rather_than_accumulates(store: Store) -> None:
     # The settings describe the most recent ask, which is what a form repopulates from.
-    dataset = store.create_dataset(name="gen", description="", columns=["a"], label_schema={})
+    dataset = store.create_dataset(name="gen", description="", columns=["a"])
 
     store.set_generation(dataset.id, count=5, instructions="first")
     store.set_generation(dataset.id, count=9, instructions="second")
@@ -857,7 +1063,7 @@ def test_get_generation_raises_for_a_missing_dataset(store: Store) -> None:
 
 
 def test_deleting_a_dataset_removes_its_generation_record(store: Store) -> None:
-    dataset = store.create_dataset(name="gen", description="", columns=["a"], label_schema={})
+    dataset = store.create_dataset(name="gen", description="", columns=["a"])
     store.set_generation(dataset.id, count=3)
 
     store.delete_dataset(dataset.id)
@@ -876,9 +1082,7 @@ def test_init_db_adds_the_generation_table_to_an_existing_database(tmp_path) -> 
     engine = create_engine(tmp_path / "existing.db")
     init_db(engine)
     store = Store(engine)
-    dataset = store.create_dataset(
-        name="from-before", description="d", columns=["a"], label_schema={}
-    )
+    dataset = store.create_dataset(name="from-before", description="d", columns=["a"])
     store.add_rows(dataset.id, [{"a": "1"}])
 
     # Simulate the older schema: the table simply is not there.
@@ -995,9 +1199,7 @@ def test_request_cancel_raises_for_an_experiment_run(store: Store) -> None:
 
 
 def test_logfire_pull_round_trips_and_is_removed_with_dataset(store: Store) -> None:
-    dataset = store.create_dataset(
-        name="pulled", description="", columns=["span_id"], label_schema={}
-    )
+    dataset = store.create_dataset(name="pulled", description="", columns=["span_id"])
     stored = store.set_logfire_pull(
         dataset.id,
         sql="SELECT span_id FROM records",
@@ -1019,9 +1221,7 @@ def test_init_db_adds_the_logfire_pull_table_to_an_existing_database(tmp_path) -
     engine = create_engine(tmp_path / "existing.db")
     init_db(engine)
     store = Store(engine)
-    dataset = store.create_dataset(
-        name="from-before", description="", columns=["a"], label_schema={}
-    )
+    dataset = store.create_dataset(name="from-before", description="", columns=["a"])
     DatasetLogfirePull.__table__.drop(engine)
     init_db(engine)
     store.set_logfire_pull(dataset.id, sql="SELECT 1", sample_n=1, seed=1)

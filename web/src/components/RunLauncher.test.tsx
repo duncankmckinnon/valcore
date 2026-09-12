@@ -1,9 +1,9 @@
 // Tests for RunLauncher: pick an evaluator, one of its versions, and a dataset, choose
 // the run kind and concurrency, then Start. RunLauncher owns its own API traffic (it is
 // stubbed in RunsPage.test.tsx), so this suite exercises that traffic directly — loading
-// the evaluator/dataset lists, resolving versions for the selected evaluator, falling
-// back off "validation" for an unlabeled dataset, submitting, and the shared gateway gate
-// that also covers generation and refinement.
+// the evaluator/dataset lists, resolving versions for the selected evaluator, the
+// coverage-based validation gate, submitting, and the shared gateway gate that also
+// covers generation and refinement.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
@@ -12,15 +12,15 @@ import RunLauncher from "./RunLauncher";
 import { ApiError, datasets, evaluators, runs } from "../api/client";
 import { GATEWAY_BLOCKER, useSetup } from "./useSetup";
 import type { UseSetupResult } from "./useSetup";
-import type { Dataset, DatasetStats, Evaluator, EvaluatorVersion, Run } from "../api/types";
+import type { DatasetSummary, Evaluator, EvaluatorVersion, Run, RunCoverage } from "../api/types";
 
 vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
   return {
     ...actual,
     evaluators: { ...actual.evaluators, list: vi.fn(), get: vi.fn() },
-    datasets: { ...actual.datasets, list: vi.fn(), stats: vi.fn() },
-    runs: { ...actual.runs, create: vi.fn() },
+    datasets: { ...actual.datasets, list: vi.fn() },
+    runs: { ...actual.runs, create: vi.fn(), coverage: vi.fn() },
   };
 });
 
@@ -35,8 +35,8 @@ vi.mock("./useSetup", async (importOriginal) => {
 const evaluatorsListMock = vi.mocked(evaluators.list);
 const evaluatorsGetMock = vi.mocked(evaluators.get);
 const datasetsListMock = vi.mocked(datasets.list);
-const datasetsStatsMock = vi.mocked(datasets.stats);
 const runsCreateMock = vi.mocked(runs.create);
+const runsCoverageMock = vi.mocked(runs.coverage);
 const useSetupMock = vi.mocked(useSetup);
 
 function makeSetupResult(overrides: Partial<UseSetupResult> = {}): UseSetupResult {
@@ -85,26 +85,24 @@ function makeVersion(overrides: Partial<EvaluatorVersion> = {}): EvaluatorVersio
   };
 }
 
-function makeDataset(overrides: Partial<Dataset> = {}): Dataset {
+function makeDataset(overrides: Partial<DatasetSummary> = {}): DatasetSummary {
   return {
     id: "ds-1",
     created_at: "2026-01-01T00:00:00Z",
     name: "My dataset",
     description: "",
     columns: ["answer"],
-    label_schema: {},
     row_count: 10,
     labeled_count: 10,
     ...overrides,
   };
 }
 
-function makeStats(overrides: Partial<DatasetStats> = {}): DatasetStats {
+function makeCoverage(overrides: Partial<RunCoverage> = {}): RunCoverage {
   return {
-    total: 10,
-    labeled: 10,
-    unlabeled: 0,
-    label_distribution: {},
+    label_set_id: "ls-1",
+    total_rows: 10,
+    labeled_rows: 10,
     ...overrides,
   };
 }
@@ -136,6 +134,7 @@ async function selectFullRun(user: ReturnType<typeof userEvent.setup>) {
   await user.selectOptions(await screen.findByLabelText("Evaluator"), "ev-1");
   await waitFor(() => expect(screen.getByLabelText("Version")).not.toBeDisabled());
   await user.selectOptions(screen.getByLabelText("Dataset"), "ds-1");
+  await waitFor(() => expect(runsCoverageMock).toHaveBeenCalledWith("ds-1", "ver-1"));
 }
 
 beforeEach(() => {
@@ -146,7 +145,7 @@ beforeEach(() => {
     ...makeEvaluator(),
     versions: [makeVersion()],
   } as unknown as Evaluator);
-  datasetsStatsMock.mockResolvedValue(makeStats());
+  runsCoverageMock.mockResolvedValue(makeCoverage());
 });
 
 afterEach(() => {
@@ -198,8 +197,8 @@ describe("RunLauncher", () => {
     expect((screen.getByLabelText("Version") as HTMLSelectElement).value).toBe("ver-1");
   });
 
-  it("falls back off validation to eval when the selected dataset has unlabeled rows", async () => {
-    datasetsStatsMock.mockResolvedValue(makeStats({ unlabeled: 3, labeled: 7 }));
+  it("falls back off validation to eval when no label set matches this version", async () => {
+    runsCoverageMock.mockResolvedValue(makeCoverage({ label_set_id: null, labeled_rows: 0 }));
     const user = userEvent.setup();
     renderLauncher();
 
@@ -209,7 +208,31 @@ describe("RunLauncher", () => {
     await waitFor(() =>
       expect((screen.getByLabelText("Run kind") as HTMLSelectElement).value).toBe("eval"),
     );
-    expect(screen.getByText(/unlabeled/i)).toBeInTheDocument();
+    expect(screen.getByText(/no label set on this dataset matches/i)).toBeInTheDocument();
+  });
+
+  it("keeps validation selectable and warns on partial coverage", async () => {
+    runsCoverageMock.mockResolvedValue(makeCoverage({ total_rows: 10, labeled_rows: 6 }));
+    const user = userEvent.setup();
+    renderLauncher();
+
+    await selectFullRun(user);
+    await user.selectOptions(screen.getByLabelText("Run kind"), "validation");
+
+    expect((screen.getByLabelText("Run kind") as HTMLSelectElement).value).toBe("validation");
+    expect(await screen.findByText(/6 of 10 rows/i)).toBeInTheDocument();
+  });
+
+  it("shows no coverage warning when every row is labeled", async () => {
+    runsCoverageMock.mockResolvedValue(makeCoverage({ total_rows: 10, labeled_rows: 10 }));
+    const user = userEvent.setup();
+    renderLauncher();
+
+    await selectFullRun(user);
+    await user.selectOptions(screen.getByLabelText("Run kind"), "validation");
+
+    expect(screen.queryByText(/rows have a label/i)).toBeNull();
+    expect(screen.queryByText(/no label set on this dataset matches/i)).toBeNull();
   });
 
   it("creates the run with the selected fields and hands it to onStarted", async () => {

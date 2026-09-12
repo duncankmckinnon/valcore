@@ -15,13 +15,11 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from valcore import tracing
 from valcore.errors import ContractError
 from valcore.factory import build_output_model
-from valcore.models import LabelSource, RunKind, RunStatus, ScoreKind
+from valcore.models import RunKind, RunStatus, ScoreKind
 from valcore.runner import RunEvent, execute_run
 from valcore.store import Store, create_engine, init_db
 
 _LOGFIRE_PRESENT = importlib.util.find_spec("logfire") is not None
-
-CATEGORICAL_SCHEMA = {"kind": "categorical", "labels": ["pass", "fail"]}
 
 VERSION_FIELDS = {
     "version_name": "v1",
@@ -63,21 +61,31 @@ def make_dataset(
     labels: list[str | None],
     *,
     columns: list[str] | None = None,
-    schema: dict | None = None,
+    with_label_set: bool = True,
 ):
-    """Create a dataset with one row per entry in ``labels`` (None = unlabeled)."""
+    """Create a dataset with one row per entry in ``labels`` (None = unannotated).
+
+    When ``with_label_set`` is True (the default), also creates a categorical LabelSet
+    matching ``VERSION_FIELDS``'s score contract (labels ``["pass", "fail"]``) and records
+    each non-None entry as that row's confirmed ground-truth annotation.
+    """
     dataset = store.create_dataset(
-        "ds",
-        "",
-        columns if columns is not None else ["input", "output"],
-        schema if schema is not None else CATEGORICAL_SCHEMA,
+        "ds", "", columns if columns is not None else ["input", "output"]
     )
     rows = store.add_rows(
         dataset.id, [{"input": f"in{i}", "output": f"out{i}"} for i in range(len(labels))]
     )
-    for row, label in zip(rows, labels, strict=True):
-        if label is not None:
-            store.set_label(row.id, {"value": label}, LabelSource.MANUAL)
+    if with_label_set:
+        label_set = store.create_label_set(
+            dataset.id,
+            "quality",
+            "",
+            ScoreKind.CATEGORICAL,
+            labels=[{"name": "pass", "description": ""}, {"name": "fail", "description": ""}],
+        )
+        for row, label in zip(rows, labels, strict=True):
+            if label is not None:
+                store.set_annotation(label_set.id, row.id, labels=[label])
     return dataset
 
 
@@ -180,16 +188,61 @@ async def test_eval_run_unlabeled_no_metrics(store: Store) -> None:
 
 
 @pytest.mark.anyio
-async def test_validation_partial_labels_raises(store: Store) -> None:
+async def test_validation_partial_labels_scores_subset(store: Store) -> None:
+    """Partial labeling is allowed: a VALIDATION run scores exactly the annotated rows."""
     version = make_version(store)
     dataset = make_dataset(store, ["pass", None, "fail", None])
     run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=2)
 
-    with pytest.raises(ContractError) as exc_info:
+    result = await execute_run(store, run.id, agent=constant_agent(version))
+
+    assert result.status is RunStatus.COMPLETED
+    results = store.list_results(run.id)
+    assert len(results) == 2
+    assert result.metrics is not None
+    assert result.metrics["n"] == 2
+
+
+@pytest.mark.anyio
+async def test_validation_zero_labeled_rows_raises(store: Store) -> None:
+    """With no row carrying a valid annotation, there is nothing to validate."""
+    version = make_version(store)
+    dataset = make_dataset(store, [None, None, None])
+    run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=2)
+
+    with pytest.raises(ContractError):
         await execute_run(store, run.id, agent=constant_agent(version))
 
-    assert "2" in str(exc_info.value)
     assert store.list_results(run.id) == []
+
+
+@pytest.mark.anyio
+async def test_validation_zero_label_sets_raises(store: Store) -> None:
+    """A dataset with no label sets at all is legal for check_dataset_compatibility (nothing
+    to reconcile), but a VALIDATION run still has nothing to validate against, so it raises
+    -- one level down from where a mismatched-but-present label set would."""
+    version = make_version(store)
+    dataset = make_dataset(store, [None, None, None], with_label_set=False)
+    assert store.list_label_sets(dataset.id) == []
+    run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=2)
+
+    with pytest.raises(ContractError):
+        await execute_run(store, run.id, agent=constant_agent(version))
+
+    assert store.list_results(run.id) == []
+
+
+@pytest.mark.anyio
+async def test_eval_run_needs_no_label_set(store: Store) -> None:
+    """An EVAL run needs no label set at all -- the dataset here has zero."""
+    version = make_version(store)
+    dataset = make_dataset(store, [None, None, None], with_label_set=False)
+    assert store.list_label_sets(dataset.id) == []
+    run = store.create_run(RunKind.EVAL, version.id, dataset.id, concurrency=2)
+
+    result = await execute_run(store, run.id, agent=constant_agent(version))
+
+    assert result.status is RunStatus.COMPLETED
 
 
 # -- Incompatible dataset -----------------------------------------------------
@@ -245,18 +298,23 @@ async def test_concurrency_is_bounded(store: Store) -> None:
     run = store.create_run(RunKind.VALIDATION, version.id, dataset.id, concurrency=2)
 
     state = {"inflight": 0, "peak": 0}
+    both_requests_started = asyncio.Event()
 
     async def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         state["inflight"] += 1
         state["peak"] = max(state["peak"], state["inflight"])
-        await asyncio.sleep(0.02)
+        if state["inflight"] == 2:
+            both_requests_started.set()
+        await both_requests_started.wait()
         state["inflight"] -= 1
         name = info.output_tools[0].name
         return ModelResponse(parts=[ToolCallPart(tool_name=name, args={"verdict": "pass"})])
 
     agent = Agent(FunctionModel(respond), output_type=build_output_model(version))
 
-    result = await execute_run(store, run.id, agent=agent)
+    # If the runner stops launching a second request, the barrier must turn that
+    # regression into a test failure rather than stalling the whole suite.
+    result = await asyncio.wait_for(execute_run(store, run.id, agent=agent), timeout=1)
 
     assert result.status is RunStatus.COMPLETED
     assert len(store.list_results(run.id)) == 6

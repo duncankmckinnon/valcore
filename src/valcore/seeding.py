@@ -9,7 +9,13 @@ generated *content*; the shape derived here is fixed before any generation call.
 """
 
 from valcore.errors import ContractError
-from valcore.models import Dataset, EvaluatorVersion, LabelSchema
+from valcore.models import (
+    Dataset,
+    EvaluatorVersion,
+    LabelSchema,
+    LabelSet,
+    label_schema_from_label_set,
+)
 
 
 def dataset_shape_from_version(
@@ -49,14 +55,15 @@ def dataset_shape_from_version(
 
 
 def evaluator_seed_from_dataset(
-    dataset: Dataset,
+    dataset: Dataset, label_set: LabelSet | None
 ) -> tuple[list[str], LabelSchema | None]:
     """Columns and optional score space for generating an evaluator.
 
-    An empty ``label_schema`` is a legal "no ground truth" state, so it yields ``None``
-    rather than raising; a non-empty schema is parsed and validated by ``LabelSchema``.
+    ``label_set`` is None for a dataset with no label sets (or when the caller
+    deliberately supplies no seed), which yields a None score space -- the legal "no
+    ground truth" state that leaves generation free to pick any score space.
     """
     columns = list(dataset.columns)
-    if dataset.label_schema:
-        return columns, LabelSchema.model_validate(dataset.label_schema)
-    return columns, None
+    if label_set is None:
+        return columns, None
+    return columns, label_schema_from_label_set(label_set)

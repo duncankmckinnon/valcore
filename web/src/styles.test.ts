@@ -25,6 +25,7 @@ const cssPath = join(srcDir, "styles.css");
 //   - btn-{variant}   → Button renders `btn btn-${variant}`   (primary/secondary/danger)
 //   - badge-{tone}    → Badge renders `badge badge-${tone}`   (neutral/success/warning/danger)
 //   - modal-{size}    → Modal renders `modal modal-${size}`   (sm/md/lg)
+//   - chip-selected    → LabelingRow renders `chip ${selected ? "chip-selected" : ""}`
 const INTERPOLATED_CLASSES = [
   "btn-primary",
   "btn-secondary",
@@ -36,6 +37,7 @@ const INTERPOLATED_CLASSES = [
   "modal-sm",
   "modal-md",
   "modal-lg",
+  "chip-selected",
 ];
 
 // Every class the stylesheet class contract promises to the other tasks. These are

@@ -22,13 +22,16 @@ from valcore.errors import ContractError
 from valcore.factory import build_agent, extract_score, render_prompt
 from valcore.metrics import compute_metrics
 from valcore.models import (
+    Annotation,
     DatasetRow,
     EvaluatorVersion,
+    LabelSet,
     Run,
     RunKind,
     RunResult,
     RunStatus,
     ScoreKind,
+    annotation_ground_truth,
     check_dataset_compatibility,
 )
 from valcore.store import Store, session_scope
@@ -50,13 +53,6 @@ class _Outcome:
     row_id: str
     success: bool
     predicted: str | float | None
-
-
-def _label_value(row: DatasetRow) -> str | float | None:
-    """Return the scalar ground-truth score from a row's ``{"value": ...}`` label."""
-    if row.label is None:
-        return None
-    return row.label.get("value")
 
 
 def _usage_dict(usage: RunUsage) -> dict:
@@ -111,9 +107,12 @@ async def execute_run(
     try:
         version = await asyncio.to_thread(store.get_version, run.version_id)
         dataset = await asyncio.to_thread(store.get_dataset, run.dataset_id)
+        label_sets = await asyncio.to_thread(store.list_label_sets, dataset.id)
         # kind matters: an EVAL run never compares predictions to ground truth, so its label
-        # space is free to differ from the dataset's. Only VALIDATION requires them to agree.
-        check_dataset_compatibility(version, dataset, kind=run.kind)
+        # space is free to differ from every label set's. Only VALIDATION requires a match.
+        matched_label_set: LabelSet | None = check_dataset_compatibility(
+            version, dataset, label_sets, kind=run.kind
+        )
 
         all_rows = await asyncio.to_thread(store.list_rows, dataset.id)
         if only_row_ids is not None:
@@ -134,14 +133,33 @@ async def execute_run(
         await emit("error", {"error": str(exc)})
         return failed
 
-    # The missing-label contract is a caller error, not a FAILED run: it must
-    # propagate rather than be recorded on the run.
+    # A VALIDATION run scores only rows with valid ground truth from the matched label
+    # set; this is a caller error (not a FAILED run) only when NONE qualify, since there
+    # would be nothing to validate. Rows lacking a label are silently excluded, not an
+    # error -- unlike the old all-or-nothing contract.
+    ground_truth_by_row: dict[str, str | float | None] = {}
+    if run.kind is RunKind.VALIDATION and matched_label_set is not None:
+        # Ground truth is looked up over ``all_rows``, not just this call's (possibly
+        # ``only_row_ids``-narrowed) ``rows``: a retry must summarize the whole run, so the
+        # metrics block below needs every row's ground truth, not only the retried subset's.
+        annotations: list[Annotation] = await asyncio.to_thread(
+            store.list_annotations_for_rows, matched_label_set.id, [row.id for row in all_rows]
+        )
+        annotations_by_row = {a.dataset_row_id: a for a in annotations}
+        ground_truth_by_row = {
+            row.id: annotation_ground_truth(matched_label_set, annotations_by_row.get(row.id))
+            for row in all_rows
+        }
     if run.kind is RunKind.VALIDATION:
-        unlabeled = sum(1 for row in rows if row.label is None)
-        if unlabeled:
+        rows = [row for row in rows if ground_truth_by_row.get(row.id) is not None]
+        if not rows:
+            detail = (
+                f" for the matched label set {matched_label_set.name!r}"
+                if matched_label_set
+                else ""
+            )
             raise ContractError(
-                f"Validation run requires every row to carry a label; "
-                f"{unlabeled} row(s) are unlabeled."
+                f"Validation run requires at least one row with a valid label{detail}; none found."
             )
 
     with tracing.run_span(run, version, dataset, row_count=len(rows)) as span:
@@ -158,7 +176,9 @@ async def execute_run(
 
         async def process(row: DatasetRow) -> _Outcome:
             try:
-                outcome = await _score_row(store, run_id, version, built_agent, row, want_agreement)
+                outcome = await _score_row(
+                    store, run_id, version, built_agent, row, ground_truth_by_row.get(row.id)
+                )
                 await emit(
                     "row",
                     {
@@ -209,11 +229,10 @@ async def execute_run(
         # metrics are computed only for terminal states that ran to completion.
         metrics: dict | None = None
         if want_agreement and not cancelled:
-            label_by_row = {row.id: _label_value(row) for row in all_rows}
             pairs = [
-                (result.score_value, label_by_row.get(result.row_id))
+                (result.score_value, ground_truth_by_row.get(result.row_id))
                 for result in persisted
-                if result.error is None and label_by_row.get(result.row_id) is not None
+                if result.error is None and ground_truth_by_row.get(result.row_id) is not None
             ]
             if pairs:
                 labels = (
@@ -241,11 +260,10 @@ async def _score_row(
     version: EvaluatorVersion,
     agent: Agent,
     row: DatasetRow,
-    want_agreement: bool,
+    label_value: str | float | None,
 ) -> _Outcome:
     """Score one row and persist its result; row failures are recorded, not raised."""
     with tracing.row_span(row):
-        label_value = _label_value(row) if want_agreement else None
         start = time.perf_counter()
         try:
             prompt = render_prompt(version, row.data)
@@ -255,7 +273,7 @@ async def _score_row(
             score = extract_score(version, output)
             agreement = (
                 _agreement(version.score_kind, score, label_value)
-                if want_agreement and label_value is not None
+                if label_value is not None
                 else None
             )
             await asyncio.to_thread(

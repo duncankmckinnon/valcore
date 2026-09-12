@@ -35,15 +35,17 @@ from valcore.errors import ContractError
 from valcore.factory import build_agent, extract_score, render_prompt
 from valcore.metrics import compute_metrics
 from valcore.models import (
+    Annotation,
     DatasetRow,
     EvaluatorVersion,
     Run,
     RunKind,
     RunStatus,
     ScoreKind,
+    annotation_ground_truth,
     check_dataset_compatibility,
 )
-from valcore.runner import RunEvent, _agreement, _label_value
+from valcore.runner import RunEvent, _agreement
 from valcore.spec import dataset_to_evals
 from valcore.store import Store
 
@@ -193,9 +195,10 @@ async def execute_experiment(
     try:
         version = await asyncio.to_thread(store.get_version, run.version_id)
         dataset = await asyncio.to_thread(store.get_dataset, run.dataset_id)
+        label_sets = await asyncio.to_thread(store.list_label_sets, dataset.id)
         # Mirrors the runner: only a VALIDATION experiment compares against ground truth, so
-        # only it requires the evaluator's label space to match the dataset's.
-        check_dataset_compatibility(version, dataset, kind=run.kind)
+        # only it requires a label set matching the evaluator's score contract.
+        matched_label_set = check_dataset_compatibility(version, dataset, label_sets, kind=run.kind)
         rows = await asyncio.to_thread(store.list_rows, dataset.id)
         agent = build_agent(version)
     except Exception as exc:  # noqa: BLE001 — any setup failure becomes a FAILED run
@@ -209,14 +212,32 @@ async def execute_experiment(
         await emit("error", {"error": str(exc)})
         return failed
 
-    # The missing-label contract is a caller error, not a FAILED run: it must
-    # propagate rather than be recorded on the run, matching ``runner.execute_run``.
+    # A VALIDATION experiment scores only rows with valid ground truth, matching
+    # ``runner.execute_run``'s partial-labeling behavior; this is a caller error only
+    # when NONE qualify. ``annotations`` stays an empty list for an EVAL run (there is no
+    # matched label set to read from), so Task 3's ``dataset_to_evals(..., annotations=annotations)``
+    # call later in this function always has a defined value to pass, regardless of kind.
+    ground_truth_by_row: dict[str, str | float | None] = {}
+    annotations: list[Annotation] = []
+    if run.kind is RunKind.VALIDATION and matched_label_set is not None:
+        annotations = await asyncio.to_thread(
+            store.list_annotations_for_rows, matched_label_set.id, [row.id for row in rows]
+        )
+        annotations_by_row = {a.dataset_row_id: a for a in annotations}
+        ground_truth_by_row = {
+            row.id: annotation_ground_truth(matched_label_set, annotations_by_row.get(row.id))
+            for row in rows
+        }
     if run.kind is RunKind.VALIDATION:
-        unlabeled = sum(1 for row in rows if row.label is None)
-        if unlabeled:
+        rows = [row for row in rows if ground_truth_by_row.get(row.id) is not None]
+        if not rows:
+            detail = (
+                f" for the matched label set {matched_label_set.name!r}"
+                if matched_label_set
+                else ""
+            )
             raise ContractError(
-                f"Validation run requires every row to carry a label; "
-                f"{unlabeled} row(s) are unlabeled."
+                f"Validation run requires at least one row with a valid label{detail}; none found."
             )
 
     # Marks this run as experiment-produced before ``RUNNING``/``evaluate()`` even start,
@@ -245,7 +266,9 @@ async def execute_experiment(
                 EqualsExpected() if version.score_kind is ScoreKind.CATEGORICAL else NumericDelta()
             )
 
-        evals_dataset = dataset_to_evals(dataset, rows, evaluators)
+        evals_dataset = dataset_to_evals(
+            dataset, rows, evaluators, label_set=matched_label_set, annotations=annotations
+        )
         task = _make_task(version, agent)
         rows_by_id = {row.id: row for row in rows}
 
@@ -277,11 +300,10 @@ async def execute_experiment(
 
         metrics: dict | None = None
         if want_agreement:
-            label_by_row = {row.id: _label_value(row) for row in rows}
             pairs = [
-                (result.score_value, label_by_row.get(result.row_id))
+                (result.score_value, ground_truth_by_row.get(result.row_id))
                 for result in persisted
-                if result.error is None and label_by_row.get(result.row_id) is not None
+                if result.error is None and ground_truth_by_row.get(result.row_id) is not None
             ]
             if pairs:
                 labels = (

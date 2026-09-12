@@ -4,8 +4,8 @@
 // stored generation settings so repeating a previous ask needs only a count.
 
 import { useEffect, useState } from "react";
-import { datasets } from "../api/client";
-import type { Dataset, DatasetGeneration, LabelSchema, RowsGenerate } from "../api/types";
+import { datasets, labelSets } from "../api/client";
+import type { Dataset, DatasetGeneration, LabelSetProgress, RowsGenerate } from "../api/types";
 import ColumnNotesEditor from "./ColumnNotesEditor";
 import LabelMixEditor from "./LabelMixEditor";
 import { TOTAL_PERCENT, fromProportions, toProportions, totalPercent } from "./labelMix";
@@ -41,6 +41,7 @@ export default function GenerateMoreRows({
   const [mixPercents, setMixPercents] = useState<LabelMixPercents>({});
   const [error, setError] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [primaryLabelSet, setPrimaryLabelSet] = useState<LabelSetProgress | null>(null);
 
   // Prefill when the modal opens rather than on mount: the settings are fetched by the
   // parent and may arrive after this component first renders.
@@ -55,11 +56,16 @@ export default function GenerateMoreRows({
     setError(null);
   }, [open, generation]);
 
-  // The label space is the dataset's own. An empty schema is the legal "no ground truth"
-  // state, which has no labels to distribute over and no guidance to give.
-  const schema = dataset.label_schema as LabelSchema;
-  const hasLabelSpace = Object.keys(dataset.label_schema).length > 0;
-  const mixLabels = hasLabelSpace && schema.kind === "categorical" ? (schema.labels ?? []) : [];
+  useEffect(() => {
+    if (!open) return;
+    labelSets
+      .list(dataset.id)
+      .then((sets) => setPrimaryLabelSet(sets[0] ?? null))
+      .catch(() => setPrimaryLabelSet(null));
+  }, [open, dataset.id]);
+
+  const mixLabels =
+    primaryLabelSet?.kind === "categorical" ? (primaryLabelSet.labels ?? []).map((l) => l.name) : [];
   const mixActive = mixEnabled && mixLabels.length > 0;
   const mixIncomplete = mixActive && totalPercent(mixPercents) !== TOTAL_PERCENT;
 

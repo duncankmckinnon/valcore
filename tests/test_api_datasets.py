@@ -66,8 +66,9 @@ async def test_csv_upload_without_label_column(client: httpx.AsyncClient) -> Non
     ds_id = body["dataset"]["id"]
     rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
     assert rows[0]["data"] == {"question": "What is 2+2?", "answer": "4"}
-    assert rows[0]["label"] is None
-    assert rows[0]["label_source"] is None
+    # RowOut carries no label fields at all -- ground truth lives on LabelSet/Annotation.
+    assert "label" not in rows[0]
+    assert "label_source" not in rows[0]
 
 
 @pytest.mark.anyio
@@ -76,7 +77,11 @@ async def test_csv_upload_with_label_column(client: httpx.AsyncClient) -> None:
     resp = await client.post(
         "/api/datasets/upload",
         files={"file": ("data.csv", csv, "text/csv")},
-        data={"name": "arith", "label_column": "verdict"},
+        data={
+            "name": "arith",
+            "label_column": "verdict",
+            "label_schema": json.dumps(CATEGORICAL_SCHEMA),
+        },
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -87,8 +92,76 @@ async def test_csv_upload_with_label_column(client: httpx.AsyncClient) -> None:
     ds_id = body["dataset"]["id"]
     rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
     assert rows[0]["data"] == {"question": "What is 2+2?"}
-    assert rows[0]["label"] == {"value": "good"}
-    assert rows[0]["label_source"] == LabelSource.MANUAL.value
+
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert len(label_sets) == 1
+    assert label_sets[0]["kind"] == "categorical"
+    assert {item["name"] for item in label_sets[0]["labels"]} == {"good", "bad"}
+
+    rows_page = (await client.get(f"/api/label-sets/{label_sets[0]['id']}/rows")).json()
+    annotation = rows_page["rows"][0]["annotation"]
+    assert annotation["labels"] == ["good"]
+    assert annotation["source"] == LabelSource.MANUAL.value
+
+
+@pytest.mark.anyio
+async def test_csv_upload_with_numeric_label_column_coerces_string_to_float(
+    client: httpx.AsyncClient,
+) -> None:
+    # csv.DictReader always yields plain strings, regardless of the schema's kind -- a
+    # numeric label_schema must coerce "3.5" to 3.5 rather than routing it into `labels`.
+    csv = b"question,score\nWhat is 2+2?,3.5\nWhat is 3+3?,4\n"
+    resp = await client.post(
+        "/api/datasets/upload",
+        files={"file": ("data.csv", csv, "text/csv")},
+        data={
+            "name": "scored",
+            "label_column": "score",
+            "label_schema": json.dumps(NUMERIC_SCHEMA),
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["row_count"] == 2
+
+    ds_id = body["dataset"]["id"]
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert len(label_sets) == 1
+    assert label_sets[0]["kind"] == "numeric"
+
+    rows_page = (await client.get(f"/api/label-sets/{label_sets[0]['id']}/rows")).json()
+    annotation = rows_page["rows"][0]["annotation"]
+    assert annotation["value"] == 3.5
+    assert isinstance(annotation["value"], float)
+    assert annotation["labels"] == []
+    assert annotation["source"] == LabelSource.MANUAL.value
+
+
+@pytest.mark.anyio
+async def test_csv_upload_non_numeric_value_for_numeric_label_column_is_422_not_500(
+    client: httpx.AsyncClient,
+) -> None:
+    """Finding 5 regression: a malformed numeric label value must be a client error.
+
+    Previously ``_prepare_row`` called ``float(value)`` unguarded, so a non-numeric CSV
+    value under a numeric ``label_schema`` crashed with an unhandled ``ValueError`` (a 500)
+    instead of surfacing as a ``ContractError`` (422).
+    """
+    csv = b"question,score\nWhat is 2+2?,not-a-number\n"
+    resp = await client.post(
+        "/api/datasets/upload",
+        files={"file": ("data.csv", csv, "text/csv")},
+        data={
+            "name": "scored",
+            "label_column": "score",
+            "label_schema": json.dumps(NUMERIC_SCHEMA),
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    error = resp.json()["error"]
+    assert error["type"] == "ContractError"
+    assert "score" in error["message"]
+    assert "not-a-number" in error["message"]
 
 
 @pytest.mark.anyio
@@ -100,6 +173,43 @@ async def test_csv_upload_unknown_label_column_is_422(client: httpx.AsyncClient)
         data={"name": "arith", "label_column": "missing"},
     )
     assert resp.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_csv_upload_label_column_without_label_schema_is_422(
+    client: httpx.AsyncClient,
+) -> None:
+    """Finding 2 regression: a valid ``label_column`` with no ``label_schema`` must not
+    silently drop the parsed labels -- it must be rejected the same way
+    ``create_dataset_from_logfire`` and the CLI's ``logfire pull`` already reject it.
+    """
+    csv = b"question,verdict\nWhat is 2+2?,good\nWhat is 3+3?,bad\n"
+    resp = await client.post(
+        "/api/datasets/upload",
+        files={"file": ("data.csv", csv, "text/csv")},
+        data={"name": "arith", "label_column": "verdict"},
+    )
+    assert resp.status_code == 422, resp.text
+    error = resp.json()["error"]
+    assert error["type"] == "ContractError"
+    assert "label_column requires a label_schema" in error["message"]
+
+
+@pytest.mark.anyio
+async def test_jsonl_upload_label_column_without_label_schema_is_422(
+    client: httpx.AsyncClient,
+) -> None:
+    """Same guard as the CSV case above, for the JSONL upload branch."""
+    jsonl = b'{"question": "q1", "verdict": "good"}\n{"question": "q2", "verdict": "bad"}\n'
+    resp = await client.post(
+        "/api/datasets/upload",
+        files={"file": ("data.jsonl", jsonl, "application/jsonl")},
+        data={"name": "arith", "label_column": "verdict"},
+    )
+    assert resp.status_code == 422, resp.text
+    error = resp.json()["error"]
+    assert error["type"] == "ContractError"
+    assert "label_column requires a label_schema" in error["message"]
 
 
 @pytest.mark.anyio
@@ -194,12 +304,20 @@ async def test_generate_persists_rows_with_generated_source(
     ds_id = body["dataset"]["id"]
     rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
     assert len(rows) == 3
-    for row in rows:
-        assert row["label_source"] == LabelSource.GENERATED.value
-        assert row["suggested_label"] is not None
-        assert row["label_reasoning"].startswith("reason")
-        assert row["label"] is None  # suggested, not yet applied
-    assert rows[0]["suggested_label"] == {"value": "good"}
+
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert len(label_sets) == 1
+    assert label_sets[0]["kind"] == "categorical"
+
+    rows_page = (await client.get(f"/api/label-sets/{label_sets[0]['id']}/rows")).json()
+    for annotated_row in rows_page["rows"]:
+        annotation = annotated_row["annotation"]
+        assert annotation["source"] == LabelSource.GENERATED.value
+        assert annotation["suggested_labels"] is not None
+        assert annotation["reasoning"].startswith("reason")
+        assert annotation["labels"] == []  # suggested, not yet applied
+        assert annotation["value"] is None
+    assert rows_page["rows"][0]["annotation"]["suggested_labels"] == ["good"]
 
 
 @pytest.mark.anyio
@@ -394,12 +512,18 @@ async def test_generate_from_version_produces_a_compatible_dataset(
     # The derived shape must satisfy the compatibility check by construction, so a run
     # against the source version would start.
     dataset = store.get_dataset(ds_id)
-    check_dataset_compatibility(store.get_version(version.id), dataset)
+    check_dataset_compatibility(
+        store.get_version(version.id), dataset, store.list_label_sets(dataset.id)
+    )
 
-    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
-    for row in rows:
-        assert row["label_source"] == LabelSource.GENERATED.value
-        assert row["suggested_label"] is not None
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert len(label_sets) == 1
+    rows_page = (await client.get(f"/api/label-sets/{label_sets[0]['id']}/rows")).json()
+    for annotated_row in rows_page["rows"]:
+        annotation = annotated_row["annotation"]
+        assert annotation["source"] == LabelSource.GENERATED.value
+        assert annotation["suggested_labels"] is not None
+        assert annotation["labels"] == []
 
 
 @pytest.mark.anyio
@@ -423,17 +547,18 @@ async def test_generate_from_version_without_labels_leaves_no_ground_truth(
     body = resp.json()
     ds_id = body["dataset"]["id"]
 
-    # An empty label schema is the legal "no ground truth" state.
-    assert body["dataset"]["label_schema"] == {}
     # The generator is told there is no label space to fill.
     assert calls[0]["label_schema"] is None
 
-    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
-    for row in rows:
-        assert row["suggested_label"] is None
+    # No label set is created at all when labels are excluded.
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert label_sets == []
 
     # Without labels it is still immediately runnable against the source version.
-    check_dataset_compatibility(store.get_version(version.id), store.get_dataset(ds_id))
+    dataset = store.get_dataset(ds_id)
+    check_dataset_compatibility(
+        store.get_version(version.id), dataset, store.list_label_sets(dataset.id)
+    )
 
 
 @pytest.mark.anyio
@@ -567,106 +692,99 @@ async def test_generate_from_version_unknown_version_is_404(
 
 def _seed_rows(store: Store, label_schema: dict, prepared: list[dict]) -> tuple[str, list[str]]:
     """Create a dataset with prepared rows, returning its id and row ids."""
-    ds = store.create_dataset(
-        name="seed", description="", columns=["prompt"], label_schema=label_schema
-    )
+    ds = store.create_dataset(name="seed", description="", columns=["prompt"])
     rows = store.add_prepared_rows(ds.id, prepared)
     return ds.id, [r.id for r in rows]
 
 
-@pytest.mark.anyio
-async def test_accept_suggestion_sets_accepted_and_copies_value(
-    client: httpx.AsyncClient, store: Store
-) -> None:
-    _, row_ids = _seed_rows(
-        store,
-        CATEGORICAL_SCHEMA,
-        [
-            {
-                "data": {"prompt": "p"},
-                "suggested_label": {"value": "good"},
-                "label_reasoning": "r",
-                "label_source": LabelSource.GENERATED,
-            }
-        ],
+def _seed_rows_with_label_set(
+    store: Store, prepared: list[dict], *, numeric: bool = False
+) -> tuple[str, str, list[str]]:
+    """Create a dataset with a matching label set and prepared rows.
+
+    Ground truth now lives on a ``LabelSet``/``Annotation`` pair, not on ``DatasetRow``, so
+    labeling tests need a real label set to annotate against. Returns
+    ``(dataset_id, label_set_id, row_ids)``.
+    """
+    ds = store.create_dataset(name="seed", description="", columns=["prompt"])
+    rows = store.add_prepared_rows(ds.id, prepared)
+    label_set = (
+        store.create_label_set(
+            ds.id, name="Labels", description="", kind=ScoreKind.NUMERIC, minimum=0, maximum=5
+        )
+        if numeric
+        else store.create_label_set(
+            ds.id,
+            name="Labels",
+            description="",
+            kind=ScoreKind.CATEGORICAL,
+            labels=[{"name": "good", "description": ""}, {"name": "bad", "description": ""}],
+        )
     )
-    resp = await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"accept_suggestion": True})
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["label"] == {"value": "good"}
-    assert body["label_source"] == LabelSource.ACCEPTED.value
+    return ds.id, label_set.id, [r.id for r in rows]
 
 
 @pytest.mark.anyio
-async def test_accept_suggestion_without_suggestion_is_422(
+async def test_put_annotation_manual_label_sets_source_manual(
     client: httpx.AsyncClient, store: Store
 ) -> None:
-    _, row_ids = _seed_rows(store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p"}}])
-    resp = await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"accept_suggestion": True})
-    assert resp.status_code == 422
-
-
-@pytest.mark.anyio
-async def test_explicit_label_sets_manual(client: httpx.AsyncClient, store: Store) -> None:
-    _, row_ids = _seed_rows(store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p"}}])
-    resp = await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"label": "bad"})
+    _, label_set_id, row_ids = _seed_rows_with_label_set(store, [{"data": {"prompt": "p"}}])
+    resp = await client.put(
+        f"/api/label-sets/{label_set_id}/rows/{row_ids[0]}/annotation",
+        json={"labels": ["bad"]},
+    )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["label"] == {"value": "bad"}
-    assert body["label_source"] == LabelSource.MANUAL.value
+    assert body["labels"] == ["bad"]
+    assert body["source"] == LabelSource.MANUAL.value
 
 
 @pytest.mark.anyio
-async def test_explicit_numeric_label_sets_manual(client: httpx.AsyncClient, store: Store) -> None:
-    _, row_ids = _seed_rows(store, NUMERIC_SCHEMA, [{"data": {"prompt": "p"}}])
-    resp = await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"label": 3})
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["label"] == {"value": 3}
-    assert body["label_source"] == LabelSource.MANUAL.value
-
-
-@pytest.mark.anyio
-async def test_out_of_schema_categorical_label_is_422(
+async def test_put_annotation_manual_numeric_value_sets_source_manual(
     client: httpx.AsyncClient, store: Store
 ) -> None:
-    _, row_ids = _seed_rows(store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p"}}])
-    resp = await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"label": "maybe"})
-    assert resp.status_code == 422
-
-
-@pytest.mark.anyio
-async def test_out_of_schema_numeric_label_is_422(client: httpx.AsyncClient, store: Store) -> None:
-    _, row_ids = _seed_rows(store, NUMERIC_SCHEMA, [{"data": {"prompt": "p"}}])
-    resp = await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"label": 99})
-    assert resp.status_code == 422
-
-
-@pytest.mark.anyio
-async def test_patch_note_only_leaves_label_untouched(
-    client: httpx.AsyncClient, store: Store
-) -> None:
-    _, row_ids = _seed_rows(store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p"}}])
-    resp = await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"note": "hmm"})
+    _, label_set_id, row_ids = _seed_rows_with_label_set(
+        store, [{"data": {"prompt": "p"}}], numeric=True
+    )
+    resp = await client.put(
+        f"/api/label-sets/{label_set_id}/rows/{row_ids[0]}/annotation",
+        json={"value": 3},
+    )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["note"] == "hmm"
-    assert body["label"] is None
-    assert body["label_source"] is None
+    assert body["value"] == 3
+    assert body["source"] == LabelSource.MANUAL.value
 
 
 @pytest.mark.anyio
-async def test_clear_label_removes_label_and_source(
+async def test_put_annotation_description_only_leaves_labels_unset(
     client: httpx.AsyncClient, store: Store
 ) -> None:
-    _, row_ids = _seed_rows(store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p"}}])
-    await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"label": "good"})
-
-    resp = await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"clear_label": True})
+    # ``description`` is the annotation's note; setting it alone must not confirm a label.
+    _, label_set_id, row_ids = _seed_rows_with_label_set(store, [{"data": {"prompt": "p"}}])
+    resp = await client.put(
+        f"/api/label-sets/{label_set_id}/rows/{row_ids[0]}/annotation",
+        json={"description": "hmm"},
+    )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["label"] is None
-    assert body["label_source"] is None
+    assert body["description"] == "hmm"
+    assert body["labels"] == []
+    assert body["value"] is None
+
+
+@pytest.mark.anyio
+async def test_delete_annotation_clears_the_label(client: httpx.AsyncClient, store: Store) -> None:
+    _, label_set_id, row_ids = _seed_rows_with_label_set(store, [{"data": {"prompt": "p"}}])
+    await client.put(
+        f"/api/label-sets/{label_set_id}/rows/{row_ids[0]}/annotation", json={"labels": ["good"]}
+    )
+
+    resp = await client.delete(f"/api/label-sets/{label_set_id}/rows/{row_ids[0]}/annotation")
+    assert resp.status_code == 204, resp.text
+    assert (
+        await client.get(f"/api/label-sets/{label_set_id}/rows/{row_ids[0]}/annotation")
+    ).json() is None
 
 
 # -- Pagination --------------------------------------------------------------
@@ -692,13 +810,19 @@ async def test_pagination_returns_the_right_slice(client: httpx.AsyncClient, sto
 
 @pytest.mark.anyio
 async def test_stats_counts_are_correct(client: httpx.AsyncClient, store: Store) -> None:
-    ds_id, row_ids = _seed_rows(
-        store, CATEGORICAL_SCHEMA, [{"data": {"prompt": f"p{i}"}} for i in range(4)]
+    ds_id, label_set_id, row_ids = _seed_rows_with_label_set(
+        store, [{"data": {"prompt": f"p{i}"}} for i in range(4)]
     )
     # Label three of four rows: two "good", one "bad".
-    await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"label": "good"})
-    await client.patch(f"/api/datasets/rows/{row_ids[1]}", json={"label": "good"})
-    await client.patch(f"/api/datasets/rows/{row_ids[2]}", json={"label": "bad"})
+    await client.put(
+        f"/api/label-sets/{label_set_id}/rows/{row_ids[0]}/annotation", json={"labels": ["good"]}
+    )
+    await client.put(
+        f"/api/label-sets/{label_set_id}/rows/{row_ids[1]}/annotation", json={"labels": ["good"]}
+    )
+    await client.put(
+        f"/api/label-sets/{label_set_id}/rows/{row_ids[2]}/annotation", json={"labels": ["bad"]}
+    )
 
     resp = await client.get(f"/api/datasets/{ds_id}/stats")
     assert resp.status_code == 200, resp.text
@@ -707,6 +831,22 @@ async def test_stats_counts_are_correct(client: httpx.AsyncClient, store: Store)
     assert body["labeled"] == 3
     assert body["unlabeled"] == 1
     assert body["label_distribution"] == {"good": 2, "bad": 1}
+
+
+@pytest.mark.anyio
+async def test_stats_with_no_label_set_reports_all_unlabeled(
+    client: httpx.AsyncClient, store: Store
+) -> None:
+    # A dataset with no label set at all is the legal "no ground truth" state.
+    ds_id, _ = _seed_rows(store, {}, [{"data": {"prompt": f"p{i}"}} for i in range(3)])
+
+    resp = await client.get(f"/api/datasets/{ds_id}/stats")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total"] == 3
+    assert body["labeled"] == 0
+    assert body["unlabeled"] == 3
+    assert body["label_distribution"] == {}
 
 
 # -- CRUD --------------------------------------------------------------------
@@ -730,12 +870,34 @@ async def test_create_get_list_delete_roundtrip(client: httpx.AsyncClient) -> No
     assert got.status_code == 200
     assert got.json()["name"] == "manual"
 
+    # A label_schema in the request creates a matching label set.
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert len(label_sets) == 1
+    assert label_sets[0]["kind"] == "categorical"
+    assert {item["name"] for item in label_sets[0]["labels"]} == {"good", "bad"}
+
     listed = await client.get("/api/datasets")
     assert [d["id"] for d in listed.json()] == [ds_id]
 
     deleted = await client.delete(f"/api/datasets/{ds_id}")
     assert deleted.status_code == 200
     assert (await client.get(f"/api/datasets/{ds_id}")).status_code == 404
+
+
+@pytest.mark.anyio
+async def test_create_dataset_without_label_schema_has_no_label_sets(
+    client: httpx.AsyncClient,
+) -> None:
+    # A label_schema is no longer required: omitting it is the legal "no label space" case.
+    created = await client.post(
+        "/api/datasets",
+        json={"name": "unlabeled", "description": "", "columns": ["prompt"]},
+    )
+    assert created.status_code == 200, created.text
+    ds_id = created.json()["id"]
+
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert label_sets == []
 
 
 @pytest.mark.anyio
@@ -852,130 +1014,6 @@ async def test_patch_dataset_empty_body_is_noop(client: httpx.AsyncClient) -> No
 
 
 @pytest.mark.anyio
-async def test_patch_dataset_narrowing_schema_with_labels_is_409(
-    client: httpx.AsyncClient, store: Store
-) -> None:
-    ds_id, row_ids = _seed_rows(
-        store,
-        CATEGORICAL_SCHEMA,
-        [{"data": {"prompt": "p0"}}, {"data": {"prompt": "p1"}}, {"data": {"prompt": "p2"}}],
-    )
-    # Two rows labeled "bad" would fall outside a schema narrowed to just "good".
-    await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"label": "good"})
-    await client.patch(f"/api/datasets/rows/{row_ids[1]}", json={"label": "bad"})
-    await client.patch(f"/api/datasets/rows/{row_ids[2]}", json={"label": "bad"})
-
-    narrowed = {"kind": "categorical", "labels": ["good"]}
-    resp = await client.patch(f"/api/datasets/{ds_id}", json={"label_schema": narrowed})
-    assert resp.status_code == 409, resp.text
-    error = resp.json()["error"]
-    assert error["type"] == "DestructiveChangeError"
-    assert error["detail"]["invalid_label_count"] == 2
-
-    # Nothing changed: the schema and the "bad" labels are still present.
-    ds = (await client.get(f"/api/datasets/{ds_id}")).json()
-    assert ds["label_schema"]["labels"] == ["good", "bad"]
-    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
-    assert [r["label"] for r in rows] == [{"value": "good"}, {"value": "bad"}, {"value": "bad"}]
-
-
-@pytest.mark.anyio
-async def test_patch_dataset_narrowing_schema_with_force_clears_invalid(
-    client: httpx.AsyncClient, store: Store
-) -> None:
-    ds_id, row_ids = _seed_rows(
-        store,
-        CATEGORICAL_SCHEMA,
-        [{"data": {"prompt": "p0"}}, {"data": {"prompt": "p1"}}],
-    )
-    await client.patch(f"/api/datasets/rows/{row_ids[0]}", json={"label": "good"})
-    await client.patch(f"/api/datasets/rows/{row_ids[1]}", json={"label": "bad"})
-
-    narrowed = {"kind": "categorical", "labels": ["good"]}
-    resp = await client.patch(
-        f"/api/datasets/{ds_id}", json={"label_schema": narrowed, "force": True}
-    )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["label_schema"]["labels"] == ["good"]
-
-    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
-    assert rows[0]["label"] == {"value": "good"}
-    assert rows[1]["label"] is None
-    assert rows[1]["label_source"] is None
-
-
-# -- Row data edits (PATCH /rows/{row_id}) -----------------------------------
-
-
-@pytest.mark.anyio
-async def test_patch_row_data_merges_leaving_other_columns(
-    client: httpx.AsyncClient, store: Store
-) -> None:
-    ds = store.create_dataset(
-        name="qa", description="", columns=["question", "answer"], label_schema=CATEGORICAL_SCHEMA
-    )
-    rows = store.add_prepared_rows(ds.id, [{"data": {"question": "q", "answer": "a"}}])
-    row_id = rows[0].id
-
-    resp = await client.patch(f"/api/datasets/rows/{row_id}", json={"data": {"question": "new"}})
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["data"] == {"question": "new", "answer": "a"}
-
-
-@pytest.mark.anyio
-async def test_patch_row_data_unknown_column_is_422_and_leaves_row(
-    client: httpx.AsyncClient, store: Store
-) -> None:
-    ds = store.create_dataset(
-        name="qa", description="", columns=["question"], label_schema=CATEGORICAL_SCHEMA
-    )
-    rows = store.add_prepared_rows(ds.id, [{"data": {"question": "q"}}])
-    row_id = rows[0].id
-
-    resp = await client.patch(f"/api/datasets/rows/{row_id}", json={"data": {"bogus": "x"}})
-    assert resp.status_code == 422, resp.text
-    assert resp.json()["error"]["type"] == "ContractError"
-
-    unchanged = (await client.get(f"/api/datasets/{ds.id}/rows")).json()["rows"]
-    assert unchanged[0]["data"] == {"question": "q"}
-
-
-@pytest.mark.anyio
-async def test_patch_row_applies_data_and_note_together(
-    client: httpx.AsyncClient, store: Store
-) -> None:
-    ds = store.create_dataset(
-        name="qa", description="", columns=["question"], label_schema=CATEGORICAL_SCHEMA
-    )
-    rows = store.add_prepared_rows(ds.id, [{"data": {"question": "q"}}])
-    row_id = rows[0].id
-
-    resp = await client.patch(
-        f"/api/datasets/rows/{row_id}", json={"data": {"question": "new"}, "note": "checked"}
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["data"] == {"question": "new"}
-    assert body["note"] == "checked"
-
-
-@pytest.mark.anyio
-async def test_patch_row_empty_data_preserves_note_in_same_request(
-    client: httpx.AsyncClient, store: Store
-) -> None:
-    ds = store.create_dataset(
-        name="qa", description="", columns=["question"], label_schema=CATEGORICAL_SCHEMA
-    )
-    rows = store.add_prepared_rows(ds.id, [{"data": {"question": "q"}}])
-    row_id = rows[0].id
-
-    resp = await client.patch(f"/api/datasets/rows/{row_id}", json={"data": {}, "note": "kept"})
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["data"] == {"question": "q"}
-    assert body["note"] == "kept"
-
-
 # -- Row deletion (DELETE /rows/{row_id}) ------------------------------------
 
 
@@ -1007,6 +1045,56 @@ async def test_delete_rows_route_is_not_shadowed_by_dataset_delete(
     assert (await client.get(f"/api/datasets/{ds_id}")).status_code == 200
     rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
     assert rows == []
+
+
+# -- Row data editing (PATCH /rows/{row_id}) --------------------------------
+
+
+@pytest.mark.anyio
+async def test_patch_row_data_merges_into_existing_data(client: httpx.AsyncClient) -> None:
+    resp = await client.post(
+        "/api/datasets",
+        json={"name": "ds", "columns": ["question", "answer"]},
+    )
+    dataset_id = resp.json()["id"]
+    rows_resp = await client.post(
+        f"/api/datasets/{dataset_id}/rows", json={"rows": [{"question": "q1", "answer": "a1"}]}
+    )
+    row_id = rows_resp.json()[0]["id"]
+
+    patch_resp = await client.patch(
+        f"/api/datasets/rows/{row_id}", json={"data": {"answer": "corrected"}}
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+    body = patch_resp.json()
+    assert body["data"] == {"question": "q1", "answer": "corrected"}
+
+    fetched = (await client.get(f"/api/datasets/{dataset_id}/rows")).json()["rows"][0]
+    assert fetched["data"] == {"question": "q1", "answer": "corrected"}
+
+
+@pytest.mark.anyio
+async def test_patch_row_data_rejects_unknown_column(client: httpx.AsyncClient) -> None:
+    resp = await client.post(
+        "/api/datasets",
+        json={"name": "ds", "columns": ["question", "answer"]},
+    )
+    dataset_id = resp.json()["id"]
+    rows_resp = await client.post(
+        f"/api/datasets/{dataset_id}/rows", json={"rows": [{"question": "q1", "answer": "a1"}]}
+    )
+    row_id = rows_resp.json()[0]["id"]
+
+    patch_resp = await client.patch(
+        f"/api/datasets/rows/{row_id}", json={"data": {"not_a_column": "x"}}
+    )
+    assert patch_resp.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_patch_row_data_unknown_row_is_404(client: httpx.AsyncClient) -> None:
+    resp = await client.patch("/api/datasets/rows/does-not-exist", json={"data": {}})
+    assert resp.status_code == 404
 
 
 # -- Referenced delete -------------------------------------------------------
@@ -1402,8 +1490,13 @@ async def test_generate_rows_appends_after_the_existing_rows(
 
     rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()
     assert rows["total"] == 5
-    for row in rows["rows"]:
-        assert row["label_source"] == LabelSource.GENERATED.value
+
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert len(label_sets) == 1
+    rows_page = (await client.get(f"/api/label-sets/{label_sets[0]['id']}/rows")).json()
+    assert rows_page["total"] == 5
+    for annotated_row in rows_page["rows"]:
+        assert annotated_row["annotation"]["source"] == LabelSource.GENERATED.value
 
 
 @pytest.mark.anyio
@@ -1503,8 +1596,12 @@ async def test_generate_rows_without_a_label_space_leaves_labels_unset(
     )
     ds_id = created.json()["dataset"]["id"]
 
-    appended = (await client.post(f"/api/datasets/{ds_id}/generate-rows", json={"count": 1})).json()
-    assert appended[0]["suggested_label"] is None
+    resp = await client.post(f"/api/datasets/{ds_id}/generate-rows", json={"count": 1})
+    assert resp.status_code == 200, resp.text
+
+    # No label set exists at all when the dataset has no label space.
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert label_sets == []
 
 
 @pytest.mark.anyio
@@ -1587,28 +1684,32 @@ async def test_generate_rows_for_missing_dataset_is_404(client: httpx.AsyncClien
 
 
 def _seed_labeled_dataset(store: Store) -> str:
-    """Create a categorical dataset with two fully labeled rows; return its id."""
+    """Create a categorical dataset with two fully labeled rows; return its id.
+
+    Ground truth lives on a ``LabelSet``/``Annotation`` pair -- export (Task 3) reads
+    exclusively from there now, not from the legacy ``DatasetRow.label`` column.
+    """
     ds = store.create_dataset(
         name="refusal",
         description="",
         columns=["question", "answer"],
-        label_schema=CATEGORICAL_SCHEMA,
     )
-    store.add_prepared_rows(
+    rows = store.add_prepared_rows(
         ds.id,
         [
-            {
-                "data": {"question": "q1", "answer": "a1"},
-                "label": {"value": "good"},
-                "label_source": LabelSource.MANUAL,
-            },
-            {
-                "data": {"question": "q2", "answer": "a2"},
-                "label": {"value": "bad"},
-                "label_source": LabelSource.MANUAL,
-            },
+            {"data": {"question": "q1", "answer": "a1"}},
+            {"data": {"question": "q2", "answer": "a2"}},
         ],
     )
+    label_set = store.create_label_set(
+        ds.id,
+        name="Labels",
+        description="",
+        kind=ScoreKind.CATEGORICAL,
+        labels=[{"name": "good", "description": ""}, {"name": "bad", "description": ""}],
+    )
+    store.set_annotation(label_set.id, rows[0].id, labels=["good"], source=LabelSource.MANUAL)
+    store.set_annotation(label_set.id, rows[1].id, labels=["bad"], source=LabelSource.MANUAL)
     return ds.id
 
 
@@ -1720,15 +1821,28 @@ async def test_dataset_export_json_round_trips_through_upload(
 
     reimported = (await client.get(f"/api/datasets/{new_id}")).json()
     assert reimported["columns"] == ["question", "answer"]
-    assert reimported["label_schema"]["kind"] == "categorical"
-    assert set(reimported["label_schema"]["labels"]) == {"good", "bad"}
 
     rows = (await client.get(f"/api/datasets/{new_id}/rows")).json()["rows"]
     assert [r["data"] for r in rows] == [
         {"question": "q1", "answer": "a1"},
         {"question": "q2", "answer": "a2"},
     ]
-    assert [r["label"] for r in rows] == [{"value": "good"}, {"value": "bad"}]
+
+    label_sets = (await client.get(f"/api/datasets/{new_id}/label-sets")).json()
+    assert len(label_sets) == 1
+    assert label_sets[0]["kind"] == "categorical"
+    assert {item["name"] for item in label_sets[0]["labels"]} == {"good", "bad"}
+
+    rows_page = (await client.get(f"/api/label-sets/{label_sets[0]['id']}/rows")).json()
+    annotations_by_row_id = {row["row_id"]: row["annotation"] for row in rows_page["rows"]}
+    ids_in_row_order = [r["id"] for r in rows]
+    assert [annotations_by_row_id[rid]["labels"] for rid in ids_in_row_order] == [
+        ["good"],
+        ["bad"],
+    ]
+    assert all(
+        annotations_by_row_id[rid]["source"] == LabelSource.MANUAL.value for rid in ids_in_row_order
+    )
 
 
 @pytest.mark.anyio
@@ -1787,8 +1901,9 @@ async def test_upload_package_explicit_label_schema_wins(
     assert resp.status_code == 200, resp.text
     new_id = resp.json()["dataset"]["id"]
 
-    schema = (await client.get(f"/api/datasets/{new_id}")).json()["label_schema"]
-    assert schema["labels"] == ["good", "bad", "maybe"]
+    label_sets = (await client.get(f"/api/datasets/{new_id}/label-sets")).json()
+    assert len(label_sets) == 1
+    assert {item["name"] for item in label_sets[0]["labels"]} == {"good", "bad", "maybe"}
 
 
 @pytest.mark.anyio
@@ -1800,6 +1915,47 @@ async def test_upload_malformed_json_is_client_error_not_500(
         "/api/datasets/upload",
         files={"file": ("broken.json", b'{"oops": ', "application/json")},
         data={"name": "broken"},
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["type"] == "ContractError"
+
+
+@pytest.mark.anyio
+async def test_upload_package_with_malformed_valcore_label_schema_is_422_not_500(
+    client: httpx.AsyncClient,
+) -> None:
+    """Finding 5 regression: a malformed inferred label schema must not crash as a 500.
+
+    The package's own ``valcore`` block declares ``score_kind: categorical`` with no
+    ``score_labels``, so ``_resolve_label_schema`` (spec.py) produces the malformed dict
+    ``{"kind": "categorical", "labels": None}``. Before the fix, ``upload_dataset`` fed this
+    straight into an unwrapped ``LabelSchema.model_validate(...)``, raising a raw pydantic
+    ``ValidationError`` (500) instead of a ``ContractError`` (422).
+    """
+    from pydantic_evals import Dataset as EvalsDataset
+    from pydantic_evals.dataset import Case
+
+    from valcore.config_io import ValcoreMeta
+
+    dataset = EvalsDataset[dict, object, dict](
+        name="broken-schema",
+        cases=[Case(name="c1", inputs={"question": "q1"}, expected_output="good")],
+    )
+    valcore = ValcoreMeta(
+        prompt_template="Rate {question}.",
+        required_columns=["question"],
+        score_field="verdict",
+        score_kind=ScoreKind.CATEGORICAL,
+        score_labels=None,
+        tools=[],
+    )
+    pkg = EvalPackage(spec=None, dataset=dataset, valcore=valcore)
+    content = pkg.to_text("broken-schema", "bundled")["broken-schema.json"]
+
+    resp = await client.post(
+        "/api/datasets/upload",
+        files={"file": ("broken-schema.json", content.encode("utf-8"), "application/json")},
+        data={"name": "broken-schema"},
     )
     assert resp.status_code == 422, resp.text
     assert resp.json()["error"]["type"] == "ContractError"
@@ -2048,7 +2204,15 @@ async def test_push_dataset_returns_the_documented_shape(
     ds_id, _ = _seed_rows(store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p0"}}])
 
     async def fake_push_dataset(
-        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+        dataset,
+        rows,
+        *,
+        label_set=None,
+        annotations=None,
+        api_key=None,
+        name=None,
+        description=None,
+        on_conflict="update",
     ):
         return {
             "id": "logfire-dataset-id",
@@ -2076,7 +2240,15 @@ async def test_push_dataset_body_is_fully_optional(
     ds_id, _ = _seed_rows(store, CATEGORICAL_SCHEMA, [{"data": {"prompt": "p0"}}])
 
     async def fake_push_dataset(
-        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+        dataset,
+        rows,
+        *,
+        label_set=None,
+        annotations=None,
+        api_key=None,
+        name=None,
+        description=None,
+        on_conflict="update",
     ):
         return {"id": "x", "name": dataset.name, "case_count": len(rows), "output_schema": None}
 
@@ -2095,7 +2267,15 @@ async def test_push_dataset_defaults_on_conflict_to_update_when_omitted(
     calls: list[dict] = []
 
     async def fake_push_dataset(
-        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+        dataset,
+        rows,
+        *,
+        label_set=None,
+        annotations=None,
+        api_key=None,
+        name=None,
+        description=None,
+        on_conflict="update",
     ):
         calls.append({"on_conflict": on_conflict})
         return {"id": "x", "name": dataset.name, "case_count": len(rows), "output_schema": None}
@@ -2117,7 +2297,15 @@ async def test_push_dataset_forwards_the_resolved_dataset_rows_and_body_fields(
     calls: list[dict] = []
 
     async def fake_push_dataset(
-        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+        dataset,
+        rows,
+        *,
+        label_set=None,
+        annotations=None,
+        api_key=None,
+        name=None,
+        description=None,
+        on_conflict="update",
     ):
         calls.append(
             {
@@ -2151,6 +2339,49 @@ async def test_push_dataset_forwards_the_resolved_dataset_rows_and_body_fields(
             "on_conflict": "error",
         }
     ]
+
+
+@pytest.mark.anyio
+async def test_push_dataset_forwards_ground_truth_when_dataset_has_a_label_set(
+    client: httpx.AsyncClient, store: Store, monkeypatch
+) -> None:
+    """Finding 1 regression: pushing a dataset with confirmed ground truth must forward it.
+
+    ``push_dataset_to_logfire`` previously never resolved ``label_set``/``annotations`` at
+    all, so every hosted push silently carried zero ground truth even when the dataset had
+    a confirmed annotation.
+    """
+    ds_id, label_set_id, row_ids = _seed_rows_with_label_set(
+        store, [{"data": {"prompt": "p0"}}, {"data": {"prompt": "p1"}}]
+    )
+    store.set_annotation(label_set_id, row_ids[0], labels=["good"], source=LabelSource.MANUAL)
+
+    calls: list[dict] = []
+
+    async def fake_push_dataset(
+        dataset,
+        rows,
+        *,
+        label_set=None,
+        annotations=None,
+        api_key=None,
+        name=None,
+        description=None,
+        on_conflict="update",
+    ):
+        calls.append({"label_set": label_set, "annotations": annotations})
+        return {"id": "x", "name": dataset.name, "case_count": len(rows), "output_schema": None}
+
+    monkeypatch.setattr("valcore.api.routes.datasets.push_dataset", fake_push_dataset)
+
+    resp = await client.post(f"/api/datasets/{ds_id}/logfire/push", json={})
+    assert resp.status_code == 200, resp.text
+    assert len(calls) == 1
+    assert calls[0]["label_set"] is not None
+    assert calls[0]["label_set"].id == label_set_id
+    assert calls[0]["annotations"] is not None
+    confirmed = [a for a in calls[0]["annotations"] if a.labels == ["good"]]
+    assert len(confirmed) == 1
 
 
 @pytest.mark.anyio
@@ -2195,6 +2426,7 @@ async def test_from_logfire_creates_dataset_and_stores_provenance(
                     }
                 }
             ],
+            row_annotations=[None],
             sql=sql,
             sample_n=sample_n,
             seed=11,
@@ -2240,7 +2472,7 @@ async def test_from_logfire_empty_sql_is_422(client: httpx.AsyncClient) -> None:
 async def test_logfire_pull_provenance_is_null_for_an_uploaded_dataset(
     client: httpx.AsyncClient, store: Store
 ) -> None:
-    dataset = store.create_dataset(name="blank", description="", columns=["a"], label_schema={})
+    dataset = store.create_dataset(name="blank", description="", columns=["a"])
     resp = await client.get(f"/api/datasets/{dataset.id}/logfire-pull")
     assert resp.status_code == 200
     assert resp.json() is None
@@ -2287,9 +2519,10 @@ async def test_from_logfire_hosted_creates_dataset(
             columns=["question"],
             label_schema={"kind": "categorical", "labels": ["yes"]},
             prepared=[
-                {"data": {"question": "Q1"}, "label": {"value": "yes"}},
+                {"data": {"question": "Q1"}},
                 {"data": {"question": "Q2"}},
             ],
+            row_annotations=[{"labels": ["yes"], "source": LabelSource.MANUAL}, None],
         )
 
     monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_fetch)
@@ -2306,7 +2539,16 @@ async def test_from_logfire_hosted_creates_dataset(
     ds_id = body["dataset"]["id"]
     rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
     assert rows[0]["data"]["question"] == "Q1"
-    assert rows[0]["label"] == {"value": "yes"}
+
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert len(label_sets) == 1
+    assert {item["name"] for item in label_sets[0]["labels"]} == {"yes"}
+
+    rows_page = (await client.get(f"/api/label-sets/{label_sets[0]['id']}/rows")).json()
+    annotations_by_row_id = {row["row_id"]: row["annotation"] for row in rows_page["rows"]}
+    assert annotations_by_row_id[rows[0]["id"]]["labels"] == ["yes"]
+    assert annotations_by_row_id[rows[0]["id"]]["source"] == LabelSource.MANUAL.value
+    assert annotations_by_row_id[rows[1]["id"]] is None
 
 
 @pytest.mark.anyio
@@ -2322,6 +2564,7 @@ async def test_from_logfire_hosted_name_override(
             columns=["question"],
             label_schema={},
             prepared=[{"data": {"question": "Q1"}}],
+            row_annotations=[None],
         )
 
     monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_fetch)
@@ -2342,10 +2585,45 @@ async def test_from_logfire_hosted_empty_source_name_is_422(client: httpx.AsyncC
     assert resp.status_code == 422
 
 
+@pytest.mark.anyio
+async def test_from_logfire_hosted_malformed_label_schema_is_422_not_500(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding 5 regression: a malformed hosted ``label_schema`` must not crash as a 500.
+
+    ``HostedFetch.label_schema`` is a plain (unvalidated) dict decoded from the hosted
+    export, so a malformed shape (categorical with no labels) reaching
+    ``create_dataset_from_logfire_hosted``'s previously-unwrapped
+    ``LabelSchema.model_validate(result.label_schema)`` raised a raw pydantic
+    ``ValidationError`` (500) instead of a ``ContractError`` (422).
+    """
+    from valcore.logfire_io import HostedFetch
+
+    async def fake_fetch(id_or_name: str, *, api_key: str | None = None) -> HostedFetch:
+        return HostedFetch(
+            source_name=id_or_name,
+            name="qa-set",
+            columns=["question"],
+            label_schema={"kind": "categorical", "labels": None},
+            prepared=[{"data": {"question": "Q1"}}],
+            row_annotations=[None],
+        )
+
+    monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_fetch)
+    resp = await client.post(
+        "/api/datasets/from-logfire-hosted",
+        json={"source_name": "qa-set"},
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["type"] == "ContractError"
+
+
 # -- Pulling more rows from Logfire into an existing dataset -----------------
 
 
-def _install_recording_pull(monkeypatch, calls: list[dict], *, columns=None, prepared=None):
+def _install_recording_pull(
+    monkeypatch, calls: list[dict], *, columns=None, prepared=None, row_annotations=None
+):
     """Stub ``pull_records`` so it records each call's kwargs and never touches Logfire."""
     from datetime import UTC, datetime
 
@@ -2353,9 +2631,14 @@ def _install_recording_pull(monkeypatch, calls: list[dict], *, columns=None, pre
 
     async def fake_pull_records(sql, sample_n, **kwargs):
         calls.append({"sql": sql, "sample_n": sample_n, **kwargs})
+        resolved_prepared = prepared if prepared is not None else [{"data": {"question": "Q"}}]
+        resolved_annotations = (
+            row_annotations if row_annotations is not None else [None] * len(resolved_prepared)
+        )
         return PullResult(
             columns=columns if columns is not None else ["question"],
-            prepared=prepared if prepared is not None else [{"data": {"question": "Q"}}],
+            prepared=resolved_prepared,
+            row_annotations=resolved_annotations,
             sql=sql,
             sample_n=sample_n,
             seed=kwargs.get("seed") if kwargs.get("seed") is not None else 99,
@@ -2416,6 +2699,42 @@ async def test_logfire_pull_more_appends_after_the_existing_rows(
 
 
 @pytest.mark.anyio
+async def test_logfire_pull_more_annotates_new_rows_from_the_existing_label_set(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    """Finding 2 regression: a top-up SQL pull must persist ``row_annotations`` too.
+
+    Pre-migration, a top-up pull left labeled new rows; an earlier task's plan text wrongly
+    asserted that dropping labels on top-up "matched today's behavior."
+    """
+    ds_id = await _create_from_logfire(
+        client,
+        monkeypatch,
+        label_column="label",
+        label_schema=CATEGORICAL_SCHEMA,
+    )
+
+    _install_recording_pull(
+        monkeypatch,
+        [],
+        prepared=[{"data": {"question": "Q2"}}],
+        row_annotations=[{"labels": ["good"], "source": LabelSource.MANUAL}],
+    )
+    appended = (await client.post(f"/api/datasets/{ds_id}/logfire-pull", json={})).json()
+    assert len(appended) == 1
+    new_row_id = appended[0]["id"]
+
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert len(label_sets) == 1
+    label_set_id = label_sets[0]["id"]
+
+    rows_page = (await client.get(f"/api/label-sets/{label_set_id}/rows")).json()
+    annotations_by_row_id = {row["row_id"]: row["annotation"] for row in rows_page["rows"]}
+    assert annotations_by_row_id[new_row_id] is not None
+    assert annotations_by_row_id[new_row_id]["labels"] == ["good"]
+
+
+@pytest.mark.anyio
 async def test_logfire_pull_more_overrides_win_and_are_persisted(
     client: httpx.AsyncClient, monkeypatch
 ) -> None:
@@ -2450,7 +2769,7 @@ async def test_logfire_pull_more_rejects_a_column_mismatch(
 async def test_logfire_pull_more_without_a_stored_pull_is_422(
     client: httpx.AsyncClient, store: Store
 ) -> None:
-    dataset = store.create_dataset(name="blank", description="", columns=["a"], label_schema={})
+    dataset = store.create_dataset(name="blank", description="", columns=["a"])
     resp = await client.post(f"/api/datasets/{dataset.id}/logfire-pull", json={})
     assert resp.status_code == 422, resp.text
 
@@ -2464,7 +2783,9 @@ async def test_logfire_pull_more_for_missing_dataset_is_404(client: httpx.AsyncC
 # -- Pulling (unioning) more rows from a hosted Logfire dataset ---------------
 
 
-async def _create_from_logfire_hosted(client: httpx.AsyncClient, monkeypatch, prepared) -> str:
+async def _create_from_logfire_hosted(
+    client: httpx.AsyncClient, monkeypatch, prepared, *, label_schema=None
+) -> str:
     from valcore.logfire_io import HostedFetch
 
     async def fake_fetch(id_or_name: str, *, api_key: str | None = None) -> HostedFetch:
@@ -2472,8 +2793,9 @@ async def _create_from_logfire_hosted(client: httpx.AsyncClient, monkeypatch, pr
             source_name=id_or_name,
             name="qa-set",
             columns=["question"],
-            label_schema={},
+            label_schema=label_schema or {},
             prepared=prepared,
+            row_annotations=[None] * len(prepared),
         )
 
     monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_fetch)
@@ -2495,7 +2817,7 @@ async def test_from_logfire_hosted_stores_source_provenance(
 async def test_hosted_fetch_provenance_is_null_for_a_non_hosted_dataset(
     client: httpx.AsyncClient, store: Store
 ) -> None:
-    dataset = store.create_dataset(name="blank", description="", columns=["a"], label_schema={})
+    dataset = store.create_dataset(name="blank", description="", columns=["a"])
     resp = await client.get(f"/api/datasets/{dataset.id}/hosted-fetch")
     assert resp.status_code == 200
     assert resp.json() is None
@@ -2522,6 +2844,7 @@ async def test_hosted_fetch_union_adds_only_rows_not_already_present(
                 {"data": {"question": "Q2"}},
                 {"data": {"question": "Q3"}},
             ],
+            row_annotations=[None, None, None],
         )
 
     monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_refetch)
@@ -2531,6 +2854,64 @@ async def test_hosted_fetch_union_adds_only_rows_not_already_present(
 
     rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()
     assert rows["total"] == 3
+
+
+@pytest.mark.anyio
+async def test_hosted_fetch_union_annotates_only_newly_appended_rows(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    """Finding 2 regression: a hosted top-up must persist annotations for newly-added rows.
+
+    ``result.row_annotations`` must be filtered in lockstep with the same content-based dedup
+    that drops already-present rows from ``result.prepared`` -- a naive zip against the final
+    ``rows`` would misalign annotations once any row is deduped away.
+    """
+    ds_id = await _create_from_logfire_hosted(
+        client,
+        monkeypatch,
+        [{"data": {"question": "Q1"}}, {"data": {"question": "Q2"}}],
+        label_schema=CATEGORICAL_SCHEMA,
+    )
+
+    async def fake_refetch(id_or_name, *, api_key=None):
+        from valcore.logfire_io import HostedFetch
+
+        return HostedFetch(
+            source_name=id_or_name,
+            name="qa-set",
+            columns=["question"],
+            label_schema=CATEGORICAL_SCHEMA,
+            prepared=[
+                {"data": {"question": "Q1"}},
+                {"data": {"question": "Q2"}},
+                {"data": {"question": "Q3"}},
+            ],
+            row_annotations=[
+                {"labels": ["good"], "source": LabelSource.MANUAL},  # Q1: already present, dedup'd
+                {"labels": ["bad"], "source": LabelSource.MANUAL},  # Q2: already present, dedup'd
+                {"labels": ["good"], "source": LabelSource.MANUAL},  # Q3: new, must be annotated
+            ],
+        )
+
+    monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_refetch)
+    appended = (await client.post(f"/api/datasets/{ds_id}/hosted-fetch")).json()
+    assert len(appended) == 1
+    assert appended[0]["data"]["question"] == "Q3"
+    new_row_id = appended[0]["id"]
+
+    label_sets = (await client.get(f"/api/datasets/{ds_id}/label-sets")).json()
+    assert len(label_sets) == 1
+    label_set_id = label_sets[0]["id"]
+
+    rows_page = (await client.get(f"/api/label-sets/{label_set_id}/rows")).json()
+    annotations_by_row_id = {row["row_id"]: row["annotation"] for row in rows_page["rows"]}
+    assert annotations_by_row_id[new_row_id] is not None
+    assert annotations_by_row_id[new_row_id]["labels"] == ["good"]
+    # The pre-existing Q1/Q2 rows must stay untouched -- a naive zip against the deduped
+    # ``rows`` would instead misalign the annotation list and attach Q3's own annotation
+    # (or Q1's) to the wrong pre-existing row.
+    preexisting = [row["annotation"] for row in rows_page["rows"] if row["row_id"] != new_row_id]
+    assert all(annotation is None for annotation in preexisting)
 
 
 @pytest.mark.anyio
@@ -2548,6 +2929,7 @@ async def test_hosted_fetch_union_with_nothing_new_is_a_noop(
             columns=["question"],
             label_schema={},
             prepared=[{"data": {"question": "Q1"}}],
+            row_annotations=[None],
         )
 
     monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_refetch)
@@ -2560,34 +2942,6 @@ async def test_hosted_fetch_union_with_nothing_new_is_a_noop(
 
 
 @pytest.mark.anyio
-async def test_hosted_fetch_union_never_touches_an_edited_existing_row(
-    client: httpx.AsyncClient, monkeypatch
-) -> None:
-    ds_id = await _create_from_logfire_hosted(client, monkeypatch, [{"data": {"question": "Q1"}}])
-    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
-    await client.patch(f"/api/datasets/rows/{rows[0]['id']}", json={"note": "keep me"})
-
-    async def fake_refetch(id_or_name, *, api_key=None):
-        from valcore.logfire_io import HostedFetch
-
-        return HostedFetch(
-            source_name=id_or_name,
-            name="qa-set",
-            columns=["question"],
-            label_schema={},
-            prepared=[{"data": {"question": "Q1"}}],
-        )
-
-    monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_refetch)
-    resp = await client.post(f"/api/datasets/{ds_id}/hosted-fetch")
-    assert resp.status_code == 200, resp.text
-    assert resp.json() == []
-
-    rows = (await client.get(f"/api/datasets/{ds_id}/rows")).json()["rows"]
-    assert len(rows) == 1
-    assert rows[0]["note"] == "keep me"
-
-
 @pytest.mark.anyio
 async def test_hosted_fetch_union_rejects_a_column_mismatch(
     client: httpx.AsyncClient, monkeypatch
@@ -2603,6 +2957,7 @@ async def test_hosted_fetch_union_rejects_a_column_mismatch(
             columns=["different"],
             label_schema={},
             prepared=[{"data": {"different": "X"}}],
+            row_annotations=[None],
         )
 
     monkeypatch.setattr("valcore.api.routes.datasets.fetch_hosted_dataset", fake_refetch)
@@ -2614,7 +2969,7 @@ async def test_hosted_fetch_union_rejects_a_column_mismatch(
 async def test_hosted_fetch_union_without_a_stored_fetch_is_422(
     client: httpx.AsyncClient, store: Store
 ) -> None:
-    dataset = store.create_dataset(name="blank", description="", columns=["a"], label_schema={})
+    dataset = store.create_dataset(name="blank", description="", columns=["a"])
     resp = await client.post(f"/api/datasets/{dataset.id}/hosted-fetch")
     assert resp.status_code == 422, resp.text
 

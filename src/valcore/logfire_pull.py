@@ -110,13 +110,14 @@ def trees_to_rows(
     columns: list[str],
     *,
     label_column: str | None = None,
-) -> tuple[list[str], list[dict]]:
-    """Map nested trees onto ``DatasetRow`` field dicts.
+) -> tuple[list[str], list[dict], list[dict | None]]:
+    """Map nested trees onto (DatasetRow field dicts, per-row annotation fields).
 
     ``children`` is added as a JSON-string column only when at least one tree has
     descendants. A ``label_column`` is lifted off the top-level row (not out of the
-    children JSON). Selecting ``children`` as a SQL column is refused here so the
-    reserved name cannot collide with a user column.
+    children JSON) into the second return value's annotation fields, not the row dict --
+    ``DatasetRow`` carries no label fields. Selecting ``children`` as a SQL column is
+    refused here so the reserved name cannot collide with a user column.
     """
     if _CHILDREN in columns:
         raise ContractError("SQL must not select a column named 'children'; that name is reserved.")
@@ -131,16 +132,19 @@ def trees_to_rows(
         out_columns = [*out_columns, _CHILDREN]
 
     prepared: list[dict] = []
+    row_annotations: list[dict | None] = []
     for tree in trees:
         data = {column: tree.get(column) for column in columns if column != label_column}
         if has_children:
             data[_CHILDREN] = json.dumps(tree.get(_CHILDREN) or [], default=str, indent=2)
-        fields: dict = {"data": data}
+        prepared.append({"data": data})
         if label_column is not None and tree.get(label_column) is not None:
-            fields["label"] = {"value": tree[label_column]}
-            fields["label_source"] = LabelSource.MANUAL
-        prepared.append(fields)
-    return out_columns, prepared
+            value = tree[label_column]
+            fields = {"labels": [value]} if isinstance(value, str) else {"value": value}
+            row_annotations.append({**fields, "source": LabelSource.MANUAL})
+        else:
+            row_annotations.append(None)
+    return out_columns, prepared, row_annotations
 
 
 def _resolve_api_key(api_key: str | None) -> str:
@@ -184,6 +188,7 @@ class PullResult(BaseModel):
 
     columns: list[str]
     prepared: list[dict]
+    row_annotations: list[dict | None]
     sql: str
     sample_n: int
     seed: int
@@ -255,10 +260,13 @@ async def pull_records(
     trees = nest_trees(rows)
     resolved_seed = seed if seed is not None else random.SystemRandom().randrange(2**31)
     sampled = sample_trees(trees, sample_n, resolved_seed)
-    out_columns, prepared = trees_to_rows(sampled, columns, label_column=label_column)
+    out_columns, prepared, row_annotations = trees_to_rows(
+        sampled, columns, label_column=label_column
+    )
     return PullResult(
         columns=out_columns,
         prepared=prepared,
+        row_annotations=row_annotations,
         sql=sql,
         sample_n=sample_n,
         seed=resolved_seed,

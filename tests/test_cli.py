@@ -73,16 +73,27 @@ def store(db_path) -> Store:
 
 
 def _seed(store: Store, labels: list[str | None]) -> None:
-    """Seed one evaluator (active version) and one dataset with the given row labels."""
+    """Seed one evaluator (active version) and one dataset with the given row labels.
+
+    Ground truth lives on a ``LabelSet``/``Annotation`` pair now, not the legacy
+    ``DatasetRow.label`` column -- mirroring ``make_dataset`` in ``test_api_runs.py``.
+    """
     evaluator = store.create_evaluator("judge", description="a judge")
     store.create_version(evaluator.id, **VERSION_FIELDS)
-    dataset = store.create_dataset("cases", "", ["input", "output"], CATEGORICAL_SCHEMA)
+    dataset = store.create_dataset("cases", "", ["input", "output"])
     rows = store.add_rows(
         dataset.id, [{"input": f"in{i}", "output": f"out{i}"} for i in range(len(labels))]
     )
+    label_set = store.create_label_set(
+        dataset.id,
+        "quality",
+        "",
+        ScoreKind.CATEGORICAL,
+        labels=[{"name": "pass", "description": ""}, {"name": "fail", "description": ""}],
+    )
     for row, label in zip(rows, labels, strict=True):
         if label is not None:
-            store.set_label(row.id, {"value": label}, LabelSource.MANUAL)
+            store.set_annotation(label_set.id, row.id, labels=[label], source=LabelSource.MANUAL)
 
 
 def _constant_agent_builder(verdict: str = "pass"):
@@ -661,7 +672,13 @@ def test_import_bundled_round_trips(runner, store, db_path, tmp_path):
     assert ds.name == "cases"
     rows = s.list_rows(ds.id)
     assert [r.data for r in rows] == [{"input": f"in{i}", "output": f"out{i}"} for i in range(4)]
-    assert [r.label["value"] for r in rows] == ["pass", "fail", "pass", "fail"]
+
+    # Ground truth round-trips onto a LabelSet/Annotation pair, not DatasetRow.label.
+    label_sets = s.list_label_sets(ds.id)
+    assert len(label_sets) == 1
+    annotations = s.list_annotations_for_rows(label_sets[0].id, [r.id for r in rows])
+    by_row = {a.dataset_row_id: a for a in annotations}
+    assert [by_row[r.id].labels for r in rows] == [["pass"], ["fail"], ["pass"], ["fail"]]
 
     evaluators = s.list_evaluators()
     assert len(evaluators) == 1
@@ -852,7 +869,15 @@ def test_logfire_push_prints_id_name_and_case_count_never_a_url(
     runner, store, db_path, monkeypatch
 ):
     async def fake_push_dataset(
-        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+        dataset,
+        rows,
+        *,
+        label_set=None,
+        annotations=None,
+        api_key=None,
+        name=None,
+        description=None,
+        on_conflict="update",
     ):
         return {
             "id": "abc-123",
@@ -875,7 +900,15 @@ def test_logfire_push_resolves_dataset_and_passes_its_rows(runner, store, db_pat
     captured = {}
 
     async def fake_push_dataset(
-        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+        dataset,
+        rows,
+        *,
+        label_set=None,
+        annotations=None,
+        api_key=None,
+        name=None,
+        description=None,
+        on_conflict="update",
     ):
         captured["dataset_name"] = dataset.name
         captured["row_count"] = len(rows)
@@ -887,11 +920,54 @@ def test_logfire_push_resolves_dataset_and_passes_its_rows(runner, store, db_pat
     assert captured == {"dataset_name": "cases", "row_count": 4}
 
 
+def test_logfire_push_forwards_ground_truth_from_the_datasets_label_set(
+    runner, store, db_path, monkeypatch
+):
+    """Finding 1 regression: the CLI's ``logfire push`` must forward ground truth.
+
+    The ``cases`` fixture dataset carries a confirmed ``quality`` label set (see ``_seed``),
+    so a correct push must resolve and pass it through rather than dropping it silently.
+    """
+    captured = {}
+
+    async def fake_push_dataset(
+        dataset,
+        rows,
+        *,
+        label_set=None,
+        annotations=None,
+        api_key=None,
+        name=None,
+        description=None,
+        on_conflict="update",
+    ):
+        captured["label_set"] = label_set
+        captured["annotations"] = annotations
+        return {"id": "x", "name": dataset.name, "case_count": len(rows), "output_schema": None}
+
+    monkeypatch.setattr("valcore.logfire_io.push_dataset", fake_push_dataset)
+    result = _invoke(runner, db_path, "logfire", "push", "cases")
+    assert result.exit_code == 0
+    assert captured["label_set"] is not None
+    assert captured["label_set"].name == "quality"
+    assert captured["annotations"] is not None
+    confirmed = [a for a in captured["annotations"] if a.labels]
+    assert len(confirmed) == 4
+
+
 def test_logfire_push_defaults_have_no_name_or_description(runner, store, db_path, monkeypatch):
     calls = {}
 
     async def fake_push_dataset(
-        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+        dataset,
+        rows,
+        *,
+        label_set=None,
+        annotations=None,
+        api_key=None,
+        name=None,
+        description=None,
+        on_conflict="update",
     ):
         calls.update(name=name, description=description, on_conflict=on_conflict)
         return {"id": "x", "name": "cases", "case_count": len(rows), "output_schema": None}
@@ -908,7 +984,15 @@ def test_logfire_push_passes_name_description_and_on_conflict_through(
     calls = {}
 
     async def fake_push_dataset(
-        dataset, rows, *, api_key=None, name=None, description=None, on_conflict="update"
+        dataset,
+        rows,
+        *,
+        label_set=None,
+        annotations=None,
+        api_key=None,
+        name=None,
+        description=None,
+        on_conflict="update",
     ):
         calls.update(name=name, description=description, on_conflict=on_conflict)
         return {"id": "x", "name": name, "case_count": len(rows), "output_schema": None}
@@ -977,6 +1061,7 @@ def test_logfire_pull_creates_dataset_from_stubbed_query(runner, db_path, monkey
         return PullResult(
             columns=["span_id", "message"],
             prepared=[{"data": {"span_id": "a", "message": "m"}}],
+            row_annotations=[None],
             sql=sql,
             sample_n=sample_n,
             seed=kwargs.get("seed") or 3,
@@ -1036,13 +1121,23 @@ def test_logfire_fetch_creates_local_dataset(runner, db_path, monkeypatch):
             name="qa-set",
             columns=["question"],
             label_schema={"kind": "categorical", "labels": ["yes"]},
-            prepared=[{"data": {"question": "Q1"}, "label": {"value": "yes"}}],
+            prepared=[{"data": {"question": "Q1"}}],
+            row_annotations=[{"labels": ["yes"], "source": LabelSource.MANUAL}],
         )
 
     monkeypatch.setattr("valcore.logfire_io.fetch_hosted_dataset", fake_fetch)
     result = _invoke(runner, db_path, "logfire", "fetch", "qa-set")
     assert result.exit_code == 0, result.stderr
     assert "qa-set" in result.output
+
+    s = _fresh_store(db_path)
+    ds = s.get_dataset(s.list_datasets()[0].id)
+    # The schema lives on a LabelSet.
+    label_sets = s.list_label_sets(ds.id)
+    assert len(label_sets) == 1
+    rows = s.list_rows(ds.id)
+    annotations = s.list_annotations_for_rows(label_sets[0].id, [r.id for r in rows])
+    assert [a.labels for a in annotations] == [["yes"]]
 
 
 def test_logfire_fetch_name_override(runner, db_path, store, monkeypatch):
@@ -1055,6 +1150,7 @@ def test_logfire_fetch_name_override(runner, db_path, store, monkeypatch):
             columns=["question"],
             label_schema={},
             prepared=[{"data": {"question": "Q1"}}],
+            row_annotations=[None],
         )
 
     monkeypatch.setattr("valcore.logfire_io.fetch_hosted_dataset", fake_fetch)

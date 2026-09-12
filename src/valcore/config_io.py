@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import ValidationError
 from pydantic_ai.agent.spec import AgentSpec
@@ -120,13 +120,29 @@ class EvalPackage:
         )
 
     @classmethod
-    def from_dataset(cls, dataset: VDataset, rows: list[DatasetRow]) -> EvalPackage:
+    def from_dataset(
+        cls,
+        dataset: VDataset,
+        rows: list[DatasetRow],
+        *,
+        label_set: Any = None,
+        annotations: list[Any] | None = None,
+    ) -> EvalPackage:
         """Build the dataset half from a valcore dataset and its rows; no agent.
 
-        Evaluators are left empty here — the ``ValcoreJudge`` reference is injected at
+        ``label_set``/``annotations`` supply ground truth, typically
+        ``store.primary_label_set(dataset.id)`` and the rows' annotations under it.
+
+        Evaluators are left empty here -- the ``ValcoreJudge`` reference is injected at
         serialization time, where the sibling filename it points at is finally known.
         """
-        return cls(spec=None, dataset=dataset_to_evals(dataset, rows, []), valcore=None)
+        return cls(
+            spec=None,
+            dataset=dataset_to_evals(
+                dataset, rows, [], label_set=label_set, annotations=annotations
+            ),
+            valcore=None,
+        )
 
     @classmethod
     def from_text(cls, text: str) -> EvalPackage:
@@ -331,11 +347,13 @@ class EvalPackage:
             )
         return spec_to_version_fields(self.spec, self.valcore.to_dict())
 
-    def to_dataset_fields(self) -> tuple[str, list[str], dict, list[dict]]:
-        """Decode the dataset half into ``(name, columns, label_schema, prepared_rows)``.
+    def to_dataset_fields(self) -> tuple[str, list[str], dict, list[dict], list[dict | None]]:
+        """Decode the dataset half into
+        ``(name, columns, label_schema, prepared_rows, row_annotations)``.
 
-        The ``valcore`` block, when present, wins over inference of the label schema, so a full
-        package preserves its declared score space rather than re-deriving it from the labels.
+        The ``valcore`` block, when present, wins over inference of the label schema, so a
+        full package preserves its declared score space rather than re-deriving it from the
+        labels.
         """
         if self.dataset is None:
             raise ContractError("Package has no dataset section.")

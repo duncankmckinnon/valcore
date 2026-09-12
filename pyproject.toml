@@ -8,6 +8,7 @@ description = "A small, self-contained local tool for developing, improving, and
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
+authors = [{ name = "Duncan McKinnon", email = "dkmckinnon@outlook.com" }]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
