@@ -1,5 +1,7 @@
 """Tests for the evaluator API router: CRUD, versions, freeze, copy, generate, refine, export."""
 
+from collections.abc import Iterator
+
 import httpx
 import pytest
 
@@ -13,11 +15,14 @@ from valcore.store import Store, create_engine, init_db
 
 
 @pytest.fixture
-def store(tmp_path) -> Store:
+def store(tmp_path) -> Iterator[Store]:
     """Return a Store backed by a throwaway SQLite database under tmp_path."""
     engine = create_engine(tmp_path / "test.db")
     init_db(engine)
-    return Store(engine)
+    try:
+        yield Store(engine)
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture

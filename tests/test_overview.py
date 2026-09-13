@@ -6,7 +6,7 @@ SQL, defensive reading of accuracy out of the untyped ``Run.metrics`` column, pe
 row/label counts on the datasets list, and the new overview route.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -53,11 +53,14 @@ def version_fields(**overrides: object) -> dict[str, object]:
 
 
 @pytest.fixture
-def store(tmp_path) -> Store:
+def store(tmp_path) -> Iterator[Store]:
     """A fresh file-backed store isolated per test (never in-memory)."""
     engine = create_engine(tmp_path / "test.db")
     init_db(engine)
-    return Store(engine)
+    try:
+        yield Store(engine)
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture

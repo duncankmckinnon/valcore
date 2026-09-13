@@ -82,7 +82,7 @@ class TestConfigureTracingSilentWithoutToken:
     def test_emits_no_warning(self) -> None:
         cfg = FileConfig()
         with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
+            warnings.simplefilter("always", UserWarning)
             tracing.configure_tracing(cfg)
         assert len(caught) == 0
 

@@ -6,6 +6,7 @@ No network: agent behavior is injected via the ``get_agent_factory`` dependency 
 
 import asyncio
 import json
+from collections.abc import Iterator
 
 import httpx
 import pytest
@@ -54,11 +55,14 @@ _TERMINAL = {
 
 
 @pytest.fixture
-def store(tmp_path) -> Store:
+def store(tmp_path) -> Iterator[Store]:
     """A fresh file-backed store isolated per test."""
     engine = create_engine(tmp_path / "runs.db")
     init_db(engine)
-    return Store(engine)
+    try:
+        yield Store(engine)
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture(autouse=True)
