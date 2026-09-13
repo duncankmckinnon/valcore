@@ -15,6 +15,7 @@ that is the whole point of routing both through ``metrics.compute_metrics``.
 
 import asyncio
 import importlib.util
+from collections.abc import Iterator
 
 import pytest
 from pydantic_ai import Agent
@@ -63,11 +64,14 @@ NUMERIC_VERSION_FIELDS = {
 
 
 @pytest.fixture
-def store(tmp_path) -> Store:
+def store(tmp_path) -> Iterator[Store]:
     """A real Store backed by a fresh SQLite DB under tmp_path."""
     engine = create_engine(tmp_path / "eval.db")
     init_db(engine)
-    return Store(engine)
+    try:
+        yield Store(engine)
+    finally:
+        engine.dispose()
 
 
 def make_version(store: Store, **overrides):

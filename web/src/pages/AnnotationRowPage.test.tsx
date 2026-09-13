@@ -122,6 +122,48 @@ describe("AnnotationRowPage", () => {
     );
   });
 
+  it("keeps an edit made while the save is still in flight", async () => {
+    // The form used to be seeded from an effect, so any state arriving after the
+    // form was painted -- here the save's own response, which replaces `entries`
+    // -- reverted whatever the user had changed in the meantime. Same window that
+    // made "saves the checked labels and description" flake under CI load.
+    getLabelSetMock.mockResolvedValue(LABEL_SET);
+    rowsMock.mockResolvedValue({
+      rows: [makeRow()],
+      total: 1,
+      annotated_count: 0,
+      limit: 100,
+      offset: 0,
+    });
+
+    let resolvePut: (value: unknown) => void = () => {};
+    putMock.mockReturnValue(new Promise((resolve) => { resolvePut = resolve; }) as never);
+
+    renderPage();
+    await screen.findByText("hello world");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /good/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /bad/ }));
+
+    resolvePut({
+      id: "a1",
+      label_set_id: "ls1",
+      dataset_row_id: "r1",
+      labels: ["good"],
+      value: null,
+      suggested_labels: null,
+      suggested_value: null,
+      source: "manual",
+      reasoning: null,
+      description: null,
+    });
+    await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
+
+    expect((screen.getByRole("checkbox", { name: /bad/ }) as HTMLInputElement).checked).toBe(true);
+  });
+
   it("disables Prev on the first row and Next on the last", async () => {
     getLabelSetMock.mockResolvedValue(LABEL_SET);
     rowsMock.mockResolvedValue({

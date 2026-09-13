@@ -28,6 +28,7 @@ export default function AnnotationRowPage({ datasetId, labelSetId, rowId }: Prop
   const [entries, setEntries] = useState<AnnotationRow[] | null>(
     (location.state as { rows?: AnnotationRow[] } | null)?.rows ?? null,
   );
+  const [hydratedRowId, setHydratedRowId] = useState<string | null>(null);
   const [labels, setLabels] = useState<string[]>([]);
   const [value, setValueText] = useState("");
   const [description, setDescription] = useState("");
@@ -51,12 +52,21 @@ export default function AnnotationRowPage({ datasetId, labelSetId, rowId }: Prop
   const prevId = index > 0 && entries ? entries[index - 1].row_id : null;
   const nextId = entries && index >= 0 && index < entries.length - 1 ? entries[index + 1].row_id : null;
 
-  useEffect(() => {
-    if (!current) return;
+  // Seeding the form during render -- rather than from an effect -- is what keeps
+  // an edit from being silently discarded. An effect runs *after* the commit that
+  // first paints the form, so anything typed or clicked in that window was
+  // overwritten when the effect finally flushed; under load (CI) that window is
+  // wide enough to lose a real interaction. React re-renders immediately on a
+  // render-phase update, so the form is never committed un-seeded.
+  // Keying on row_id rather than the `current` object also stops a save's own
+  // response -- which replaces `entries`, and so `current` -- from reverting
+  // edits the user made while that request was in flight.
+  if (current && hydratedRowId !== current.row_id) {
+    setHydratedRowId(current.row_id);
     setLabels(current.annotation?.labels ?? []);
     setValueText(current.annotation?.value != null ? String(current.annotation.value) : "");
     setDescription(current.annotation?.description ?? "");
-  }, [current]);
+  }
 
   function toggleLabel(name: string) {
     setLabels((prev) => (prev.includes(name) ? prev.filter((l) => l !== name) : [...prev, name]));

@@ -15,6 +15,7 @@ module reference rather than a name bound at import time.
 """
 
 import json
+from collections.abc import Iterator
 from importlib.metadata import version as package_version
 
 import pytest
@@ -63,13 +64,16 @@ def db_path(tmp_path):
 
 
 @pytest.fixture
-def store(db_path) -> Store:
+def store(db_path) -> Iterator[Store]:
     """A real Store backed by the fixture db path, with an evaluator and dataset seeded."""
     engine = create_engine(db_path)
     init_db(engine)
     store = Store(engine)
     _seed(store, labels=["pass", "fail", "pass", "fail"])
-    return store
+    try:
+        yield store
+    finally:
+        engine.dispose()
 
 
 def _seed(store: Store, labels: list[str | None]) -> None:

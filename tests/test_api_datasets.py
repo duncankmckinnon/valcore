@@ -1,7 +1,7 @@
 """Tests for the datasets API router: upload, generate, labeling, pagination, stats."""
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
 import httpx
 import pytest
@@ -18,11 +18,14 @@ NUMERIC_SCHEMA = {"kind": "numeric", "minimum": 0, "maximum": 5}
 
 
 @pytest.fixture
-def store(tmp_path) -> Store:
+def store(tmp_path) -> Iterator[Store]:
     """A fresh file-backed store isolated per test."""
     engine = create_engine(tmp_path / "test.db")
     init_db(engine)
-    return Store(engine)
+    try:
+        yield Store(engine)
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture

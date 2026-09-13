@@ -7,7 +7,7 @@ only booleans -- so a future field addition that leaked one would be caught here
 production.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
 import httpx
 import pytest
@@ -574,11 +574,14 @@ async def test_create_app_is_idempotent_across_repeated_calls() -> None:
 
 
 @pytest.fixture
-def store(tmp_path) -> Store:
+def store(tmp_path) -> Iterator[Store]:
     """A fresh file-backed store isolated per test."""
     engine = create_engine(tmp_path / "setup.db")
     init_db(engine)
-    return Store(engine)
+    try:
+        yield Store(engine)
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture

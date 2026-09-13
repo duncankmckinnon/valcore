@@ -1,6 +1,7 @@
 """Tests for the SQLite store layer against a real tmp_path database file."""
 
 import threading
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -30,11 +31,14 @@ from valcore.store import Store, create_engine, init_db, session_scope
 
 
 @pytest.fixture
-def store(tmp_path: Path) -> Store:
+def store(tmp_path: Path) -> Iterator[Store]:
     """A Store backed by a real on-disk SQLite file (never in-memory)."""
     engine = create_engine(tmp_path / "eval.db")
     init_db(engine)
-    return Store(engine)
+    try:
+        yield Store(engine)
+    finally:
+        engine.dispose()
 
 
 VERSION_FIELDS: dict[str, object] = {
