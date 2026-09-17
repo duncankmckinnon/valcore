@@ -425,7 +425,11 @@ export interface SetupKey {
   from_env: boolean;
 }
 
-export type ClearName = SetupKeyName | "local_cli_default";
+export type ClearName =
+  | SetupKeyName
+  | "logfire_frontend_trace_url"
+  | "logfire_frontend_token"
+  | "local_cli_default";
 
 export interface SetupStatus {
   keys: SetupKey[];
@@ -437,6 +441,20 @@ export interface SetupStatus {
   logfire_explore_url: string | null;
   logfire_traces_url: string | null;
   logfire_datasets_url: string | null;
+  logfire_frontend: FrontendTelemetryStatus;
+}
+
+export interface FrontendTelemetryStatus {
+  trace_url: string | null;
+  token_set: boolean;
+  session_replay: boolean;
+}
+
+export interface FrontendTelemetryConfig {
+  enabled: boolean;
+  trace_url: string | null;
+  token: string | null;
+  session_replay: boolean;
 }
 
 export interface SetupKeysIn {
@@ -444,6 +462,9 @@ export interface SetupKeysIn {
   logfire_token?: string;
   logfire_read_key?: string;
   logfire_write_key?: string;
+  logfire_frontend_trace_url?: string;
+  logfire_frontend_token?: string;
+  logfire_session_replay?: boolean;
   local_cli_default?: string | null;
   clear?: ClearName[];
 }

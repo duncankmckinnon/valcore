@@ -62,6 +62,7 @@ function makeStatus(overrides: {
     logfire_explore_url: overrides.exploreUrl === undefined ? null : overrides.exploreUrl,
     logfire_traces_url: overrides.tracesUrl === undefined ? null : overrides.tracesUrl,
     logfire_datasets_url: overrides.datasetsUrl === undefined ? null : overrides.datasetsUrl,
+    logfire_frontend: { trace_url: null, token_set: false, session_replay: false },
   };
 }
 

@@ -102,6 +102,7 @@ const EMPTY_SETUP: SetupStatus = {
   logfire_explore_url: null,
   logfire_traces_url: null,
   logfire_datasets_url: null,
+  logfire_frontend: { trace_url: null, token_set: false, session_replay: false },
 };
 
 function madeDraft(): GeneratedConfig {

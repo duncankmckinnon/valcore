@@ -245,8 +245,8 @@ CLI. There is no command or flag for it here; do not go looking for one. See
 `$HOME` (normally `C:\Users\<name>`) and access is controlled by filesystem ACLs.
 On POSIX systems the file is written with mode `0600`.
 
-These eleven keys are the complete set. `config set` accepts any of them except
-`logfire_api_key`; `config unset` accepts all eleven. Anything else is refused with an
+These fourteen keys are the complete set. `config set` accepts any of them except
+`logfire_api_key`; `config unset` accepts all fourteen. Anything else is refused with an
 error naming the valid keys.
 
 | Key | Accepted value | Meaning |
@@ -262,11 +262,15 @@ error naming the valid keys.
 | `logfire_write_key` | string | API key for pushing datasets to the valcore project. |
 | `logfire_api_key` | *unset only* | Legacy combined API key; still loaded as both read and write. |
 | `logfire_explore_url` | string | Fallback SQL Workbench URL if the read key cannot resolve the project. |
+| `logfire_frontend_trace_url` | URL | Trace endpoint generated for a Logfire frontend application. |
+| `logfire_frontend_token` | string | Restricted public token generated for a Logfire frontend application. |
+| `logfire_session_replay` | boolean | Opt into Early Access browser session replay; defaults to `false`. |
 
 `gateway_api_key`, `logfire_token`, `logfire_api_key`, `logfire_read_key`, and
 `logfire_write_key` are secrets: `config set` confirms them as `(hidden)` rather than
 echoing the value. `config get` shows the gateway key masked (unless `--show-key`) and the
-four Logfire credentials only as present or absent.
+four Logfire credentials only as present or absent. The restricted public frontend token
+is also masked as a precaution.
 
 ### Environment variables
 

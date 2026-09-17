@@ -25,6 +25,7 @@ import type {
   ExportFormat,
   ExportLayout,
   ExportResponse,
+  FrontendTelemetryConfig,
   GeneratedConfig,
   LabelMix,
   LabelSet,
@@ -292,6 +293,8 @@ export const setup = {
   get: () => api<SetupStatus>("/api/setup"),
   save: (body: SetupKeysIn) =>
     api<SetupStatus>("/api/setup", { method: "POST", ...jsonBody(body) }),
+  frontendTelemetry: () =>
+    api<FrontendTelemetryConfig>("/api/setup/frontend-telemetry"),
 };
 
 export const runs = {

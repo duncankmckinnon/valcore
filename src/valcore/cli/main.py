@@ -627,6 +627,20 @@ def _parse_model(value: str) -> str:
     return value
 
 
+def _parse_bool(field: str) -> Callable[[str], bool]:
+    """Return a strict true/false parser for ``field``."""
+
+    def parse(value: str) -> bool:
+        normalized = value.lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+        raise ConfigError(f"{field} must be 'true' or 'false', not {value!r}.")
+
+    return parse
+
+
 @dataclass(frozen=True)
 class _ConfigField:
     """One settable config.toml key: how to parse its value, and whether it is a secret.
@@ -654,6 +668,11 @@ _CONFIG_FIELDS: dict[str, _ConfigField] = {
     "logfire_read_key": _ConfigField(secret=True),
     "logfire_write_key": _ConfigField(secret=True),
     "logfire_explore_url": _ConfigField(),
+    "logfire_frontend_trace_url": _ConfigField(
+        parse=config_module.validate_logfire_frontend_trace_url
+    ),
+    "logfire_frontend_token": _ConfigField(secret=True),
+    "logfire_session_replay": _ConfigField(parse=_parse_bool("logfire_session_replay")),
 }
 
 
@@ -705,9 +724,9 @@ def config_unset(key: str) -> None:
 def config_get(show_key: bool, as_json: bool) -> None:
     """Show the current config, masking the gateway key by default.
 
-    The Logfire token and API keys are never revealed, even with ``--show-key``: that flag
-    already governs revealing the gateway key specifically, and does not newly govern these.
-    Only their presence is shown.
+    Logfire credentials, including the restricted frontend token, are never revealed,
+    even with ``--show-key``: that flag governs only the gateway key. Only their presence
+    is shown.
     """
     cfg = load_config()
     data = cfg.model_dump(mode="json")
@@ -717,6 +736,7 @@ def config_get(show_key: bool, as_json: bool) -> None:
     data["logfire_api_key"] = config_module.logfire_api_key_present(cfg)
     data["logfire_read_key"] = config_module.logfire_read_key_present(cfg)
     data["logfire_write_key"] = config_module.logfire_write_key_present(cfg)
+    data["logfire_frontend_token"] = cfg.logfire_frontend_token is not None
     emit(data, as_json, columns=list(data.keys()))
 
 
