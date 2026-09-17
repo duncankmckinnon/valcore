@@ -215,7 +215,7 @@ export default function SettingsPage(): JSX.Element {
   });
 
   return (
-    <section>
+    <section data-logfire-block>
       <PageHeader
         title="Settings"
         description="Store API keys in the local config. Secret values are never sent back to the browser — a set key shows as masked until you replace it."
@@ -366,7 +366,7 @@ export default function SettingsPage(): JSX.Element {
           from the valcore project itself.
         </label>
       )}
-      <div className="model-selection-box" data-logfire-block>
+      <div className="model-selection-box">
         <h3>Logfire Frontend Observability</h3>
         <p className="settings-explanation">
           Optional browser tracing uses the restricted public token generated under Logfire
@@ -434,9 +434,10 @@ export default function SettingsPage(): JSX.Element {
           Record session replays
         </label>
         <p className="settings-explanation">
-          Early access. Replay is off by default. When enabled, rendered text and input values are
-          masked, console capture stays off, and recording data is sent to your Logfire project.
-          Reload this page after saving to apply frontend observability changes.
+          Early access. Replay is off by default. When enabled, UI text and input values are
+          recorded except on this Settings page; console capture stays off. Recording data is sent
+          to your Logfire project. Reload this page after saving to apply frontend observability
+          changes.
         </p>
       </div>
       <div className="form-footer">

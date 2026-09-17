@@ -22,10 +22,9 @@ describe("configureFrontendTelemetry", () => {
 
     expect(configured).toBe(true);
     expect(sessionReplayIntegration).toHaveBeenCalledWith({
-      maskAllText: true,
-      maskAllInputs: true,
-      blockSelector:
-        "[data-logfire-block], [data-row-id], [data-label], [data-actual], [data-predicted], [title], [aria-label]",
+      maskAllText: false,
+      maskAllInputs: false,
+      blockSelector: "[data-logfire-block]",
       captureConsole: false,
     });
     expect(configureFrontend).toHaveBeenCalledOnce();

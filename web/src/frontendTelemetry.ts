@@ -60,10 +60,9 @@ export async function configureFrontendTelemetry(
     const { sessionReplayIntegration } = await dependencies.loadReplayIntegration();
     options.sessionReplay = {
       ...sessionReplayIntegration({
-        maskAllText: true,
-        maskAllInputs: true,
-        blockSelector:
-          "[data-logfire-block], [data-row-id], [data-label], [data-actual], [data-predicted], [title], [aria-label]",
+        maskAllText: false,
+        maskAllInputs: false,
+        blockSelector: "[data-logfire-block]",
         captureConsole: false,
       }),
     };

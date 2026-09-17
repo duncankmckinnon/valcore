@@ -81,6 +81,14 @@ afterEach(() => {
 });
 
 describe("SettingsPage", () => {
+  it("blocks the complete settings page from session replay", async () => {
+    setupGet.mockResolvedValue(makeStatus());
+    renderPage();
+
+    const heading = await screen.findByRole("heading", { name: "Settings" });
+    expect(heading.closest("section")).toHaveAttribute("data-logfire-block");
+  });
+
   it("renders a password input per key, empty when unset, with each explanation", async () => {
     renderPage();
 

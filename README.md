@@ -372,8 +372,8 @@ The Settings page can also opt the browser UI into Logfire frontend observabilit
 a frontend application in Logfire, then paste its generated trace URL and restricted
 public token into **Logfire Frontend Observability**. Browser tracing starts after the
 next page load. Session replay is a separate, off-by-default Early Access option; when
-enabled, valcore masks rendered text and inputs, disables console capture, and blocks
-DOM elements whose attributes may contain user-authored data. See Logfire's
+enabled, valcore records UI text and input values outside the blocked Settings page and
+disables console capture. See Logfire's
 [frontend observability guide](https://pydantic.dev/logfire/observe/frontend/) for the
 Logfire-side setup.
 
