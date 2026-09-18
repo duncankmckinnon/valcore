@@ -1277,6 +1277,35 @@ def test_config_set_db_path_stores_a_path(runner, db_path, tmp_path):
     assert load_config().db_path == target
 
 
+def test_config_set_frontend_observability_fields(runner, db_path):
+    trace_url = "https://logfire-us.pydantic.dev/v1/traces"
+    assert (
+        _invoke(runner, db_path, "config", "set", "logfire_frontend_trace_url", trace_url).exit_code
+        == 0
+    )
+    token_result = _invoke(
+        runner, db_path, "config", "set", "logfire_frontend_token", "lf-frontend-public"
+    )
+    replay_result = _invoke(runner, db_path, "config", "set", "logfire_session_replay", "true")
+
+    assert token_result.exit_code == 0
+    assert "lf-frontend-public" not in token_result.output
+    assert replay_result.exit_code == 0
+    cfg = load_config()
+    assert cfg.logfire_frontend_trace_url == trace_url
+    assert cfg.logfire_frontend_token == "lf-frontend-public"
+    assert cfg.logfire_session_replay is True
+    get_result = _invoke(runner, db_path, "config", "get", "--json", "--show-key")
+    assert json.loads(get_result.output)["logfire_frontend_token"] is True
+    assert "lf-frontend-public" not in get_result.output
+
+
+def test_config_set_session_replay_rejects_a_non_boolean(runner, db_path):
+    result = _invoke(runner, db_path, "config", "set", "logfire_session_replay", "sometimes")
+    assert result.exit_code == 1
+    assert load_config().logfire_session_replay is False
+
+
 def test_config_set_rejects_an_unknown_key(runner, db_path):
     result = _invoke(runner, db_path, "config", "set", "nonsense", "x")
     assert result.exit_code == 1

@@ -32,6 +32,7 @@ from valcore.config import (
     set_local_cli_default,
     set_logfire_api_key,
     set_logfire_explore_url,
+    set_logfire_frontend_trace_url,
     set_logfire_read_key,
     set_logfire_token,
     set_logfire_write_key,
@@ -82,6 +83,9 @@ def test_load_config_missing_returns_all_none(_home: Path) -> None:
     assert cfg.logfire_read_key is None
     assert cfg.logfire_write_key is None
     assert cfg.logfire_explore_url is None
+    assert cfg.logfire_frontend_trace_url is None
+    assert cfg.logfire_frontend_token is None
+    assert cfg.logfire_session_replay is False
     assert cfg.local_cli_default is None
 
 
@@ -97,6 +101,9 @@ def test_save_load_round_trips_every_field() -> None:
         logfire_read_key="lf-read-key",
         logfire_write_key="lf-write-key",
         logfire_explore_url="https://logfire-us.pydantic.dev/duncan/agent-tracing/explore",
+        logfire_frontend_trace_url="https://logfire-us.pydantic.dev/v1/traces",
+        logfire_frontend_token="lf-frontend-token",
+        logfire_session_replay=True,
         local_cli_default="claude",
     )
     save_config(cfg)
@@ -433,6 +440,22 @@ def test_save_load_round_trips_read_and_write_keys() -> None:
     assert 'logfire_read_key = "lf-read"' in content
     assert 'logfire_write_key = "lf-write"' in content
     assert load_config() == cfg
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://logfire-us.pydantic.dev/v1/traces",
+        "https://example.com/v1/traces",
+        "https://user:password@logfire-us.pydantic.dev/v1/traces",
+        "https://logfire-us.pydantic.dev/v1/traces?token=secret",
+        "https://logfire-us.pydantic.dev/v1/traces#fragment",
+        "https://logfire-us.pydantic.dev/wrong-path",
+    ],
+)
+def test_set_logfire_frontend_trace_url_rejects_unsafe_urls(url: str) -> None:
+    with pytest.raises(ConfigError, match="frontend trace URL"):
+        set_logfire_frontend_trace_url(url)
 
 
 def test_set_logfire_read_key_preserves_other_fields() -> None:

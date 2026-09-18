@@ -368,6 +368,15 @@ The [Pydantic AI Gateway](https://ai.pydantic.dev/gateway/) already reports the 
 themselves — valcore adds only the surrounding run and row context around them, and
 deliberately does not re-report the calls, which would double-count tokens and cost.
 
+The Settings page can also opt the browser UI into Logfire frontend observability. Create
+a frontend application in Logfire, then paste its generated trace URL and restricted
+public token into **Logfire Frontend Observability**. Browser tracing starts after the
+next page load. Session replay is a separate, off-by-default Early Access option; when
+enabled, valcore records UI text and input values outside the blocked Settings page and
+disables console capture. See Logfire's
+[frontend observability guide](https://pydantic.dev/logfire/observe/frontend/) for the
+Logfire-side setup.
+
 `valcore experiment <evaluator> <dataset>` runs the same evaluation through
 `pydantic_evals.Dataset.evaluate` instead of `run`'s own engine, so it also appears in
 Logfire's experiments view on the valcore tracing project. It persists a run the same way

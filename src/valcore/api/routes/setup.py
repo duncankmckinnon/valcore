@@ -1,21 +1,22 @@
 """Setup status and key writes.
 
 GET reports which configuration keys are effectively set. POST writes values to the
-local config file. No key value ever crosses a response -- only booleans, computed
-from the same ``*_present`` helpers ``require_gateway_key`` relies on, so presence
-reflects an exported env var exactly as it does everywhere else in the codebase.
+local config file. Secret key values never cross a response. The dedicated frontend
+telemetry endpoint returns only the restricted public browser token.
 """
 
 import os
 from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
 from pydantic import BaseModel, Field
 
 from valcore import logfire_links, tracing
 from valcore.config import (
     clear_gateway_key,
     clear_local_cli_default,
+    clear_logfire_frontend_token,
+    clear_logfire_frontend_trace_url,
     clear_logfire_read_key,
     clear_logfire_token,
     clear_logfire_write_key,
@@ -30,9 +31,13 @@ from valcore.config import (
     save_config,
     set_key,
     set_local_cli_default,
+    set_logfire_frontend_token,
+    set_logfire_frontend_trace_url,
     set_logfire_read_key,
+    set_logfire_session_replay,
     set_logfire_token,
     set_logfire_write_key,
+    validate_logfire_frontend_trace_url,
 )
 from valcore.errors import ContractError
 from valcore.settings import LOCAL_CLI_NAMES, get_settings
@@ -44,10 +49,18 @@ _CLEARABLE = (
     "logfire_token",
     "logfire_read_key",
     "logfire_write_key",
+    "logfire_frontend_trace_url",
+    "logfire_frontend_token",
     "local_cli_default",
 )
 ClearName = Literal[
-    "gateway_api_key", "logfire_token", "logfire_read_key", "logfire_write_key", "local_cli_default"
+    "gateway_api_key",
+    "logfire_token",
+    "logfire_read_key",
+    "logfire_write_key",
+    "logfire_frontend_trace_url",
+    "logfire_frontend_token",
+    "local_cli_default",
 ]
 
 
@@ -62,6 +75,23 @@ class KeyStatus(BaseModel):
     purpose: str
     explanation: str
     from_env: bool
+
+
+class FrontendTelemetryStatus(BaseModel):
+    """Browser telemetry settings safe to show without exposing the public token value."""
+
+    trace_url: str | None = None
+    token_set: bool = False
+    session_replay: bool = False
+
+
+class FrontendTelemetryConfig(BaseModel):
+    """Runtime browser configuration; its token is restricted and intentionally public."""
+
+    enabled: bool = False
+    trace_url: str | None = None
+    token: str | None = None
+    session_replay: bool = False
 
 
 class SetupOut(BaseModel):
@@ -80,6 +110,7 @@ class SetupOut(BaseModel):
     logfire_explore_url: str | None = None
     logfire_traces_url: str | None = None
     logfire_datasets_url: str | None = None
+    logfire_frontend: FrontendTelemetryStatus = Field(default_factory=FrontendTelemetryStatus)
 
 
 class SetupKeysIn(BaseModel):
@@ -89,6 +120,9 @@ class SetupKeysIn(BaseModel):
     logfire_token: str | None = None
     logfire_read_key: str | None = None
     logfire_write_key: str | None = None
+    logfire_frontend_trace_url: str | None = None
+    logfire_frontend_token: str | None = None
+    logfire_session_replay: bool | None = None
     local_cli_default: str | None = None
     clear: list[ClearName] = Field(default_factory=list)
 
@@ -192,6 +226,11 @@ async def _status() -> SetupOut:
         or cfg.logfire_explore_url,
         logfire_traces_url=read_links.traces_url if read_links else None,
         logfire_datasets_url=write_links.datasets_url if write_links else None,
+        logfire_frontend=FrontendTelemetryStatus(
+            trace_url=cfg.logfire_frontend_trace_url,
+            token_set=cfg.logfire_frontend_token is not None,
+            session_replay=cfg.logfire_session_replay,
+        ),
     )
 
 
@@ -199,6 +238,25 @@ async def _status() -> SetupOut:
 async def get_setup() -> SetupOut:
     """Report effective presence for the gateway key and the three Logfire credentials."""
     return await _status()
+
+
+@router.get("/frontend-telemetry", response_model=FrontendTelemetryConfig)
+async def get_frontend_telemetry(response: Response) -> FrontendTelemetryConfig:
+    """Return the restricted public configuration needed by the browser SDK."""
+    response.headers["Cache-Control"] = "no-store"
+    cfg = load_config()
+    trace_url = (
+        validate_logfire_frontend_trace_url(cfg.logfire_frontend_trace_url)
+        if cfg.logfire_frontend_trace_url
+        else None
+    )
+    enabled = bool(trace_url and cfg.logfire_frontend_token)
+    return FrontendTelemetryConfig(
+        enabled=enabled,
+        trace_url=trace_url if enabled else None,
+        token=cfg.logfire_frontend_token if enabled else None,
+        session_replay=enabled and cfg.logfire_session_replay,
+    )
 
 
 def _require_nonblank(name: str, value: str | None) -> str | None:
@@ -219,6 +277,14 @@ async def post_setup(body: SetupKeysIn) -> SetupOut:
         "logfire_token": _require_nonblank("logfire_token", body.logfire_token),
         "logfire_read_key": _require_nonblank("logfire_read_key", body.logfire_read_key),
         "logfire_write_key": _require_nonblank("logfire_write_key", body.logfire_write_key),
+        "logfire_frontend_trace_url": (
+            validate_logfire_frontend_trace_url(body.logfire_frontend_trace_url)
+            if body.logfire_frontend_trace_url is not None
+            else None
+        ),
+        "logfire_frontend_token": _require_nonblank(
+            "logfire_frontend_token", body.logfire_frontend_token
+        ),
     }
     overlapping = [name for name in body.clear if values.get(name) is not None]
     if overlapping:
@@ -252,6 +318,12 @@ async def post_setup(body: SetupKeysIn) -> SetupOut:
         set_logfire_read_key(values["logfire_read_key"])
     if values["logfire_write_key"] is not None:
         set_logfire_write_key(values["logfire_write_key"])
+    if values["logfire_frontend_trace_url"] is not None:
+        set_logfire_frontend_trace_url(values["logfire_frontend_trace_url"])
+    if values["logfire_frontend_token"] is not None:
+        set_logfire_frontend_token(values["logfire_frontend_token"])
+    if body.logfire_session_replay is not None:
+        set_logfire_session_replay(body.logfire_session_replay)
     if body.local_cli_default is not None:
         set_local_cli_default(body.local_cli_default)
     if "local_cli_default" in body.clear:
@@ -266,6 +338,10 @@ async def post_setup(body: SetupKeysIn) -> SetupOut:
             clear_logfire_read_key()
         elif name == "logfire_write_key":
             clear_logfire_write_key()
+        elif name == "logfire_frontend_trace_url":
+            clear_logfire_frontend_trace_url()
+        elif name == "logfire_frontend_token":
+            clear_logfire_frontend_token()
 
     if values["logfire_token"] is not None or "logfire_token" in body.clear:
         tracing.reconfigure_logfire_token(load_config())

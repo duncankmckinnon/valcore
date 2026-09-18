@@ -1,6 +1,6 @@
 """TOML config layer stored at ``~/.valcore/config.toml``.
 
-Read with the stdlib :mod:`tomllib`; written by hand (ten keys does not justify
+Read with the stdlib :mod:`tomllib`; written by hand (this small fixed set does not justify
 a TOML-writing dependency). ``apply_gateway_key`` and ``apply_logfire_token`` are
 the only bridges between the stored config and the environment variables that
 pydantic-ai and logfire read; nothing else in the codebase reads, stores, or
@@ -15,6 +15,7 @@ import tempfile
 import tomllib
 import warnings
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel
 
@@ -23,6 +24,38 @@ from valcore.paths import config_path
 
 _GATEWAY_KEY_ENV = "PYDANTIC_AI_GATEWAY_API_KEY"
 _LOGFIRE_TOKEN_ENV = "LOGFIRE_TOKEN"
+
+
+def validate_logfire_frontend_trace_url(value: str) -> str:
+    """Validate and normalize a direct Logfire frontend trace endpoint."""
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        parsed = None
+        port = None
+    hostname = parsed.hostname.lower() if parsed and parsed.hostname else ""
+    logfire_host = hostname == "logfire.pydantic.dev" or (
+        hostname.startswith("logfire-") and hostname.endswith(".pydantic.dev")
+    )
+    valid = bool(
+        parsed
+        and value == value.strip()
+        and parsed.scheme == "https"
+        and logfire_host
+        and port is None
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path == "/v1/traces"
+        and not parsed.query
+        and not parsed.fragment
+    )
+    if not valid:
+        raise ConfigError(
+            "logfire frontend trace URL must be the HTTPS /v1/traces URL generated "
+            "for a Logfire frontend application."
+        )
+    return f"https://{hostname}/v1/traces"
 
 
 class FileConfig(BaseModel):
@@ -39,6 +72,9 @@ class FileConfig(BaseModel):
     logfire_read_key: str | None = None
     logfire_write_key: str | None = None
     logfire_explore_url: str | None = None
+    logfire_frontend_trace_url: str | None = None
+    logfire_frontend_token: str | None = None
+    logfire_session_replay: bool = False
 
 
 def _toml_str(value: str) -> str:
@@ -72,6 +108,12 @@ def _dump_toml(cfg: FileConfig) -> str:
         lines.append(f"logfire_write_key = {_toml_str(cfg.logfire_write_key)}")
     if cfg.logfire_explore_url is not None:
         lines.append(f"logfire_explore_url = {_toml_str(cfg.logfire_explore_url)}")
+    if cfg.logfire_frontend_trace_url is not None:
+        lines.append(f"logfire_frontend_trace_url = {_toml_str(cfg.logfire_frontend_trace_url)}")
+    if cfg.logfire_frontend_token is not None:
+        lines.append(f"logfire_frontend_token = {_toml_str(cfg.logfire_frontend_token)}")
+    if cfg.logfire_session_replay:
+        lines.append("logfire_session_replay = true")
     return "\n".join(lines) + ("\n" if lines else "")
 
 
@@ -243,6 +285,41 @@ def set_logfire_explore_url(url: str) -> None:
     """Persist the Logfire SQL Workbench URL, preserving other config values."""
     cfg = load_config()
     cfg.logfire_explore_url = url
+    save_config(cfg)
+
+
+def set_logfire_frontend_trace_url(url: str) -> None:
+    """Persist the regional trace URL generated for a Logfire frontend application."""
+    cfg = load_config()
+    cfg.logfire_frontend_trace_url = validate_logfire_frontend_trace_url(url)
+    save_config(cfg)
+
+
+def set_logfire_frontend_token(token: str) -> None:
+    """Persist the restricted public token generated for a Logfire frontend application."""
+    cfg = load_config()
+    cfg.logfire_frontend_token = token
+    save_config(cfg)
+
+
+def set_logfire_session_replay(enabled: bool) -> None:
+    """Enable or disable browser session replay while preserving frontend credentials."""
+    cfg = load_config()
+    cfg.logfire_session_replay = enabled
+    save_config(cfg)
+
+
+def clear_logfire_frontend_trace_url() -> None:
+    """Remove the stored frontend trace URL."""
+    cfg = load_config()
+    cfg.logfire_frontend_trace_url = None
+    save_config(cfg)
+
+
+def clear_logfire_frontend_token() -> None:
+    """Remove the stored restricted frontend token."""
+    cfg = load_config()
+    cfg.logfire_frontend_token = None
     save_config(cfg)
 
 

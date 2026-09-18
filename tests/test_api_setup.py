@@ -278,6 +278,11 @@ async def test_setup_explore_url_is_null_by_default() -> None:
     assert body["logfire_explore_url"] is None
     assert body["logfire_traces_url"] is None
     assert body["logfire_datasets_url"] is None
+    assert body["logfire_frontend"] == {
+        "trace_url": None,
+        "token_set": False,
+        "session_replay": False,
+    }
 
 
 @pytest.mark.anyio
@@ -408,6 +413,54 @@ async def test_post_setup_persists_keys_and_returns_updated_presence() -> None:
     assert cfg.logfire_token == "lf-posted-token"
     assert cfg.logfire_read_key == "lf-posted-read"
     assert cfg.logfire_write_key == "lf-posted-write"
+
+
+@pytest.mark.anyio
+async def test_post_setup_persists_frontend_telemetry_without_returning_the_token() -> None:
+    from valcore.config import load_config
+
+    resp = await _post_setup(
+        create_app(),
+        {
+            "logfire_frontend_trace_url": "https://logfire-us.pydantic.dev/v1/traces",
+            "logfire_frontend_token": "lf-frontend-public",
+            "logfire_session_replay": True,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["logfire_frontend"] == {
+        "trace_url": "https://logfire-us.pydantic.dev/v1/traces",
+        "token_set": True,
+        "session_replay": True,
+    }
+    assert "lf-frontend-public" not in resp.text
+
+    cfg = load_config()
+    assert cfg.logfire_frontend_trace_url == "https://logfire-us.pydantic.dev/v1/traces"
+    assert cfg.logfire_frontend_token == "lf-frontend-public"
+    assert cfg.logfire_session_replay is True
+
+
+@pytest.mark.anyio
+async def test_frontend_telemetry_endpoint_returns_the_restricted_browser_config() -> None:
+    save_config(
+        FileConfig(
+            logfire_frontend_trace_url="https://logfire-us.pydantic.dev/v1/traces",
+            logfire_frontend_token="lf-frontend-public",
+            logfire_session_replay=True,
+        )
+    )
+    async with _client(create_app()) as client:
+        resp = await client.get("/api/setup/frontend-telemetry")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["cache-control"] == "no-store"
+    assert resp.json() == {
+        "enabled": True,
+        "trace_url": "https://logfire-us.pydantic.dev/v1/traces",
+        "token": "lf-frontend-public",
+        "session_replay": True,
+    }
 
 
 @pytest.mark.anyio

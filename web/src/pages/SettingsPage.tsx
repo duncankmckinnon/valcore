@@ -33,6 +33,12 @@ export default function SettingsPage(): JSX.Element {
   const [localCliDraft, setLocalCliDraft] = useState<string | null>(null);
   const [localCliDirty, setLocalCliDirty] = useState(false);
   const [showGatewayKey, setShowGatewayKey] = useState(false);
+  const [frontendTraceUrl, setFrontendTraceUrl] = useState("");
+  const [frontendTraceUrlDirty, setFrontendTraceUrlDirty] = useState(false);
+  const [frontendToken, setFrontendToken] = useState("");
+  const [frontendTokenDirty, setFrontendTokenDirty] = useState(false);
+  const [sessionReplay, setSessionReplay] = useState(false);
+  const [sessionReplayDirty, setSessionReplayDirty] = useState(false);
 
   function load() {
     setLoading(true);
@@ -47,6 +53,12 @@ export default function SettingsPage(): JSX.Element {
         setLocalCliDraft(result.local_cli_default);
         setLocalCliDirty(false);
         setShowGatewayKey(keyByName(result, "gateway_api_key")?.set ?? false);
+        setFrontendTraceUrl(result.logfire_frontend.trace_url ?? "");
+        setFrontendTraceUrlDirty(false);
+        setFrontendToken("");
+        setFrontendTokenDirty(false);
+        setSessionReplay(result.logfire_frontend.session_replay);
+        setSessionReplayDirty(false);
       })
       .catch(setError)
       .finally(() => setLoading(false));
@@ -56,7 +68,13 @@ export default function SettingsPage(): JSX.Element {
     load();
   }, []);
 
-  const canSave = dirty.size > 0 || cleared.size > 0 || localCliDirty;
+  const canSave =
+    dirty.size > 0 ||
+    cleared.size > 0 ||
+    localCliDirty ||
+    frontendTraceUrlDirty ||
+    frontendTokenDirty ||
+    sessionReplayDirty;
 
   const payload = useMemo((): SetupKeysIn | null => {
     if (!canSave) return null;
@@ -87,9 +105,43 @@ export default function SettingsPage(): JSX.Element {
         body.local_cli_default = localCliDraft;
       }
     }
+    if (frontendTraceUrlDirty) {
+      const value = frontendTraceUrl.trim();
+      if (value === "") {
+        if (status?.logfire_frontend.trace_url !== null) {
+          clear.push("logfire_frontend_trace_url");
+        }
+      } else {
+        body.logfire_frontend_trace_url = value;
+      }
+    }
+    if (frontendTokenDirty) {
+      const value = frontendToken.trim();
+      if (value === "" || value === MASK) {
+        if (status?.logfire_frontend.token_set) clear.push("logfire_frontend_token");
+      } else {
+        body.logfire_frontend_token = value;
+      }
+    }
+    if (sessionReplayDirty) body.logfire_session_replay = sessionReplay;
     if (clear.length > 0) body.clear = clear;
     return body;
-  }, [canSave, cleared, dirty, drafts, sameReadWrite, status, localCliDirty, localCliDraft]);
+  }, [
+    canSave,
+    cleared,
+    dirty,
+    drafts,
+    sameReadWrite,
+    status,
+    localCliDirty,
+    localCliDraft,
+    frontendTraceUrlDirty,
+    frontendTraceUrl,
+    frontendTokenDirty,
+    frontendToken,
+    sessionReplayDirty,
+    sessionReplay,
+  ]);
 
   function setDraft(name: SetupKeyName, raw: string, item: SetupKey) {
     let next = raw;
@@ -123,6 +175,12 @@ export default function SettingsPage(): JSX.Element {
       setCleared(new Set());
       setLocalCliDraft(result.local_cli_default);
       setLocalCliDirty(false);
+      setFrontendTraceUrl(result.logfire_frontend.trace_url ?? "");
+      setFrontendTraceUrlDirty(false);
+      setFrontendToken("");
+      setFrontendTokenDirty(false);
+      setSessionReplay(result.logfire_frontend.session_replay);
+      setSessionReplayDirty(false);
     } catch (err) {
       setError(err);
     } finally {
@@ -157,10 +215,10 @@ export default function SettingsPage(): JSX.Element {
   });
 
   return (
-    <section>
+    <section data-logfire-block>
       <PageHeader
         title="Settings"
-        description="Store API keys in the local config. Values are never sent back to the browser — a set key shows as masked until you replace it."
+        description="Store API keys in the local config. Secret values are never sent back to the browser — a set key shows as masked until you replace it."
       />
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
       <div className="model-selection-box">
@@ -308,6 +366,80 @@ export default function SettingsPage(): JSX.Element {
           from the valcore project itself.
         </label>
       )}
+      <div className="model-selection-box">
+        <h3>Logfire Frontend Observability</h3>
+        <p className="settings-explanation">
+          Optional browser tracing uses the restricted public token generated under Logfire
+          Project settings → Frontend applications. Do not paste a normal Logfire write token.
+        </p>
+        <div className="model-selection-field">
+          <label htmlFor="logfire-frontend-trace-url">Frontend application trace URL</label>
+          <input
+            id="logfire-frontend-trace-url"
+            className="input"
+            type="url"
+            autoComplete="off"
+            spellCheck={false}
+            value={frontendTraceUrl}
+            placeholder="https://logfire-us.pydantic.dev/v1/traces"
+            onChange={(event) => {
+              setFrontendTraceUrl(event.target.value);
+              setFrontendTraceUrlDirty(true);
+            }}
+          />
+        </div>
+        <div className="model-selection-field">
+          <label htmlFor="logfire-frontend-token">Frontend application token</label>
+          <div className="settings-key-row">
+            <input
+              id="logfire-frontend-token"
+              className="input"
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              value={frontendTokenDirty ? frontendToken : status.logfire_frontend.token_set ? MASK : ""}
+              placeholder={status.logfire_frontend.token_set ? undefined : "Not set"}
+              onChange={(event) => {
+                let value = event.target.value;
+                if (!frontendTokenDirty && status.logfire_frontend.token_set && value.startsWith(MASK)) {
+                  value = value.slice(MASK.length);
+                }
+                setFrontendToken(value);
+                setFrontendTokenDirty(true);
+              }}
+            />
+            {status.logfire_frontend.token_set && (
+              <Button
+                variant="secondary"
+                type="button"
+                onClick={() => {
+                  setFrontendToken("");
+                  setFrontendTokenDirty(true);
+                }}
+              >
+                Clear
+              </Button>
+            )}
+          </div>
+        </div>
+        <label className="settings-same">
+          <input
+            type="checkbox"
+            checked={sessionReplay}
+            onChange={(event) => {
+              setSessionReplay(event.target.checked);
+              setSessionReplayDirty(true);
+            }}
+          />
+          Record session replays
+        </label>
+        <p className="settings-explanation">
+          Early access. Replay is off by default. When enabled, UI text and input values are
+          recorded except on this Settings page; console capture stays off. Recording data is sent
+          to your Logfire project. Reload this page after saving to apply frontend observability
+          changes.
+        </p>
+      </div>
       <div className="form-footer">
         <div className="form-footer-actions">
           <Button onClick={() => void save()} disabled={!canSave || saving || payload === null}>

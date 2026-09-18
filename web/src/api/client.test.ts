@@ -636,6 +636,11 @@ describe("setup client helper", () => {
     logfire_explore_url: null,
     logfire_traces_url: null,
     logfire_datasets_url: null,
+    logfire_frontend: {
+      trace_url: null,
+      token_set: false,
+      session_replay: false,
+    },
   };
 
   it("setup.get GETs /api/setup and returns the parsed SetupStatus with all four keys", async () => {
@@ -667,6 +672,21 @@ describe("setup client helper", () => {
     expect(result).toEqual(body);
   });
 
+  it("setup.frontendTelemetry fetches the public browser runtime configuration", async () => {
+    const frontend = {
+      enabled: true,
+      trace_url: "https://logfire-us.pydantic.dev/v1/traces",
+      token: "lf-frontend-public",
+      session_replay: true,
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(frontend));
+
+    const result = await setup.frontendTelemetry();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/setup/frontend-telemetry");
+    expect(result).toEqual(frontend);
+  });
+
   it("setup.get surfaces a non-OK response as a rejection", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse({ error: { type: "Error", message: "setup unavailable" } }, { status: 500 }),
@@ -681,7 +701,7 @@ describe("setup client helper", () => {
   });
 
   it("exposes get and save", () => {
-    expect(Object.keys(setup).sort()).toEqual(["get", "save"]);
+    expect(Object.keys(setup).sort()).toEqual(["frontendTelemetry", "get", "save"]);
   });
 });
 

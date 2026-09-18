@@ -54,6 +54,11 @@ function makeStatus(overrides: Partial<Record<SetupKeyName, Partial<SetupKey>>> 
     logfire_explore_url: null,
     logfire_traces_url: null,
     logfire_datasets_url: null,
+    logfire_frontend: {
+      trace_url: null,
+      token_set: false,
+      session_replay: false,
+    },
   };
 }
 
@@ -76,6 +81,14 @@ afterEach(() => {
 });
 
 describe("SettingsPage", () => {
+  it("blocks the complete settings page from session replay", async () => {
+    setupGet.mockResolvedValue(makeStatus());
+    renderPage();
+
+    const heading = await screen.findByRole("heading", { name: "Settings" });
+    expect(heading.closest("section")).toHaveAttribute("data-logfire-block");
+  });
+
   it("renders a password input per key, empty when unset, with each explanation", async () => {
     renderPage();
 
@@ -231,5 +244,33 @@ describe("SettingsPage", () => {
     expect(setupSave).toHaveBeenCalledWith(
       expect.objectContaining({ clear: expect.arrayContaining(["local_cli_default"]) })
     );
+  });
+
+  it("saves optional frontend tracing credentials and the replay opt-in", async () => {
+    const user = userEvent.setup();
+    setupSave.mockResolvedValue({
+      ...makeStatus(),
+      logfire_frontend: {
+        trace_url: "https://logfire-us.pydantic.dev/v1/traces",
+        token_set: true,
+        session_replay: true,
+      },
+    });
+    renderPage();
+
+    await user.type(
+      await screen.findByLabelText("Frontend application trace URL"),
+      "https://logfire-us.pydantic.dev/v1/traces",
+    );
+    await user.type(screen.getByLabelText("Frontend application token"), "lf-frontend-public");
+    await user.click(screen.getByLabelText("Record session replays"));
+    await user.click(screen.getByRole("button", { name: "Save keys" }));
+
+    await waitFor(() => expect(setupSave).toHaveBeenCalledOnce());
+    expect(setupSave).toHaveBeenCalledWith({
+      logfire_frontend_trace_url: "https://logfire-us.pydantic.dev/v1/traces",
+      logfire_frontend_token: "lf-frontend-public",
+      logfire_session_replay: true,
+    });
   });
 });
