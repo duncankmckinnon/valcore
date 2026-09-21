@@ -184,6 +184,20 @@ describe("AgentDetail", () => {
     );
   });
 
+  it("allows adding another dependency-to-column mapping", async () => {
+    vi.mocked(agents.get).mockResolvedValue(makeDetail());
+    const user = userEvent.setup();
+    renderDetail();
+
+    await screen.findByLabelText("Dependency 1");
+    await user.click(
+      screen.getByRole("button", { name: "Add dependency mapping" }),
+    );
+
+    expect(screen.getByLabelText("Dependency 2")).toBeInTheDocument();
+    expect(screen.getByLabelText("Column 2")).toBeInTheDocument();
+  });
+
   it("creates a new version from the editable draft without mutating the selected version", async () => {
     const created = makeVersion({ id: "av-2", version_name: "new draft" });
     vi.mocked(agents.get)
