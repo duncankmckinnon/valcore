@@ -669,6 +669,22 @@ def validate_agent_version(version: AgentVersion) -> None:
 
     from valcore import agent_spec
 
+    if not isinstance(version.model, str):
+        raise ConfigError("Agent version model must be a string.")
+    if not isinstance(version.spec, dict):
+        raise ConfigError("Agent version spec must be an object.")
+    if not isinstance(version.prompt_template, str):
+        raise ConfigError("Agent version prompt_template must be a string.")
+    if not isinstance(version.required_columns, list) or not all(
+        isinstance(column, str) for column in version.required_columns
+    ):
+        raise ConfigError("Agent version required_columns must be a list of strings.")
+    if not isinstance(version.deps_mapping, dict) or not all(
+        isinstance(field, str) and isinstance(column, str)
+        for field, column in version.deps_mapping.items()
+    ):
+        raise ConfigError("Agent version deps_mapping must be an object of string values.")
+
     settings.validate_model_string(version.model)
     spec = agent_spec.parse_spec(version.spec)
 

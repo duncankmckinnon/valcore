@@ -202,11 +202,14 @@ source of truth (`scripts/sync_command_table.py --check` fails CI if the two dri
 | Command | What it does |
 | --- | --- |
 | `valcore serve` | Serve the web UI and API (`--port`, `--host`, `--no-browser`). |
-| `valcore list <evaluators\|datasets\|runs>` | List resources as a table or, with `--json`, as JSON. |
+| `valcore list <evaluators\|datasets\|runs\|agents>` | List resources as a table or, with `--json`, as JSON. |
 | `valcore run <evaluator> <dataset>` | Run an evaluator version over a dataset. |
 | `valcore experiment <evaluator> <dataset>` | Run an evaluator version over a dataset via `pydantic_evals.Dataset.evaluate`. |
 | `valcore export <evaluator>` | Export an evaluator (and, with `--dataset`, a dataset) as a Python script or, with `--format json`, a portable eval package. |
 | `valcore import <file>` | Import a JSON eval package back into the local database. |
+| `valcore agent trial <agent>` | Run one bound agent input (`--dataset`/`--row` or `--input KEY=VALUE`), optionally saving a derivation. |
+| `valcore agent import <file>` | Import a YAML or JSON AgentSpec and its valcore binding. |
+| `valcore agent export <agent>` | Export an agent version as a YAML AgentSpec with its valcore binding. |
 | `valcore config set <key> <value>` | Set any config key, including `model`, `local_cli_default`, `port`, `concurrency`, and `db_path`. |
 | `valcore config unset <key>` | Remove any config key. |
 | `valcore config set-key [KEY]` | Store the gateway API key in the config file. |

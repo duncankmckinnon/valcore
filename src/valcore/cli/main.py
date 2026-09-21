@@ -18,19 +18,32 @@ from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from pathlib import Path
+from time import perf_counter
+from typing import Any
 
 import click
+import yaml
+from pydantic_ai.agent.spec import AgentSpec
 
 from valcore import config as config_module
 from valcore import experiment, logfire_io, logfire_pull, tracing
+from valcore.agent_spec import build_deps, output_column_names, parse_spec, render_agent_prompt
 from valcore.cli.output import emit
-from valcore.cli.resolve import resolve_dataset, resolve_evaluator, resolve_version
+from valcore.cli.resolve import (
+    resolve_agent,
+    resolve_agent_version,
+    resolve_dataset,
+    resolve_evaluator,
+    resolve_version,
+)
 from valcore.cli.skills import skills
 from valcore.config import apply_gateway_key, load_config, save_config, set_key
 from valcore.config_io import EvalPackage
 from valcore.errors import ConfigError, ContractError, ValcoreError
 from valcore.export import render_dataset_module, render_judge_module, render_script
+from valcore.factory import agent_response_data, build_agent_from_version
 from valcore.models import (
+    AgentVersion,
     Annotation,
     Dataset,
     DatasetRow,
@@ -43,6 +56,7 @@ from valcore.models import (
     RunStatus,
     ScoreKind,
     label_set_fields_from_schema,
+    validate_agent_version,
     validate_version,
 )
 from valcore.paths import config_path
@@ -157,11 +171,11 @@ def serve(port: int | None, host: str, no_browser: bool) -> None:
 
 
 @cli.command(name="list")
-@click.argument("kind", type=click.Choice(["evaluators", "datasets", "runs"]))
+@click.argument("kind", type=click.Choice(["evaluators", "datasets", "runs", "agents"]))
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of a table.")
 @click.pass_context
 def list_(ctx: click.Context, kind: str, as_json: bool) -> None:
-    """List evaluators, datasets, or runs."""
+    """List evaluators, datasets, runs, or agents."""
     store = _store(ctx)
     if kind == "evaluators":
         rows = [e.model_dump() for e in store.list_evaluators()]
@@ -169,6 +183,23 @@ def list_(ctx: click.Context, kind: str, as_json: bool) -> None:
     elif kind == "datasets":
         rows = [d.model_dump() for d in store.list_datasets()]
         emit(rows, as_json, columns=["id", "name", "description", "columns"])
+    elif kind == "agents":
+        rows = []
+        for agent in store.list_agents():
+            active = (
+                store.get_agent_version(agent.active_version_id)
+                if agent.active_version_id is not None
+                else None
+            )
+            rows.append(
+                {
+                    "id": agent.id[:8],
+                    "name": agent.name,
+                    "version_count": len(store.list_agent_versions(agent.id)),
+                    "active_version": active.version_name if active is not None else None,
+                }
+            )
+        emit(rows, as_json, columns=["id", "name", "version_count", "active_version"])
     else:
         rows = []
         for run in store.list_runs():
@@ -401,6 +432,200 @@ def import_(ctx: click.Context, path: Path, name: str | None) -> None:
         # create_version already makes the new version the evaluator's active one (store.py).
         version = store.create_version(evaluator.id, **version_fields)
         click.echo(f"evaluator {evaluator.id} {evaluator.name} (version {version.id})")
+
+
+# -- agent -------------------------------------------------------------------
+
+
+def _parse_agent_inputs(values: tuple[str, ...]) -> dict[str, str]:
+    """Parse repeated ``KEY=VALUE`` command-line inputs without guessing value types."""
+    parsed: dict[str, str] = {}
+    for value in values:
+        if "=" not in value:
+            raise ContractError(f"--input must be KEY=VALUE, not {value!r}.")
+        key, item = value.split("=", 1)
+        if not key:
+            raise ContractError(f"--input must name a key, not {value!r}.")
+        parsed[key] = item
+    return parsed
+
+
+def _usage_data(usage: object) -> dict[str, Any]:
+    """Turn Pydantic AI's usage value into JSON-safe persisted telemetry."""
+    return dict(vars(usage))
+
+
+@cli.group(name="agent")
+def agent_group() -> None:
+    """Import, export, and trial versioned agents under test."""
+
+
+@agent_group.command("trial")
+@click.argument("agent_ref")
+@click.option("--version", "version_name", default=None, help="Version name (default: active).")
+@click.option("--dataset", "dataset_ref", default=None, help="Dataset containing the input row.")
+@click.option("--row", "row_idx", type=int, default=None, help="Dataset row index to run.")
+@click.option("--input", "inputs", multiple=True, help="Ad-hoc input as KEY=VALUE (repeatable).")
+@click.option("--save", "save", is_flag=True, help="Save the response as a dataset derivation.")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of a table.")
+@click.pass_context
+def agent_trial(
+    ctx: click.Context,
+    agent_ref: str,
+    version_name: str | None,
+    dataset_ref: str | None,
+    row_idx: int | None,
+    inputs: tuple[str, ...],
+    save: bool,
+    as_json: bool,
+) -> None:
+    """Run one agent input locally, saving an immutable response overlay only on request."""
+    if row_idx is not None and dataset_ref is None:
+        raise ContractError("--row requires --dataset.")
+    if save and dataset_ref is None:
+        raise ContractError("--save requires --dataset.")
+
+    store = _store(ctx)
+    agent = resolve_agent(store, agent_ref)
+    version = resolve_agent_version(store, agent, version_name)
+    dataset = resolve_dataset(store, dataset_ref) if dataset_ref is not None else None
+    source_row: DatasetRow | None = None
+    if row_idx is not None:
+        assert dataset is not None
+        source_row = next((row for row in store.list_rows(dataset.id) if row.idx == row_idx), None)
+        if source_row is None:
+            raise ContractError(f"Dataset {dataset.name!r} has no row with idx {row_idx}.")
+        row_data: dict[str, Any] = source_row.data
+    else:
+        row_data = _parse_agent_inputs(inputs)
+        if not row_data:
+            raise ContractError("Provide --dataset with --row, or at least one --input KEY=VALUE.")
+
+    prompt = render_agent_prompt(version.prompt_template, row_data)
+    deps = build_deps(version.deps_mapping, row_data)
+    spec = parse_spec(version.spec)
+    started = perf_counter()
+    try:
+        result = asyncio.run(build_agent_from_version(version).run(prompt, deps=deps))
+    except ValcoreError:
+        raise
+    except Exception as exc:
+        raise ContractError(str(exc)) from exc
+    latency_ms = round((perf_counter() - started) * 1000)
+    output = agent_response_data(spec, result.output)
+    usage = _usage_data(result.usage)
+    payload = {
+        "prompt": prompt,
+        "deps": deps,
+        "output": output,
+        "latency_ms": latency_ms,
+        "usage": usage,
+        "error": None,
+    }
+
+    if save:
+        assert dataset is not None
+        if source_row is None:
+            source_row = store.add_rows(dataset.id, [row_data])[0]
+        derivation = store.save_derivation(
+            dataset_id=dataset.id,
+            agent_version_id=version.id,
+            response_columns=output_column_names(spec),
+            responses=[
+                {
+                    "row_id": source_row.id,
+                    "data": output,
+                    "latency_ms": latency_ms,
+                    "usage": usage,
+                    "error": None,
+                }
+            ],
+        )
+        if not as_json:
+            click.echo(f"saved derivation {derivation.id[:8]} (ordinal {derivation.ordinal})")
+
+    if as_json:
+        emit(payload, True)
+    else:
+        click.echo(f"prompt: {prompt}")
+        emit(output, False, columns=list(output))
+        click.echo(f"latency_ms: {latency_ms}")
+
+
+@agent_group.command("import")
+@click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--name", "name", default=None, help="Override the imported agent's name.")
+@click.pass_context
+def agent_import(ctx: click.Context, path: Path, name: str | None) -> None:
+    """Import a YAML or JSON AgentSpec artifact and its valcore binding."""
+    try:
+        spec = AgentSpec.from_file(path)
+    except Exception as exc:
+        raise ContractError(f"Could not read agent spec {path}: {exc}") from exc
+    metadata = spec.metadata if isinstance(spec.metadata, dict) else {}
+    binding = metadata.get("valcore")
+    required = ("model", "prompt_template", "required_columns", "deps_mapping")
+    missing = [field for field in required if not isinstance(binding, dict) or field not in binding]
+    if missing:
+        raise ContractError(f"Agent spec is missing valcore binding fields: {', '.join(missing)}.")
+
+    stored_spec = spec.model_dump(mode="json", context={"use_short_form": True})
+    stored_metadata = dict(stored_spec.get("metadata") or {})
+    stored_metadata.pop("valcore", None)
+    stored_spec["metadata"] = stored_metadata or None
+    version_fields = {
+        "version_name": "v1",
+        "model": binding["model"],
+        "spec": stored_spec,
+        "prompt_template": binding["prompt_template"],
+        "required_columns": binding["required_columns"],
+        "deps_mapping": binding["deps_mapping"],
+    }
+    try:
+        validate_agent_version(AgentVersion(agent_id="", **version_fields))
+    except Exception as exc:
+        raise ContractError(f"Invalid valcore binding: {exc}") from exc
+
+    # Store methods commit independently, so validate the complete version before creating its
+    # parent. Invalid artifacts must never leave a permanently empty agent behind.
+    store = _store(ctx)
+    agent = store.create_agent(name or spec.name or path.stem)
+    version = store.create_agent_version(
+        agent.id,
+        **version_fields,
+    )
+    click.echo(f"agent {agent.id} {agent.name} (version {version.id})")
+
+
+@agent_group.command("export")
+@click.argument("agent_ref")
+@click.option("--version", "version_name", default=None, help="Version name (default: active).")
+@click.option("--out", "output", type=click.Path(dir_okay=False, path_type=Path), default=None)
+@click.pass_context
+def agent_export(
+    ctx: click.Context, agent_ref: str, version_name: str | None, output: Path | None
+) -> None:
+    """Export an agent version as YAML with valcore's binding in its metadata."""
+    store = _store(ctx)
+    agent = resolve_agent(store, agent_ref)
+    version = resolve_agent_version(store, agent, version_name)
+    spec_data = version.spec.copy()
+    metadata = dict(spec_data.get("metadata") or {})
+    metadata["valcore"] = {
+        "model": version.model,
+        "prompt_template": version.prompt_template,
+        "required_columns": version.required_columns,
+        "deps_mapping": version.deps_mapping,
+    }
+    spec_data["metadata"] = metadata
+    spec = AgentSpec.from_dict(spec_data)
+    destination = output or Path(f"{_slug(agent.name)}-{version.version_name}.yaml")
+    content = yaml.safe_dump(
+        spec.model_dump(mode="json", by_alias=True, context={"use_short_form": True}),
+        sort_keys=False,
+        allow_unicode=True,
+    )
+    _write_artifact(destination, content, output)
 
 
 # -- run ----------------------------------------------------------------------
