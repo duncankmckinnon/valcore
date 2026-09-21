@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import AgentsPage from "./AgentsPage";
 import { agents, ApiError } from "../api/client";
 import type { AgentSummary } from "../api/types";
@@ -44,7 +44,10 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
 function renderPage(path = "/agents") {
   return render(
     <MemoryRouter initialEntries={[path]}>
-      <AgentsPage />
+      <Routes>
+        <Route path="/agents" element={<AgentsPage />} />
+        <Route path="/agents/:id" element={<AgentsPage />} />
+      </Routes>
     </MemoryRouter>,
   );
 }

@@ -2,7 +2,7 @@
 // version-specific editing and trial work moves into AgentDetail.
 
 import { useEffect, useState } from "react";
-import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { agents } from "../api/client";
 import type { AgentSummary } from "../api/types";
 import { EmptyState } from "../components/EmptyState";
@@ -180,9 +180,5 @@ function AgentsList(): JSX.Element {
 /** Selects the agent detail view when the shared route includes an agent id. */
 export default function AgentsPage(): JSX.Element {
   const { id } = useParams();
-  const { pathname } = useLocation();
-  // The pathname fallback keeps this page independently renderable in embedding contexts
-  // where a router exists but has not declared the matching parameterized route.
-  const routeId = id ?? pathname.match(/^\/agents\/([^/]+)$/)?.[1];
-  return routeId ? <AgentDetail agentId={routeId} /> : <AgentsList />;
+  return id ? <AgentDetail agentId={id} /> : <AgentsList />;
 }
