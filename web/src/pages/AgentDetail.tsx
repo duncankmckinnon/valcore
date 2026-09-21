@@ -502,7 +502,7 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
           </div>
         )}
       </div>
-      {!specError && !draft && <AgentTrialPanel version={selected} />}
+      {!specError && <AgentTrialPanel version={selected} />}
       <ConfirmDialog
         open={deleteOpen}
         title="Delete version"
