@@ -17,6 +17,9 @@ from valcore.capabilities import (
     CAPABILITY_REGISTRY,
     VALID_CAPABILITIES,
     CapabilityEntry,
+    load_capability_class,
+    spec_capability_names,
+    spec_capability_types,
 )
 from valcore.errors import ConfigError
 from valcore.export import render_script
@@ -230,3 +233,141 @@ def test_scalar_types_covers_only_the_four_scalar_field_types() -> None:
     """SCALAR_TYPES maps the four scalar field types and excludes the enum type."""
     assert set(SCALAR_TYPES) == {FieldType.STR, FieldType.INT, FieldType.FLOAT, FieldType.BOOL}
     assert FieldType.ENUM not in SCALAR_TYPES
+
+
+# --- load_capability_class -----------------------------------------------------
+
+
+@pytest.mark.parametrize("name", sorted(EXPECTED_CAPABILITY_NAMES))
+def test_load_capability_class_imports_every_registered_capability(name: str) -> None:
+    """Every registered entry resolves to its live class via the loader."""
+    entry = CAPABILITY_REGISTRY[name]
+    cls = load_capability_class(entry)
+    assert cls.__name__ == entry.class_name
+
+
+def test_load_capability_class_raises_config_error_for_missing_module() -> None:
+    """An entry naming a module that does not exist fails with ConfigError, not ImportError."""
+    entry = CapabilityEntry(module="no_such_module_at_all", class_name="Whatever")
+    with pytest.raises(ConfigError):
+        load_capability_class(entry)
+
+
+def test_load_capability_class_raises_config_error_for_missing_attribute() -> None:
+    """An entry naming a real module but a nonexistent class fails with ConfigError."""
+    entry = CapabilityEntry(module="valcore.capabilities", class_name="NoSuchCapability")
+    with pytest.raises(ConfigError):
+        load_capability_class(entry)
+
+
+def test_load_capability_class_error_names_the_capability() -> None:
+    """The ConfigError message identifies which capability failed to import, for debuggability."""
+    entry = CapabilityEntry(module="no_such_module_at_all", class_name="Ghost")
+    with pytest.raises(ConfigError, match="Ghost"):
+        load_capability_class(entry)
+
+
+# --- spec_capability_names / spec_capability_types ------------------------------
+
+
+def test_spec_capability_names_matches_expected_serializable_set() -> None:
+    """Exactly the four serializable harness capabilities are exposed for agent specs."""
+    assert spec_capability_names() == frozenset({"CodeMode", "Planning", "FileSystem", "Shell"})
+
+
+def test_spec_capability_names_excludes_subagents() -> None:
+    """SubAgents is excluded because it cannot round-trip through a JSON spec."""
+    assert "SubAgents" not in spec_capability_names()
+
+
+def test_spec_capability_names_returns_a_frozenset() -> None:
+    """The return type is a frozenset, matching VALID_CAPABILITIES's convention."""
+    assert isinstance(spec_capability_names(), frozenset)
+
+
+def test_spec_capability_types_returns_four_classes() -> None:
+    """Exactly the four serializable harness capability classes are returned."""
+    types_ = spec_capability_types()
+    assert len(types_) == 4
+    assert {cls.__name__ for cls in types_} == {"CodeMode", "Planning", "FileSystem", "Shell"}
+
+
+def test_spec_capability_types_excludes_subagents_class() -> None:
+    """The SubAgents class itself is absent from the spec-usable set."""
+    assert "SubAgents" not in {cls.__name__ for cls in spec_capability_types()}
+
+
+def test_spec_capability_types_are_abstract_capability_subclasses() -> None:
+    """Each returned class is a subclass of pydantic-ai's AbstractCapability."""
+    from pydantic_ai.capabilities.abstract import AbstractCapability
+
+    for cls in spec_capability_types():
+        assert issubclass(cls, AbstractCapability)
+
+
+def test_spec_capability_types_each_reports_a_serialization_name() -> None:
+    """Every returned class has a non-None get_serialization_name(), the inclusion criterion."""
+    for cls in spec_capability_types():
+        assert cls.get_serialization_name() is not None
+
+
+def test_spec_capability_names_are_derived_from_the_classes_serialization_names() -> None:
+    """spec_capability_names() is exactly the serialization names of spec_capability_types()."""
+    expected = {cls.get_serialization_name() for cls in spec_capability_types()}
+    assert spec_capability_names() == frozenset(expected)
+
+
+def test_spec_capability_types_skips_an_uninstallable_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A registry entry that fails to import is skipped rather than raising.
+
+    Simulates a partial harness install: an optional extra is missing, so the capability
+    should degrade out of the spec-usable set instead of breaking agent construction.
+    """
+    entry = CapabilityEntry(module="no_such_module_at_all", class_name="Ghost")
+    monkeypatch.setitem(CAPABILITY_REGISTRY, "CodeMode", entry)
+
+    types_ = spec_capability_types()
+    assert "Ghost" not in {cls.__name__ for cls in types_}
+    assert {cls.__name__ for cls in types_} == {"Planning", "FileSystem", "Shell"}
+
+
+def test_spec_capability_names_reflects_skipped_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """spec_capability_names() drops a capability whose class failed to import too."""
+    entry = CapabilityEntry(module="no_such_module_at_all", class_name="Ghost")
+    monkeypatch.setitem(CAPABILITY_REGISTRY, "Planning", entry)
+
+    assert spec_capability_names() == frozenset({"CodeMode", "FileSystem", "Shell"})
+
+
+# --- upstream-drift canary -------------------------------------------------------
+
+
+def test_spec_capability_types_are_dataclasses() -> None:
+    """Each spec-usable class is decorated with @dataclass, per pydantic-ai's own check.
+
+    ``pydantic_ai.agent.spec.get_capability_registry`` requires this; if a future harness
+    release drops the decorator, this test fails loudly instead of surfacing as an obscure
+    ValueError deep inside ``Agent.from_spec``.
+    """
+    for cls in spec_capability_types():
+        assert "__dataclass_fields__" in cls.__dict__
+
+
+def test_get_capability_registry_accepts_spec_capability_types() -> None:
+    """pydantic-ai's own registry builder accepts our custom types without raising.
+
+    ``get_capability_registry`` validates that every custom type subclasses
+    ``AbstractCapability`` and is a dataclass, raising ``ValueError`` otherwise. This is the
+    exact call ``Agent.from_spec(custom_capability_types=...)`` makes internally, so this
+    test is the earliest possible signal that a pydantic-ai upgrade broke the assumption the
+    whole agent-definitions feature rests on.
+    """
+    from pydantic_ai.agent.spec import get_capability_registry
+
+    registry = get_capability_registry(custom_types=spec_capability_types())
+    for name in spec_capability_names():
+        assert name in registry
