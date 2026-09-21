@@ -153,6 +153,34 @@ def test_agent_trial_dataset_row_save_allocates_successive_ordinals(
     )
 
 
+def test_agent_trial_ad_hoc_input_with_dataset_save_appends_the_source_row(
+    runner: CliRunner, store: Store, db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Saving an ad-hoc input attaches its response to the newly persisted dataset row."""
+    _, version = _seed_agent(store)
+    dataset = store.create_dataset("cases", "", ["input"])
+    monkeypatch.setattr(_cli_main_module(), "build_agent_from_version", _test_agent_builder)
+
+    result = _invoke(
+        runner,
+        db_path,
+        "agent",
+        "trial",
+        "writer",
+        "--dataset",
+        "cases",
+        "--input",
+        "input=ad hoc",
+        "--save",
+    )
+
+    assert result.exit_code == 0, result.output + result.stderr
+    rows = store.list_rows(dataset.id)
+    assert [row.data for row in rows] == [{"input": "ad hoc"}]
+    derivation = store.list_derivations(dataset_id=dataset.id, agent_version_id=version.id)[0]
+    assert store.list_agent_responses(derivation.id)[0].dataset_row_id == rows[0].id
+
+
 def test_agent_trial_save_requires_a_dataset(
     runner: CliRunner, store: Store, db_path: Path
 ) -> None:
@@ -177,6 +205,24 @@ def test_agent_trial_row_requires_a_dataset(runner: CliRunner, store: Store, db_
     assert result.exit_code == 1
     assert "--row" in result.stderr
     assert "--dataset" in result.stderr
+
+
+def test_agent_trial_reports_model_failures_as_domain_errors(
+    runner: CliRunner, store: Store, db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Provider exceptions must use the CLI's normal error channel and exit status."""
+    _seed_agent(store)
+
+    def failing_builder(version: AgentVersion) -> PydanticAgent:
+        """Raise the provider failure that a real agent build/run may surface."""
+        raise RuntimeError("model unavailable")
+
+    monkeypatch.setattr(_cli_main_module(), "build_agent_from_version", failing_builder)
+
+    result = _invoke(runner, db_path, "agent", "trial", "writer", "--input", "input=hello")
+
+    assert result.exit_code == 1
+    assert "error: model unavailable" in result.stderr
 
 
 def test_agent_trial_json_has_the_documented_result_contract(
