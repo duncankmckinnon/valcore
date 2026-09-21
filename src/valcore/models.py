@@ -10,7 +10,7 @@ from pydantic import BaseModel, ValidationError, model_validator
 from sqlalchemy import Column, UniqueConstraint
 from sqlmodel import JSON, Field, SQLModel
 
-from valcore import settings
+from valcore import agent_spec, capabilities, settings
 from valcore.capabilities import VALID_CAPABILITIES
 from valcore.errors import ConfigError, ContractError
 
@@ -387,6 +387,79 @@ class EvaluatorVersion(SQLModel, table=True):
     tools: list[str] = Field(default_factory=list, sa_column=Column(JSON))
 
 
+class Agent(SQLModel, table=True):
+    """A named agent under test, distinct from an evaluator that must produce a score.
+
+    An evaluator judges outputs against a scoring contract, while an Agent is the subject being
+    measured and therefore has no score contract of its own.
+    """
+
+    id: str = Field(default_factory=lambda: uuid4().hex, primary_key=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    name: str
+    description: str = ""
+    active_version_id: str | None = None
+
+
+class AgentVersion(SQLModel, table=True):
+    """An immutable-once-frozen agent definition and its binding to dataset columns.
+
+    ``spec`` remains an opaque pydantic-ai serialization blob because it round-trips exactly;
+    remodelling its fields would turn upstream additions into schema changes that bare
+    ``create_all`` cannot apply to existing databases. The binding model is authoritative because
+    ``settings`` validates valcore's model routes, including local CLI bridges that
+    ``Agent.from_spec`` cannot resolve itself.
+    """
+
+    id: str = Field(default_factory=lambda: uuid4().hex, primary_key=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    agent_id: str
+    version_name: str
+    notes: str = ""
+    frozen: bool = False
+    model: str
+    spec: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    prompt_template: str
+    required_columns: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    deps_mapping: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class DatasetDerivation(SQLModel, table=True):
+    """One saved agent run over a dataset, stored as an overlay rather than copied rows.
+
+    Keeping responses joined to original rows means versions compare against literally the same
+    inputs. Ordinals are allocated only when saved, so discarded trials do not leave gaps.
+    """
+
+    id: str = Field(default_factory=lambda: uuid4().hex, primary_key=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    dataset_id: str = Field(index=True)
+    agent_version_id: str = Field(index=True)
+    ordinal: int = 0
+    response_columns: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+
+
+class AgentResponse(SQLModel, table=True):
+    """One agent response joined to its source dataset row.
+
+    Telemetry belongs here rather than in dataset columns because a derived view projects only
+    response data, keeping the data that is annotated and evaluated to inputs plus responses.
+    """
+
+    __table_args__ = (
+        UniqueConstraint("derivation_id", "dataset_row_id", name="uq_agent_response_row"),
+    )
+
+    id: str = Field(default_factory=lambda: uuid4().hex, primary_key=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    derivation_id: str = Field(index=True)
+    dataset_row_id: str = Field(index=True)
+    data: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    latency_ms: int | None = None
+    usage: dict | None = Field(default=None, sa_column=Column(JSON))
+    error: str | None = None
+
+
 class Dataset(SQLModel, table=True):
     """A collection of input/output rows with a shared label space."""
 
@@ -587,6 +660,32 @@ def validate_version(version: EvaluatorVersion) -> None:
             raise ConfigError(
                 f"Unknown capability {cap_name!r}; valid names are {sorted(VALID_CAPABILITIES)}."
             )
+
+
+def validate_agent_version(version: AgentVersion) -> None:
+    """Raise ConfigError if an agent version's configuration is invalid."""
+    settings.validate_model_string(version.model)
+    spec = agent_spec.parse_spec(version.spec)
+
+    # This deferred import preserves the fast import path for ordinary CLI commands.
+    from pydantic_ai.capabilities import CAPABILITY_TYPES
+
+    allowed = set(CAPABILITY_TYPES) | capabilities.spec_capability_names()
+    for name in agent_spec.capability_names(spec):
+        if name == "SubAgents":
+            raise ConfigError(
+                "Capability 'SubAgents' cannot be used in an agent spec because it holds live "
+                "agent objects that do not serialize; it remains available to evaluators."
+            )
+        if name not in allowed:
+            raise ConfigError(f"Unknown capability {name!r}; valid names are {sorted(allowed)}.")
+
+    agent_spec.validate_binding(
+        spec,
+        prompt_template=version.prompt_template,
+        required_columns=version.required_columns,
+        deps_mapping=version.deps_mapping,
+    )
 
 
 def check_dataset_compatibility(
