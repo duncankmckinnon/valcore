@@ -2,6 +2,7 @@ import { Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import OverviewPage from "./pages/OverviewPage";
 import EvaluatorsPage from "./pages/EvaluatorsPage";
+import AgentsPage from "./pages/AgentsPage";
 import DatasetsPage from "./pages/DatasetsPage";
 import AnnotationsPage from "./pages/AnnotationsPage";
 import RunsPage from "./pages/RunsPage";
@@ -17,6 +18,8 @@ export default function App() {
         <Route index element={<OverviewPage />} />
         <Route path="/evaluators" element={<EvaluatorsPage />} />
         <Route path="/evaluators/:id" element={<EvaluatorsPage />} />
+        <Route path="/agents" element={<AgentsPage />} />
+        <Route path="/agents/:id" element={<AgentsPage />} />
         <Route path="/datasets" element={<DatasetsPage />} />
         <Route path="/datasets/:id" element={<DatasetsPage />} />
         <Route path="/annotations" element={<AnnotationsPage />} />

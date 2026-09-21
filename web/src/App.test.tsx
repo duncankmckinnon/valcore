@@ -6,6 +6,10 @@ import { MemoryRouter } from "react-router-dom";
 import App from "./App";
 import { setup } from "./api/client";
 
+vi.mock("./pages/AgentsPage", () => ({
+  default: () => <h1>Agents page</h1>,
+}));
+
 vi.mock("./api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./api/client")>();
   return {
@@ -29,6 +33,12 @@ function renderApp(path: string) {
 }
 
 describe("App routes", () => {
+  it.each(["/agents", "/agents/agent-42"])("serves AgentsPage at %s", async (path) => {
+    renderApp(path);
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Agents page" })).toBeTruthy();
+  });
+
   it("serves Settings at /settings", async () => {
     setupGet.mockResolvedValue({
       keys: [],

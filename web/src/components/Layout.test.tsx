@@ -30,6 +30,7 @@ describe("Layout nav", () => {
     // text alone.
     expect(screen.getByRole("link", { name: "Overview" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Evaluators" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Agents" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Datasets" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Annotations" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Runs" })).toBeTruthy();
@@ -38,12 +39,12 @@ describe("Layout nav", () => {
     expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();
   });
 
-  it("renders exactly the eight expected nav links and nothing else", () => {
+  it("renders exactly the nine expected nav links and nothing else", () => {
     renderLayout("/");
 
     // Guards against a stray link (e.g. the brand wordmark accidentally becoming
     // a link, or a footer/version badge that this task must not add).
-    expect(screen.getAllByRole("link")).toHaveLength(8);
+    expect(screen.getAllByRole("link")).toHaveLength(9);
   });
 
   it("separates Docs below the app-owned navigation", () => {
@@ -54,6 +55,7 @@ describe("Layout nav", () => {
       "Overview",
       "Settings",
       "Evaluators",
+      "Agents",
       "Datasets",
       "Annotations",
       "Runs",
@@ -91,6 +93,7 @@ describe("Layout nav", () => {
     expect(screen.getByRole("link", { name: "Evaluators" }).getAttribute("href")).toBe(
       "/evaluators",
     );
+    expect(screen.getByRole("link", { name: "Agents" }).getAttribute("href")).toBe("/agents");
     expect(screen.getByRole("link", { name: "Datasets" }).getAttribute("href")).toBe("/datasets");
     expect(screen.getByRole("link", { name: "Runs" }).getAttribute("href")).toBe("/runs");
   });
