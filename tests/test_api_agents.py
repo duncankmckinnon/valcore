@@ -8,6 +8,7 @@ from collections.abc import Iterator
 
 import httpx
 import pytest
+import yaml
 from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai.agent.spec import AgentSpec
 from pydantic_ai.models.function import AgentInfo, FunctionModel
@@ -218,6 +219,33 @@ async def test_import_rejects_invalid_documents_and_ignores_non_mapping_binding(
         }
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "binding",
+    [
+        {"model": 123},
+        {"prompt_template": ["not", "text"]},
+        {"required_columns": "not-a-list"},
+        {"required_columns": ["valid", 123]},
+        {"deps_mapping": "not-a-mapping"},
+        {"deps_mapping": {"dep": 123}},
+    ],
+)
+async def test_import_rejects_malformed_binding_fields(store: Store, binding: dict) -> None:
+    """Malformed individual binding values are contract errors rather than server failures."""
+    spec = AgentSpec(instructions="Be helpful.", metadata={"valcore": binding})
+    content = yaml.safe_dump(
+        spec.model_dump(mode="json", exclude_none=True, context={"use_short_form": True})
+    )
+    async with _client(store) as client:
+        imported = await client.post(
+            "/api/agents/import", json={"content": content, "format": "yaml"}
+        )
+
+    assert imported.status_code == 422, imported.text
+    assert imported.json()["error"]["type"] == "ContractError"
+
+
 # -- Trials and derivations ---------------------------------------------------
 
 
@@ -343,3 +371,36 @@ async def test_save_derivations_append_adhoc_rows_and_derived_rows_merge_columns
                 "error": None,
             }
         ]
+
+
+@pytest.mark.anyio
+async def test_failed_derivation_save_does_not_append_adhoc_rows(store: Store) -> None:
+    """All stored-row references are validated before any ad-hoc source row is committed."""
+    dataset = store.create_dataset("questions", "", ["question"])
+    other_dataset = store.create_dataset("other", "", ["question"])
+    foreign_row = store.add_rows(other_dataset.id, [{"question": "Wrong dataset"}])[0]
+    rows_before = store.list_rows(dataset.id)
+    derivations_before = store.list_derivations(dataset_id=dataset.id)
+
+    async with _client(store) as client:
+        _, version = await _create_agent_and_version(client)
+        failed = await client.post(
+            f"/api/agents/versions/{version['id']}/derivations",
+            json={
+                "dataset_id": dataset.id,
+                "entries": [
+                    {
+                        "inputs": {"question": "Must not be appended"},
+                        "data": {"response": "Orphaned response"},
+                    },
+                    {
+                        "row_id": foreign_row.id,
+                        "data": {"response": "Invalid response"},
+                    },
+                ],
+            },
+        )
+
+    assert failed.status_code == 422, failed.text
+    assert store.list_rows(dataset.id) == rows_before
+    assert store.list_derivations(dataset_id=dataset.id) == derivations_before

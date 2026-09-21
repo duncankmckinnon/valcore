@@ -11,12 +11,12 @@ from typing import Annotated, Any
 
 import yaml
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 from pydantic_ai.agent.spec import AgentSpec
 
 from valcore import agent_spec, config
 from valcore.api.deps import get_store
-from valcore.errors import ContractError
+from valcore.errors import ContractError, NotFoundError
 from valcore.factory import agent_response_data, build_agent_from_version
 from valcore.models import Agent, AgentVersion, DatasetDerivation
 from valcore.runner import _usage_dict
@@ -359,13 +359,16 @@ async def import_spec(body: AgentSpecImportRequest) -> AgentSpecImport:
     binding = (spec.metadata or {}).get("valcore", {})
     if not isinstance(binding, dict):
         binding = {}
-    return AgentSpecImport(
-        spec=spec.model_dump(mode="json", context={"use_short_form": True}),
-        model=binding.get("model"),
-        prompt_template=binding.get("prompt_template"),
-        required_columns=binding.get("required_columns") or [],
-        deps_mapping=binding.get("deps_mapping") or {},
-    )
+    try:
+        return AgentSpecImport(
+            spec=spec.model_dump(mode="json", context={"use_short_form": True}),
+            model=binding.get("model"),
+            prompt_template=binding.get("prompt_template"),
+            required_columns=binding.get("required_columns") or [],
+            deps_mapping=binding.get("deps_mapping") or {},
+        )
+    except ValidationError as exc:
+        raise ContractError(f"Invalid valcore binding metadata: {exc}") from exc
 
 
 @router.post("/versions/{vid}/trial", response_model=TrialResult)
@@ -414,11 +417,39 @@ async def trial_version(vid: str, body: TrialRequest, store: StoreDep) -> TrialR
 async def save_derivation(vid: str, body: DerivationSave, store: StoreDep) -> DerivationRead:
     """Save a complete response overlay, adding rows for ad-hoc entries first."""
     version = store.get_agent_version(vid)
+    store.get_dataset(body.dataset_id)
+    if not body.entries:
+        raise ContractError("A derivation must contain at least one response.")
+
+    stored_row_ids = [entry.row_id for entry in body.entries if entry.row_id is not None]
+    duplicate_row_ids = sorted(
+        row_id for row_id in set(stored_row_ids) if stored_row_ids.count(row_id) > 1
+    )
+    if duplicate_row_ids:
+        raise ContractError(
+            f"Derivation responses contain duplicate row_id values: {duplicate_row_ids}."
+        )
+    for row_id in stored_row_ids:
+        try:
+            row = store.get_row(row_id)
+        except NotFoundError as exc:
+            raise ContractError(
+                f"Derivation responses reference missing row_id values: {[row_id]}."
+            ) from exc
+        if row.dataset_id != body.dataset_id:
+            raise ContractError(
+                "Derivation responses reference rows outside dataset "
+                f"{body.dataset_id!r}: {[row_id]}."
+            )
+
+    response_columns = agent_spec.output_column_names(agent_spec.parse_spec(version.spec))
+    ad_hoc_entries = [entry for entry in body.entries if entry.row_id is None]
+    added_rows = iter(
+        store.add_rows(body.dataset_id, [entry.inputs or {} for entry in ad_hoc_entries])
+    )
     responses: list[dict[str, Any]] = []
     for entry in body.entries:
-        row_id = entry.row_id
-        if row_id is None:
-            row_id = store.add_rows(body.dataset_id, [entry.inputs or {}])[0].id
+        row_id = entry.row_id or next(added_rows).id
         responses.append(
             {
                 "row_id": row_id,
@@ -428,7 +459,6 @@ async def save_derivation(vid: str, body: DerivationSave, store: StoreDep) -> De
                 "error": entry.error,
             }
         )
-    response_columns = agent_spec.output_column_names(agent_spec.parse_spec(version.spec))
     derivation = store.save_derivation(
         dataset_id=body.dataset_id,
         agent_version_id=vid,
