@@ -13,6 +13,105 @@ export type RunStatus =
   | "failed";
 export type FieldType = "str" | "int" | "float" | "bool" | "enum";
 
+export type AgentSummary = {
+  id: string;
+  created_at: string;
+  name: string;
+  description: string;
+  active_version_id: string | null;
+  version_count: number;
+};
+
+export type AgentVersion = {
+  id: string;
+  created_at: string;
+  agent_id: string;
+  version_name: string;
+  notes: string;
+  frozen: boolean;
+  model: string;
+  spec: Record<string, unknown>;
+  prompt_template: string;
+  required_columns: string[];
+  deps_mapping: Record<string, string>;
+  response_columns: string[];
+};
+
+export type AgentDetail = { agent: AgentSummary; versions: AgentVersion[] };
+
+export type AgentCreate = { name: string; description?: string };
+export type AgentUpdate = { name?: string; description?: string };
+
+export type AgentVersionCreate = {
+  version_name: string;
+  notes?: string;
+  model: string;
+  spec: Record<string, unknown>;
+  prompt_template: string;
+  required_columns: string[];
+  deps_mapping?: Record<string, string>;
+};
+export type AgentVersionUpdate = Partial<AgentVersionCreate>;
+
+export type TrialRequest = {
+  dataset_id?: string | null;
+  row_id?: string | null;
+  inputs?: Record<string, unknown> | null;
+};
+
+export type TrialResult = {
+  prompt: string;
+  deps: Record<string, unknown>;
+  output: Record<string, unknown>;
+  response_columns: string[];
+  latency_ms: number;
+  usage: Record<string, number> | null;
+  error: string | null;
+};
+
+export type TrialEntry = {
+  row_id?: string | null;
+  inputs?: Record<string, unknown> | null;
+  data: Record<string, unknown>;
+  latency_ms?: number | null;
+  usage?: Record<string, number> | null;
+  error?: string | null;
+};
+
+export type DerivationSave = { dataset_id: string; entries: TrialEntry[] };
+
+export type Derivation = {
+  id: string;
+  created_at: string;
+  dataset_id: string;
+  dataset_name: string;
+  agent_version_id: string;
+  agent_name: string;
+  version_name: string;
+  ordinal: number;
+  response_columns: string[];
+  response_count: number;
+};
+
+export type DerivedRow = {
+  row_id: string;
+  idx: number;
+  data: Record<string, unknown>;
+  latency_ms: number | null;
+  error: string | null;
+};
+
+export type DerivedRowsPage = { columns: string[]; rows: DerivedRow[] };
+
+export type AgentSpecExport = { filename: string; content: string };
+export type AgentSpecImport = {
+  spec: Record<string, unknown>;
+  model: string | null;
+  prompt_template: string | null;
+  required_columns: string[];
+  deps_mapping: Record<string, string>;
+};
+
 export interface OutputField {
   name: string;
   type: FieldType;
