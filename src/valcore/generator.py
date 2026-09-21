@@ -4,7 +4,7 @@ from collections.abc import Callable
 from typing import TypeVar
 
 from pydantic import BaseModel
-from pydantic_ai import Agent
+from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 from valcore.errors import ConfigError, ContractError
@@ -82,7 +82,7 @@ def _field_rules() -> str:
     )
 
 
-def build_generator_agent(model: str | None = None) -> Agent[None, GeneratedConfig]:
+def build_generator_agent(model: str | None = None) -> PydanticAgent[None, GeneratedConfig]:
     """Build the agent that turns natural-language criteria into a complete config."""
     instructions = (
         "You design LLM-as-judge evaluators. Given natural-language criteria, produce a "
@@ -91,7 +91,7 @@ def build_generator_agent(model: str | None = None) -> Agent[None, GeneratedConf
         "Use `rationale` to briefly explain why you chose this schema, scoring, capabilities, "
         "and tools."
     )
-    return Agent(
+    return PydanticAgent(
         resolve_model(model or get_settings().default_model),
         output_type=GeneratedConfig,
         name="evaluator_generator",
@@ -103,7 +103,7 @@ def build_generator_agent(model: str | None = None) -> Agent[None, GeneratedConf
     )
 
 
-def build_refiner_agent(model: str | None = None) -> Agent[None, RefinedConfig]:
+def build_refiner_agent(model: str | None = None) -> PydanticAgent[None, RefinedConfig]:
     """Build the agent that applies a change request to an existing config."""
     instructions = (
         "You revise an existing evaluator configuration given a natural-language change "
@@ -113,7 +113,7 @@ def build_refiner_agent(model: str | None = None) -> Agent[None, RefinedConfig]:
         "of the change.\n\n"
         f"{_field_rules()}"
     )
-    return Agent(
+    return PydanticAgent(
         resolve_model(model or get_settings().default_model),
         output_type=RefinedConfig,
         name="evaluator_refiner",
@@ -148,7 +148,7 @@ _Output = TypeVar("_Output", bound=BaseModel)
 
 
 async def _produce(
-    agent: Agent[None, _Output],
+    agent: PydanticAgent[None, _Output],
     prompt: str,
     model: str,
     extract: Callable[[_Output], GeneratedConfig],
@@ -249,7 +249,7 @@ async def generate_config(
     column_notes: dict[str, str] | None = None,
     label_schema: LabelSchema | None = None,
     model: str | None = None,
-    agent: Agent | None = None,
+    agent: PydanticAgent | None = None,
 ) -> GeneratedConfig:
     """Generate a complete evaluator config from natural-language criteria.
 
@@ -271,7 +271,7 @@ async def refine_config(
     instruction: str,
     *,
     model: str | None = None,
-    agent: Agent | None = None,
+    agent: PydanticAgent | None = None,
 ) -> RefinedConfig:
     """Apply a natural-language change request to an existing evaluator config."""
     resolved_model = model or get_settings().default_model
