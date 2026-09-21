@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from typing import TypeVar
 
 from valcore.errors import ContractError, NotFoundError
-from valcore.models import Evaluator, EvaluatorVersion
+from valcore.models import Agent, AgentVersion, Evaluator, EvaluatorVersion
 from valcore.store import DatasetSummary, Store
 
 _MIN_PREFIX = 4
@@ -66,6 +66,17 @@ def resolve_evaluator(store: Store, ref: str) -> Evaluator:
     )
 
 
+def resolve_agent(store: Store, ref: str) -> Agent:
+    """Resolve ``ref`` to an agent by exact name or unique id prefix."""
+    return _resolve(
+        store.list_agents(),
+        ref,
+        "agent",
+        id_of=lambda agent: agent.id,
+        name_of=lambda agent: agent.name,
+    )
+
+
 def resolve_dataset(store: Store, ref: str) -> DatasetSummary:
     """Resolve ``ref`` to a dataset by exact name or unique id prefix.
 
@@ -101,4 +112,22 @@ def resolve_version(store: Store, evaluator: Evaluator, name: str | None) -> Eva
         "version",
         id_of=lambda v: v.id,
         name_of=lambda v: v.version_name,
+    )
+
+
+def resolve_agent_version(store: Store, agent: Agent, version_name: str | None) -> AgentVersion:
+    """Resolve an agent version by name, or its active version when no name is supplied."""
+    if version_name is None:
+        if agent.active_version_id is None:
+            raise NotFoundError(
+                f"Agent {agent.name!r} has no active version; pass --version to pick one."
+            )
+        return store.get_agent_version(agent.active_version_id)
+
+    return _resolve(
+        store.list_agent_versions(agent.id),
+        version_name,
+        "version",
+        id_of=lambda version: version.id,
+        name_of=lambda version: version.version_name,
     )
