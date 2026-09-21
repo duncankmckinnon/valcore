@@ -36,7 +36,7 @@ type EditorValues = {
   model: string;
   prompt_template: string;
   required_columns: string;
-  deps_mapping: Record<string, string>;
+  deps_mapping: [string, string][];
   spec: string;
 };
 
@@ -47,7 +47,7 @@ function editorValues(version: AgentVersion): EditorValues {
     model: version.model,
     prompt_template: version.prompt_template,
     required_columns: version.required_columns.join(", "),
-    deps_mapping: version.deps_mapping,
+    deps_mapping: mappingRows(version.deps_mapping),
     spec: JSON.stringify(version.spec, null, 2),
   };
 }
@@ -69,13 +69,17 @@ function createPayload(
     model: values.model,
     prompt_template: values.prompt_template,
     required_columns: columns(values.required_columns),
-    deps_mapping: values.deps_mapping,
+    deps_mapping: mappingObject(values.deps_mapping),
     spec,
   };
 }
 
 function mappingRows(mapping: Record<string, string>): [string, string][] {
   return Object.entries(mapping).length ? Object.entries(mapping) : [["", ""]];
+}
+
+function mappingObject(rows: [string, string][]): Record<string, string> {
+  return Object.fromEntries(rows.filter(([key]) => key.trim() !== ""));
 }
 
 /** Displays, edits, and trials the versions attached to an agent. */
@@ -170,13 +174,14 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
 
   function changeMapping(index: number, part: 0 | 1, value: string): void {
     if (!values) return;
-    const rows = mappingRows(values.deps_mapping);
+    const rows = values.deps_mapping.map((row) => [...row] as [string, string]);
     rows[index][part] = value;
-    updateValues({
-      deps_mapping: Object.fromEntries(
-        rows.filter(([key]) => key.trim() !== ""),
-      ),
-    });
+    updateValues({ deps_mapping: rows });
+  }
+
+  function addMapping(): void {
+    if (!values) return;
+    updateValues({ deps_mapping: [...values.deps_mapping, ["", ""]] });
   }
 
   async function save(): Promise<void> {
@@ -211,10 +216,10 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
       if (currentValues.required_columns !== original.required_columns)
         patch.required_columns = columns(currentValues.required_columns);
       if (
-        JSON.stringify(currentValues.deps_mapping) !==
-        JSON.stringify(original.deps_mapping)
+        JSON.stringify(mappingObject(currentValues.deps_mapping)) !==
+        JSON.stringify(mappingObject(original.deps_mapping))
       )
-        patch.deps_mapping = currentValues.deps_mapping;
+        patch.deps_mapping = mappingObject(currentValues.deps_mapping);
       if (currentValues.spec !== original.spec) patch.spec = spec;
       if (Object.keys(patch).length === 0) return;
       const updated = await agents.updateVersion(selected.id, patch);
@@ -246,7 +251,7 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
         model: imported.model ?? values.model,
         prompt_template: imported.prompt_template ?? values.prompt_template,
         required_columns: imported.required_columns.join(", "),
-        deps_mapping: imported.deps_mapping,
+        deps_mapping: mappingRows(imported.deps_mapping),
       };
       valuesRef.current = next;
       setValues(next);
@@ -330,7 +335,7 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
   if (!detail || !selected || !values)
     return <ErrorBanner error={error} onDismiss={() => setError(null)} />;
   const readOnly = selected.frozen && !draft;
-  const rows = mappingRows(values.deps_mapping);
+  const rows = values.deps_mapping;
 
   return (
     <section className="agent-detail">
@@ -461,6 +466,11 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
               />
             </div>
           ))}
+          {!readOnly && (
+            <Button variant="secondary" onClick={addMapping}>
+              Add dependency mapping
+            </Button>
+          )}
         </fieldset>
         <label className="field">
           <span className="field-label">Spec</span>

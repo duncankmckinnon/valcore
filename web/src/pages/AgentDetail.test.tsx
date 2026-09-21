@@ -186,6 +186,11 @@ describe("AgentDetail", () => {
 
   it("allows adding another dependency-to-column mapping", async () => {
     vi.mocked(agents.get).mockResolvedValue(makeDetail());
+    vi.mocked(agents.updateVersion).mockResolvedValue(
+      makeVersion({
+        deps_mapping: { account_id: "account", locale: "language" },
+      }),
+    );
     const user = userEvent.setup();
     renderDetail();
 
@@ -196,6 +201,15 @@ describe("AgentDetail", () => {
 
     expect(screen.getByLabelText("Dependency 2")).toBeInTheDocument();
     expect(screen.getByLabelText("Column 2")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Dependency 2"), "locale");
+    await user.type(screen.getByLabelText("Column 2"), "language");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(agents.updateVersion).toHaveBeenCalledWith("av-1", {
+        deps_mapping: { account_id: "account", locale: "language" },
+      }),
+    );
   });
 
   it("creates a new version from the editable draft without mutating the selected version", async () => {
