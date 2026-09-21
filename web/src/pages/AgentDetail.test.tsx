@@ -1,7 +1,7 @@
 // The agent detail page binds stored agent versions to the raw-spec editor and trial
 // panel. These tests keep the page wiring separate from AgentTrialPanel's own behavior.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cleanup,
   render,
@@ -11,7 +11,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import AgentDetail from "./AgentDetail";
-import { agents } from "../api/client";
+import { agents, api } from "../api/client";
 import type {
   AgentDetail as AgentDetailData,
   AgentVersion,
@@ -38,6 +38,7 @@ vi.mock("../api/client", async (importOriginal) => {
       exportVersion: vi.fn(),
       importSpec: vi.fn(),
     },
+    api: vi.fn(),
   };
 });
 
@@ -77,6 +78,15 @@ function makeDetail(overrides: Partial<AgentDetailData> = {}): AgentDetailData {
 function renderDetail(agentId = "agent-1") {
   return render(<AgentDetail agentId={agentId} />);
 }
+
+beforeEach(() => {
+  vi.mocked(api).mockResolvedValue({
+    models: ["gateway/openai:gpt-4o"],
+    default_model: "gateway/openai:gpt-4o",
+    tools: [],
+    capabilities: [],
+  });
+});
 
 afterEach(() => {
   cleanup();
@@ -347,7 +357,100 @@ describe("AgentDetail", () => {
     expect(await screen.findByTestId("trial-panel")).toHaveTextContent("av-1");
     await user.click(screen.getByRole("button", { name: "New version" }));
 
-    expect(screen.getByRole("button", { name: "Create version" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Create version" }),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("trial-panel")).toHaveTextContent("av-1");
+  });
+  // A freshly created agent has no versions at all. Regression guard: the page used to
+  // fall through to a null ErrorBanner and render nothing, stranding the new agent.
+  it("opens a blank first-version draft when the agent has no versions", async () => {
+    vi.mocked(agents.get).mockResolvedValue(
+      makeDetail({
+        agent: {
+          id: "agent-1",
+          created_at: "2026-09-20T00:00:00Z",
+          name: "Support agent",
+          description: "Answers customer questions.",
+          active_version_id: null,
+          version_count: 0,
+        },
+        versions: [],
+      }),
+    );
+    renderDetail();
+
+    expect(
+      await screen.findByRole("heading", { name: "Support agent" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Create version" }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Prompt template")).toHaveValue("{input}");
+    expect(screen.getByLabelText("Required columns")).toHaveValue("input");
+    expect(screen.getByLabelText("Spec")).toHaveValue("{}");
+    // Nothing exists to pick between, export, or trial yet.
+    expect(screen.queryByRole("combobox", { name: "Version" })).toBeNull();
+    expect(screen.queryByTestId("trial-panel")).toBeNull();
+  });
+
+  it("seeds the blank first-version draft with the configured default model", async () => {
+    vi.mocked(agents.get).mockResolvedValue(
+      makeDetail({
+        versions: [],
+        agent: {
+          ...makeDetail().agent,
+          active_version_id: null,
+          version_count: 0,
+        },
+      }),
+    );
+    renderDetail();
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Model")).toHaveValue(
+        "gateway/openai:gpt-4o",
+      ),
+    );
+  });
+
+  it("creates the first version from the blank draft", async () => {
+    vi.mocked(agents.get).mockResolvedValue(
+      makeDetail({
+        versions: [],
+        agent: {
+          ...makeDetail().agent,
+          active_version_id: null,
+          version_count: 0,
+        },
+      }),
+    );
+    vi.mocked(agents.createVersion).mockResolvedValue(makeVersion());
+    const user = userEvent.setup();
+    renderDetail();
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Model")).toHaveValue(
+        "gateway/openai:gpt-4o",
+      ),
+    );
+    await user.clear(screen.getByLabelText("Version name"));
+    await user.type(screen.getByLabelText("Version name"), "initial");
+    await user.click(screen.getByRole("button", { name: "Create version" }));
+
+    await waitFor(() =>
+      expect(agents.createVersion).toHaveBeenCalledWith(
+        "agent-1",
+        expect.objectContaining({
+          version_name: "initial",
+          model: "gateway/openai:gpt-4o",
+          spec: {},
+          // The API rejects a version with no required columns, so the draft it
+          // opens on must be one the server will accept unedited.
+          prompt_template: "{input}",
+          required_columns: ["input"],
+        }),
+      ),
+    );
   });
 });

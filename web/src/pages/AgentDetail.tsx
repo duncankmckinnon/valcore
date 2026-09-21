@@ -8,13 +8,14 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { agents } from "../api/client";
+import { api, agents } from "../api/client";
 import type {
   AgentDetail as AgentDetailData,
   AgentVersion,
   AgentVersionCreate,
 } from "../api/types";
 import AgentTrialPanel from "../components/AgentTrialPanel";
+import type { AppConfig } from "../components/VersionEditor";
 import { PageHeader } from "../components/PageHeader";
 import {
   Badge,
@@ -52,6 +53,21 @@ function editorValues(version: AgentVersion): EditorValues {
   };
 }
 
+// A newly created agent has no versions, so its editor opens on a blank draft rather
+// than having nothing to select. The server rejects a version with no required columns,
+// so the draft starts on a single `input` binding that saves without further editing.
+function blankValues(): EditorValues {
+  return {
+    version_name: "v1",
+    notes: "",
+    model: "",
+    prompt_template: "{input}",
+    required_columns: "input",
+    deps_mapping: [["", ""]],
+    spec: "{}",
+  };
+}
+
 function columns(value: string): string[] {
   return value
     .split(",")
@@ -85,6 +101,7 @@ function mappingObject(rows: [string, string][]): Record<string, string> {
 /** Displays, edits, and trials the versions attached to an agent. */
 export default function AgentDetail({ agentId }: AgentDetailProps) {
   const [detail, setDetail] = useState<AgentDetailData | null>(null);
+  const [config, setConfig] = useState<AppConfig | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [values, setValues] = useState<EditorValues | null>(null);
   const [specError, setSpecError] = useState<string | null>(null);
@@ -123,8 +140,15 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    api<AppConfig>("/api/config").then(setConfig).catch(setError);
+  }, []);
+
   const selected =
     detail?.versions.find((version) => version.id === selectedId) ?? null;
+  // An agent with no versions has nothing to select, so it opens straight into a draft.
+  const empty = detail !== null && detail.versions.length === 0;
+  const showDraft = draft || empty;
 
   useEffect(() => {
     if (selected && !draft) {
@@ -134,6 +158,20 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
       setSpecError(null);
     }
   }, [selected, draft]);
+
+  // Seed the blank draft, then fill its model once the config's default arrives. An
+  // already-typed model is left alone, so a late config never overwrites an edit.
+  useEffect(() => {
+    if (!empty) return;
+    const current = valuesRef.current;
+    if (current && current.model !== "") return;
+    const next = {
+      ...(current ?? blankValues()),
+      model: config?.default_model ?? "",
+    };
+    valuesRef.current = next;
+    setValues(next);
+  }, [empty, config]);
 
   function updateValues(change: Partial<EditorValues>): void {
     setValues((current) => {
@@ -186,7 +224,8 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
 
   async function save(): Promise<void> {
     const currentValues = valuesRef.current;
-    if (!selected || !currentValues || specError) return;
+    if (!currentValues || specError) return;
+    if (!showDraft && !selected) return;
     let spec: Record<string, unknown>;
     try {
       spec = JSON.parse(currentValues.spec) as Record<string, unknown>;
@@ -194,7 +233,7 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
       return;
     }
     try {
-      if (draft) {
+      if (showDraft) {
         const created = await agents.createVersion(
           agentId,
           createPayload(currentValues, spec),
@@ -203,6 +242,7 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
         await load(created.id);
         return;
       }
+      if (!selected) return;
       const original = editorValues(selected);
       const patch: Partial<AgentVersionCreate> = {};
       if (currentValues.version_name !== original.version_name)
@@ -332,9 +372,10 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
   }
 
   if (loading && !detail) return <Spinner />;
-  if (!detail || !selected || !values)
+  if (!detail)
     return <ErrorBanner error={error} onDismiss={() => setError(null)} />;
-  const readOnly = selected.frozen && !draft;
+  if (!values) return <Spinner />;
+  const readOnly = selected !== null && selected.frozen && !showDraft;
   const rows = values.deps_mapping;
 
   return (
@@ -345,49 +386,57 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
         description={detail.agent.description}
       />
       <div className="version-bar">
-        <Select
-          aria-label="Version"
-          value={selectedId ?? ""}
-          options={detail.versions.map((version) => ({
-            value: version.id,
-            label: `${version.version_name}${version.frozen ? " (frozen)" : ""}`,
-          }))}
-          onChange={(event) => {
-            setDraft(false);
-            setSelectedId(event.target.value);
-          }}
-        />
-        {selected.frozen && !draft && <Badge tone="warning">Frozen</Badge>}
+        {!empty && (
+          <Select
+            aria-label="Version"
+            value={selectedId ?? ""}
+            options={detail.versions.map((version) => ({
+              value: version.id,
+              label: `${version.version_name}${version.frozen ? " (frozen)" : ""}`,
+            }))}
+            onChange={(event) => {
+              setDraft(false);
+              setSelectedId(event.target.value);
+            }}
+          />
+        )}
+        {selected?.frozen && !draft && <Badge tone="warning">Frozen</Badge>}
         <div className="version-bar-actions">
-          <Button variant="secondary" onClick={startDraft}>
-            New version
-          </Button>
+          {!empty && (
+            <Button variant="secondary" onClick={startDraft}>
+              New version
+            </Button>
+          )}
           <Button variant="secondary" onClick={() => setImportOpen(true)}>
             Import
           </Button>
-          <Button
-            variant="secondary"
-            onClick={() => void exportVersion()}
-            disabled={draft}
-          >
-            Export
-          </Button>
-          <Button
-            variant="secondary"
-            onClick={() => setDeleteOpen(true)}
-            disabled={draft}
-          >
-            Delete
-          </Button>
-          {!draft && !selected.frozen && (
-            <Button variant="secondary" onClick={() => void freeze()}>
-              Freeze
-            </Button>
-          )}
-          {!draft && selected.frozen && (
-            <Button variant="secondary" onClick={() => void copy()}>
-              Copy
-            </Button>
+          {!empty && (
+            <>
+              <Button
+                variant="secondary"
+                onClick={() => void exportVersion()}
+                disabled={draft}
+              >
+                Export
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => setDeleteOpen(true)}
+                disabled={draft}
+              >
+                Delete
+              </Button>
+              {!draft && !selected?.frozen && (
+                <Button variant="secondary" onClick={() => void freeze()}>
+                  Freeze
+                </Button>
+              )}
+              {!draft && selected?.frozen && (
+                <Button variant="secondary" onClick={() => void copy()}>
+                  Copy
+                </Button>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -484,7 +533,7 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
         {specError && <p role="alert">{specError}</p>}
         <div className="field">
           <span className="field-label">Response columns</span>
-          {selected.response_columns.length ? (
+          {selected?.response_columns.length ? (
             selected.response_columns.map((column) => (
               <Badge key={column}>{column}</Badge>
             ))
@@ -495,13 +544,13 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
         {!readOnly && (
           <div className="form-actions">
             <Button onClick={() => void save()} disabled={Boolean(specError)}>
-              {draft ? "Create version" : "Save"}
+              {showDraft ? "Create version" : "Save"}
             </Button>
             <Button
               variant="secondary"
               onClick={() => {
                 setDraft(false);
-                const next = editorValues(selected);
+                const next = selected ? editorValues(selected) : blankValues();
                 valuesRef.current = next;
                 setValues(next);
                 setSpecError(null);
@@ -512,11 +561,11 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
           </div>
         )}
       </div>
-      {!specError && <AgentTrialPanel version={selected} />}
+      {!specError && selected && <AgentTrialPanel version={selected} />}
       <ConfirmDialog
         open={deleteOpen}
         title="Delete version"
-        message={`Delete version ${selected.version_name}? This cannot be undone.`}
+        message={`Delete version ${selected?.version_name ?? ""}? This cannot be undone.`}
         onConfirm={() => void remove()}
         onClose={() => setDeleteOpen(false)}
       />
