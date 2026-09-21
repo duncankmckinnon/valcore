@@ -1,12 +1,20 @@
 """Tests for evaluator/dataset validation rules and JSON round-tripping."""
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
+from sqlalchemy.exc import IntegrityError
+from sqlmodel import Session
 
 from valcore.errors import ConfigError, ContractError
 from valcore.models import (
+    Agent,
+    AgentResponse,
+    AgentVersion,
     Annotation,
     Dataset,
+    DatasetDerivation,
     DatasetRow,
     EvaluatorVersion,
     ExperimentRun,
@@ -22,10 +30,12 @@ from valcore.models import (
     label_schema_from_label_set,
     label_set_fields_from_schema,
     parse_output_fields,
+    validate_agent_version,
     validate_annotation,
     validate_label_set,
     validate_version,
 )
+from valcore.store import create_engine, init_db
 
 
 def make_version(**overrides: object) -> EvaluatorVersion:
@@ -602,3 +612,177 @@ def test_dataset_has_no_label_schema_field() -> None:
 def test_dataset_row_has_no_legacy_label_fields() -> None:
     legacy = {"label", "suggested_label", "label_reasoning", "label_source", "note"}
     assert legacy.isdisjoint(DatasetRow.model_fields)
+
+
+# -- AgentVersion ---------------------------------------------------------------
+
+
+def make_agent_version(**overrides: object) -> AgentVersion:
+    """Build a valid AgentVersion with a minimal spec, applying any field overrides."""
+    base: dict[str, object] = {
+        "agent_id": "ag1",
+        "version_name": "v1",
+        "model": "gateway/anthropic:claude-sonnet-5",
+        "spec": {"instructions": "hi"},
+        "prompt_template": "Rate {question}.",
+        "required_columns": ["question"],
+        "deps_mapping": {},
+    }
+    base.update(overrides)
+    return AgentVersion(**base)
+
+
+def test_valid_agent_version_passes() -> None:
+    validate_agent_version(make_agent_version())
+
+
+def test_agent_version_bad_model_raises() -> None:
+    with pytest.raises(ConfigError, match="start with one of"):
+        validate_agent_version(make_agent_version(model="openai:gpt-5"))
+
+
+def test_agent_version_malformed_spec_raises() -> None:
+    with pytest.raises(ConfigError, match="Invalid agent spec"):
+        validate_agent_version(make_agent_version(spec={"retries": "not-an-int"}))
+
+
+def test_agent_version_unknown_capability_raises() -> None:
+    with pytest.raises(ConfigError, match="Telepathy") as exc:
+        validate_agent_version(
+            make_agent_version(spec={"instructions": "hi", "capabilities": ["Telepathy"]})
+        )
+    # The error should list the allowed capability names so a caller can self-correct.
+    assert "WebSearch" in str(exc.value)
+    assert "FileSystem" in str(exc.value)
+
+
+def test_agent_version_subagents_capability_raises_specific_message() -> None:
+    with pytest.raises(ConfigError, match="serialize") as exc:
+        validate_agent_version(
+            make_agent_version(spec={"instructions": "hi", "capabilities": ["SubAgents"]})
+        )
+    assert "SubAgents" in str(exc.value)
+
+
+def test_agent_version_pydantic_ai_builtin_capability_passes() -> None:
+    validate_agent_version(
+        make_agent_version(spec={"instructions": "hi", "capabilities": ["WebSearch"]})
+    )
+
+
+def test_agent_version_harness_capability_passes() -> None:
+    validate_agent_version(
+        make_agent_version(spec={"instructions": "hi", "capabilities": ["FileSystem"]})
+    )
+
+
+def test_agent_version_prompt_template_unknown_column_raises() -> None:
+    with pytest.raises(ConfigError):
+        validate_agent_version(
+            make_agent_version(
+                prompt_template="Rate {question} and {missing}.",
+                required_columns=["question"],
+            )
+        )
+
+
+def test_agent_version_deps_mapping_unknown_field_raises() -> None:
+    spec = {
+        "instructions": "hi {name}",
+        "deps_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+        },
+    }
+    with pytest.raises(ConfigError):
+        validate_agent_version(make_agent_version(spec=spec, deps_mapping={"bogus": "question"}))
+
+
+def test_agent_version_missing_required_deps_mapping_raises() -> None:
+    spec = {
+        "instructions": "hi {name}",
+        "deps_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        },
+    }
+    with pytest.raises(ConfigError):
+        validate_agent_version(make_agent_version(spec=spec, deps_mapping={}))
+
+
+def test_agent_version_deps_mapping_satisfying_required_property_passes() -> None:
+    spec = {
+        "instructions": "hi {name}",
+        "deps_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        },
+    }
+    validate_agent_version(make_agent_version(spec=spec, deps_mapping={"name": "question"}))
+
+
+# -- Agent / AgentVersion / DatasetDerivation defaults -------------------------
+
+
+def test_agent_defaults() -> None:
+    agent = Agent(name="my-agent")
+    assert agent.id
+    assert agent.created_at is not None
+    assert agent.description == ""
+    assert agent.active_version_id is None
+
+
+def test_agent_version_defaults() -> None:
+    version = make_agent_version()
+    assert version.id
+    assert version.created_at is not None
+    assert version.notes == ""
+    assert version.frozen is False
+
+
+def test_dataset_derivation_defaults() -> None:
+    derivation = DatasetDerivation(dataset_id="ds-1", agent_version_id="av-1")
+    assert derivation.id
+    assert derivation.created_at is not None
+    assert derivation.ordinal == 0
+    assert derivation.response_columns == []
+
+
+# -- AgentResponse --------------------------------------------------------------
+
+
+def test_agent_response_unique_constraint(tmp_path: Path) -> None:
+    """(derivation_id, dataset_row_id) must be unique across AgentResponse rows."""
+    engine = create_engine(tmp_path / "models.db")
+    init_db(engine)
+    try:
+        with Session(engine) as session:
+            first = AgentResponse(
+                derivation_id="deriv-1", dataset_row_id="row-1", data={"response": "a"}
+            )
+            session.add(first)
+            session.commit()
+
+            second = AgentResponse(
+                derivation_id="deriv-1", dataset_row_id="row-1", data={"response": "b"}
+            )
+            session.add(second)
+            with pytest.raises(IntegrityError):
+                session.commit()
+    finally:
+        engine.dispose()
+
+
+def test_agent_response_allows_same_row_across_different_derivations(tmp_path: Path) -> None:
+    engine = create_engine(tmp_path / "models2.db")
+    init_db(engine)
+    try:
+        with Session(engine) as session:
+            session.add(AgentResponse(derivation_id="deriv-1", dataset_row_id="row-1", data={}))
+            session.commit()
+            session.add(AgentResponse(derivation_id="deriv-2", dataset_row_id="row-1", data={}))
+            session.commit()
+    finally:
+        engine.dispose()
