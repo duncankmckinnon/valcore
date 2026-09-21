@@ -2,6 +2,15 @@
 // which parses the uniform `{error:{type,message}}` envelope and throws `ApiError`.
 
 import type {
+  AgentCreate,
+  AgentDetail,
+  AgentSpecExport,
+  AgentSpecImport,
+  AgentSummary,
+  AgentUpdate,
+  AgentVersion,
+  AgentVersionCreate,
+  AgentVersionUpdate,
   Annotation,
   AnnotationPut,
   AnnotationRowsPage,
@@ -18,6 +27,9 @@ import type {
   DatasetRow,
   DatasetStats,
   DatasetUpdate,
+  Derivation,
+  DerivationSave,
+  DerivedRowsPage,
   Evaluator,
   EvaluatorUpdate,
   EvaluatorVersion,
@@ -47,6 +59,8 @@ import type {
   RunStreamEvent,
   SetupKeysIn,
   SetupStatus,
+  TrialRequest,
+  TrialResult,
 } from "./types";
 
 export class ApiError extends Error {
@@ -250,6 +264,72 @@ export const datasets = {
       method: "POST",
       ...jsonBody(body),
     }),
+};
+
+export const agents = {
+  list: () => api<AgentSummary[]>("/api/agents"),
+  create: (data: AgentCreate) =>
+    api<AgentSummary>("/api/agents", { method: "POST", ...jsonBody(data) }),
+  get: (id: string) => api<AgentDetail>(`/api/agents/${id}`),
+  update: (id: string, data: AgentUpdate) =>
+    api<AgentSummary>(`/api/agents/${id}`, {
+      method: "PATCH",
+      ...jsonBody(data),
+    }),
+  remove: (id: string) => api<void>(`/api/agents/${id}`, { method: "DELETE" }),
+
+  listVersions: (id: string) =>
+    api<AgentVersion[]>(`/api/agents/${id}/versions`),
+  createVersion: (id: string, data: AgentVersionCreate) =>
+    api<AgentVersion>(`/api/agents/${id}/versions`, {
+      method: "POST",
+      ...jsonBody(data),
+    }),
+  updateVersion: (vid: string, data: AgentVersionUpdate) =>
+    api<AgentVersion>(`/api/agents/versions/${vid}`, {
+      method: "PATCH",
+      ...jsonBody(data),
+    }),
+  freezeVersion: (vid: string) =>
+    api<AgentVersion>(`/api/agents/versions/${vid}/freeze`, { method: "POST" }),
+  copyVersion: (vid: string, version_name: string) =>
+    api<AgentVersion>(`/api/agents/versions/${vid}/copy`, {
+      method: "POST",
+      ...jsonBody({ version_name }),
+    }),
+  removeVersion: (vid: string) =>
+    api<void>(`/api/agents/versions/${vid}`, { method: "DELETE" }),
+
+  exportVersion: (vid: string) =>
+    api<AgentSpecExport>(`/api/agents/versions/${vid}/export`),
+  importSpec: (content: string, format: "yaml" | "json") =>
+    api<AgentSpecImport>("/api/agents/import", {
+      method: "POST",
+      ...jsonBody({ content, format }),
+    }),
+
+  trial: (vid: string, data: TrialRequest) =>
+    api<TrialResult>(`/api/agents/versions/${vid}/trial`, {
+      method: "POST",
+      ...jsonBody(data),
+    }),
+  saveDerivation: (vid: string, data: DerivationSave) =>
+    api<Derivation>(`/api/agents/versions/${vid}/derivations`, {
+      method: "POST",
+      ...jsonBody(data),
+    }),
+  listDerivations: (params: {
+    datasetId?: string;
+    agentVersionId?: string;
+  }) => {
+    const q = new URLSearchParams();
+    if (params.datasetId) q.set("dataset_id", params.datasetId);
+    if (params.agentVersionId) q.set("agent_version_id", params.agentVersionId);
+    const qs = q.toString();
+    return api<Derivation[]>(`/api/agents/derivations${qs ? `?${qs}` : ""}`);
+  },
+  derivedRows: (derivationId: string) =>
+    api<DerivedRowsPage>(`/api/agents/derivations/${derivationId}/rows`),
 };
 
 export const labelSets = {

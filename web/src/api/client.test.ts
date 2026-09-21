@@ -1,6 +1,29 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, annotations, api, datasets, evaluators, labelSets, overview, runs, setup } from "./client";
-import type { DatasetSummary, Overview, SetupStatus } from "./types";
+import {
+  ApiError,
+  agents,
+  annotations,
+  api,
+  datasets,
+  evaluators,
+  labelSets,
+  overview,
+  runs,
+  setup,
+} from "./client";
+import type {
+  AgentDetail,
+  AgentSpecExport,
+  AgentSpecImport,
+  AgentSummary,
+  AgentVersion,
+  DatasetSummary,
+  Derivation,
+  DerivedRowsPage,
+  Overview,
+  SetupStatus,
+  TrialResult,
+} from "./types";
 
 function jsonResponse(body: unknown, init: { status?: number } = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -857,5 +880,363 @@ describe("runs.coverage client helper", () => {
     const result = await runs.coverage("d1", "v1");
     expect(fetchMock.mock.calls[0][0]).toBe("/api/runs/coverage?dataset_id=d1&version_id=v1");
     expect(result).toEqual({ label_set_id: "ls1", total_rows: 10, labeled_rows: 6 });
+  });
+});
+
+// The Agent entity mirrors the Evaluator/Dataset resource-object idiom: one plain
+// object exporting methods built on `api<T>` and `jsonBody`. `remove`/`removeVersion`
+// follow the `datasets.remove` naming precedent (never `delete*`, a reserved word).
+describe("agents client helpers", () => {
+  const agentSummary: AgentSummary = {
+    id: "a1",
+    created_at: "2026-09-01T00:00:00Z",
+    name: "Support triager",
+    description: "Classifies incoming tickets",
+    active_version_id: "av1",
+    version_count: 2,
+  };
+
+  const agentVersion: AgentVersion = {
+    id: "av1",
+    created_at: "2026-09-01T00:00:00Z",
+    agent_id: "a1",
+    version_name: "v1",
+    notes: "",
+    frozen: false,
+    model: "gateway/anthropic:claude-sonnet-5",
+    spec: { name: "triager", instructions: "Classify the ticket." },
+    prompt_template: "{{ input }}",
+    required_columns: ["input"],
+    deps_mapping: {},
+    response_columns: ["output"],
+  };
+
+  it("agents.list GETs /api/agents and returns the parsed body", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse([agentSummary]));
+
+    const result = await agents.list();
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents");
+    expect(init?.method ?? "GET").toBe("GET");
+    expect(result).toEqual([agentSummary]);
+  });
+
+  it("agents.create POSTs JSON to /api/agents", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(agentSummary));
+
+    const body = { name: "Support triager", description: "Classifies incoming tickets" };
+    await agents.create(body);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe(JSON.stringify(body));
+    expect(new Headers(init?.headers).get("Content-Type")).toBe("application/json");
+  });
+
+  it("agents.create omits an unset description from the body", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(agentSummary));
+
+    await agents.create({ name: "Support triager" });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init?.body).toBe(JSON.stringify({ name: "Support triager" }));
+  });
+
+  it("agents.get GETs /api/agents/{id} and returns an AgentDetail envelope", async () => {
+    const detail: AgentDetail = { agent: agentSummary, versions: [agentVersion] };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(detail));
+
+    const result = await agents.get("a1");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/agents/a1");
+    expect(result).toEqual(detail);
+  });
+
+  it("agents.update PATCHes /api/agents/{id}", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ ...agentSummary, name: "Renamed" }));
+
+    await agents.update("a1", { name: "Renamed" });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents/a1");
+    expect(init?.method).toBe("PATCH");
+    expect(init?.body).toBe(JSON.stringify({ name: "Renamed" }));
+  });
+
+  it("agents.remove DELETEs /api/agents/{id}", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(noContentResponse());
+
+    await agents.remove("a1");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents/a1");
+    expect(init?.method).toBe("DELETE");
+  });
+
+  it("agents.listVersions GETs /api/agents/{id}/versions", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse([agentVersion]));
+
+    const result = await agents.listVersions("a1");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/agents/a1/versions");
+    expect(result).toEqual([agentVersion]);
+  });
+
+  it("agents.createVersion POSTs the full body to /api/agents/{id}/versions", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(agentVersion));
+
+    const body = {
+      version_name: "v1",
+      model: "gateway/anthropic:claude-sonnet-5",
+      spec: { name: "triager", instructions: "Classify the ticket." },
+      prompt_template: "{{ input }}",
+      required_columns: ["input"],
+      deps_mapping: { topic: "input" },
+    };
+    await agents.createVersion("a1", body);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents/a1/versions");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe(JSON.stringify(body));
+  });
+
+  it("agents.createVersion omits optional fields left unset from the body", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(agentVersion));
+
+    const body = {
+      version_name: "v1",
+      model: "gateway/anthropic:claude-sonnet-5",
+      spec: {},
+      prompt_template: "{{ input }}",
+      required_columns: ["input"],
+    };
+    await agents.createVersion("a1", body);
+
+    const [, init] = fetchMock.mock.calls[0];
+    const parsed = JSON.parse(init?.body as string);
+    expect(Object.keys(parsed).sort()).toEqual([
+      "model",
+      "prompt_template",
+      "required_columns",
+      "spec",
+      "version_name",
+    ]);
+  });
+
+  it("agents.updateVersion PATCHes /api/agents/versions/{vid} with no agent id", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(agentVersion));
+
+    await agents.updateVersion("av1", { notes: "tweak" });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents/versions/av1");
+    expect(init?.method).toBe("PATCH");
+    expect(init?.body).toBe(JSON.stringify({ notes: "tweak" }));
+  });
+
+  it("agents.freezeVersion POSTs /api/agents/versions/{vid}/freeze", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ ...agentVersion, frozen: true }));
+
+    const result = await agents.freezeVersion("av1");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents/versions/av1/freeze");
+    expect(init?.method).toBe("POST");
+    expect(result.frozen).toBe(true);
+  });
+
+  it("agents.copyVersion POSTs {version_name} to /api/agents/versions/{vid}/copy", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ ...agentVersion, id: "av2", version_name: "v2" }));
+
+    await agents.copyVersion("av1", "v2");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents/versions/av1/copy");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe(JSON.stringify({ version_name: "v2" }));
+  });
+
+  it("agents.removeVersion DELETEs /api/agents/versions/{vid}", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(noContentResponse());
+
+    await agents.removeVersion("av1");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents/versions/av1");
+    expect(init?.method).toBe("DELETE");
+  });
+
+  it("agents.exportVersion GETs /api/agents/versions/{vid}/export", async () => {
+    const exportBody: AgentSpecExport = { filename: "triager.agent.json", content: "{}" };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(exportBody));
+
+    const result = await agents.exportVersion("av1");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents/versions/av1/export");
+    expect(init?.method ?? "GET").toBe("GET");
+    expect(result).toEqual(exportBody);
+  });
+
+  it("agents.importSpec POSTs {content, format} to /api/agents/import", async () => {
+    const importBody: AgentSpecImport = {
+      spec: { name: "triager" },
+      model: "gateway/anthropic:claude-sonnet-5",
+      prompt_template: "{{ input }}",
+      required_columns: ["input"],
+      deps_mapping: {},
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(importBody));
+
+    const result = await agents.importSpec("name: triager", "yaml");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents/import");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe(JSON.stringify({ content: "name: triager", format: "yaml" }));
+    expect(result).toEqual(importBody);
+  });
+
+  it("agents.trial POSTs to /api/agents/versions/{vid}/trial", async () => {
+    const trialResult: TrialResult = {
+      prompt: "rendered prompt",
+      deps: {},
+      output: { label: "billing" },
+      response_columns: ["label"],
+      latency_ms: 120,
+      usage: { input_tokens: 10, output_tokens: 5 },
+      error: null,
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(trialResult));
+
+    const body = { row_id: "r1" };
+    const result = await agents.trial("av1", body);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents/versions/av1/trial");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe(JSON.stringify(body));
+    expect(result).toEqual(trialResult);
+  });
+
+  it("agents.trial surfaces a run-time error inside the TrialResult rather than throwing", async () => {
+    const trialResult: TrialResult = {
+      prompt: "rendered prompt",
+      deps: {},
+      output: {},
+      response_columns: [],
+      latency_ms: 40,
+      usage: null,
+      error: "model timed out",
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(trialResult));
+
+    const result = await agents.trial("av1", { inputs: { input: "hi" } });
+
+    expect(result.error).toBe("model timed out");
+  });
+
+  it("agents.saveDerivation POSTs to /api/agents/versions/{vid}/derivations", async () => {
+    const derivation: Derivation = {
+      id: "d1",
+      created_at: "2026-09-02T00:00:00Z",
+      dataset_id: "ds1",
+      dataset_name: "Support tickets",
+      agent_version_id: "av1",
+      agent_name: "Support triager",
+      version_name: "v1",
+      ordinal: 1,
+      response_columns: ["label"],
+      response_count: 2,
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(derivation));
+
+    const body = {
+      dataset_id: "ds1",
+      entries: [
+        { row_id: "r1", data: { label: "billing" }, latency_ms: 100, usage: null, error: null },
+        { row_id: "r2", data: { label: "sales" }, latency_ms: 90, usage: null, error: null },
+      ],
+    };
+    const result = await agents.saveDerivation("av1", body);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents/versions/av1/derivations");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe(JSON.stringify(body));
+    expect(result).toEqual(derivation);
+  });
+
+  it("agents.listDerivations produces ?dataset_id=<id> when only datasetId is given", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse([]));
+
+    await agents.listDerivations({ datasetId: "d1" });
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/agents/derivations?dataset_id=d1");
+  });
+
+  it("agents.listDerivations produces ?agent_version_id=<id> when only agentVersionId is given", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse([]));
+
+    await agents.listDerivations({ agentVersionId: "av1" });
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/agents/derivations?agent_version_id=av1");
+  });
+
+  it("agents.listDerivations combines both params when both are given", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse([]));
+
+    await agents.listDerivations({ datasetId: "d1", agentVersionId: "av1" });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/agents/derivations?dataset_id=d1&agent_version_id=av1",
+    );
+  });
+
+  it("agents.listDerivations produces no query string at all when given {}", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse([]));
+
+    await agents.listDerivations({});
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/agents/derivations");
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain("?");
+  });
+
+  it("agents.derivedRows GETs /api/agents/derivations/{derivationId}/rows", async () => {
+    const page: DerivedRowsPage = {
+      columns: ["input", "label"],
+      rows: [
+        { row_id: "r1", idx: 0, data: { input: "hi", label: "billing" }, latency_ms: 100, error: null },
+      ],
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(page));
+
+    const result = await agents.derivedRows("d1");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/agents/derivations/d1/rows");
+    expect(result).toEqual(page);
+  });
+
+  it("agents.get surfaces a non-OK response as an ApiError carrying the server's message", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ error: { type: "NotFoundError", message: "no such agent" } }, { status: 404 }),
+    );
+
+    const error = await agents.get("missing").catch((e) => e);
+
+    expect(error).toBeInstanceOf(ApiError);
+    if (!(error instanceof ApiError)) throw error;
+    expect(error.status).toBe(404);
+    expect(error.type).toBe("NotFoundError");
+    expect(error.message).toBe("no such agent");
   });
 });
