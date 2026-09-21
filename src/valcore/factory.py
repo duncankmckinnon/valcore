@@ -1,4 +1,8 @@
-"""Build a live pydantic_ai.Agent from a stored EvaluatorVersion."""
+"""Turn stored evaluator and agent versions into live pydantic-ai agents.
+
+Both builders belong here because this module is the shared boundary between valcore's
+persisted version specifications and the executable agents reconstructed from them.
+"""
 
 from collections.abc import Sequence
 from enum import Enum
@@ -6,17 +10,22 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, create_model
 from pydantic_ai import Agent as PydanticAgent
+from pydantic_ai.agent.spec import AgentSpec
+from pydantic_ai.exceptions import UserError
 
-from valcore.capabilities import CAPABILITY_REGISTRY
+from valcore import agent_spec
+from valcore.capabilities import CAPABILITY_REGISTRY, spec_capability_types
 from valcore.errors import ConfigError, ContractError
 from valcore.local_cli import resolve_model
 from valcore.models import (
     SCALAR_TYPES,
+    AgentVersion,
     CapabilitySpec,
     EvaluatorVersion,
     FieldType,
     OutputField,
     parse_output_fields,
+    validate_agent_version,
     validate_version,
 )
 from valcore.settings import is_local_cli_model
@@ -107,6 +116,40 @@ def build_agent(version: EvaluatorVersion) -> PydanticAgent[None, BaseModel]:
         capabilities=build_capabilities(specs),
         defer_model_check=True,
     )
+
+
+def build_agent_from_version(version: AgentVersion) -> PydanticAgent:
+    """Build a live agent from a stored agent version.
+
+    The spec's model is deliberately ignored: valcore route strings preserve gateway key
+    handling and local CLI bridge support, neither of which raw pydantic-ai model strings
+    express, while settings remains the single place those routes are validated.
+    """
+    validate_agent_version(version)
+    spec = agent_spec.parse_spec(version.spec)
+    try:
+        return PydanticAgent.from_spec(
+            spec,
+            model=resolve_model(version.model),
+            custom_capability_types=spec_capability_types(),
+            defer_model_check=True,
+        )
+    except (ValueError, UserError) as exc:
+        raise ConfigError(
+            f"Agent version {version.version_name!r} could not be built: {exc}"
+        ) from exc
+
+
+def agent_response_data(
+    spec: AgentSpec, output: object, *, text_column: str = "response"
+) -> dict[str, object]:
+    """Map an agent run's output onto the response columns it occupies."""
+    if not spec.output_schema or not isinstance(output, dict):
+        return {text_column: str(output)}
+    return {
+        name: output.get(name)
+        for name in agent_spec.output_column_names(spec, text_column=text_column)
+    }
 
 
 def render_prompt(version: EvaluatorVersion, row_data: dict) -> str:

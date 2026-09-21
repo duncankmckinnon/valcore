@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Software Development :: Testing",
 ]
 dependencies = [
-    "pydantic-ai>=2.19,<3",
+    "pydantic-ai[spec]>=2.19,<3",
     "pydantic-ai-harness[code-mode]>=0.12,<1",
     "sqlmodel",
     "fastapi",
