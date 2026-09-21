@@ -1,4 +1,8 @@
-"""Build a live pydantic_ai.Agent from a stored EvaluatorVersion."""
+"""Turn stored evaluator and agent versions into live pydantic-ai agents.
+
+Both builders belong here because this module is the shared boundary between valcore's
+persisted version specifications and the executable agents reconstructed from them.
+"""
 
 from collections.abc import Sequence
 from enum import Enum

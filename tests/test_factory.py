@@ -263,6 +263,18 @@ def test_build_agent_from_version_converts_user_error_to_config_error(
         build_agent_from_version(make_agent_version())
 
 
+def test_build_agent_from_version_converts_value_error_to_config_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def cannot_build(*args: object, **kwargs: object) -> None:
+        raise ValueError("unknown spec capability")
+
+    monkeypatch.setattr("valcore.factory.PydanticAgent.from_spec", cannot_build)
+
+    with pytest.raises(ConfigError, match="unknown spec capability"):
+        build_agent_from_version(make_agent_version())
+
+
 @pytest.mark.anyio
 async def test_build_agent_from_version_structured_output_is_plain_dict() -> None:
     version = make_agent_version(
