@@ -6,11 +6,22 @@
 // gate, saving a derivation, and discarding.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import AgentTrialPanel from "./AgentTrialPanel";
 import { ApiError, agents, datasets } from "../api/client";
-import type { AgentVersion, DatasetSummary, Derivation, TrialResult } from "../api/types";
+import type {
+  AgentVersion,
+  DatasetSummary,
+  Derivation,
+  TrialResult,
+} from "../api/types";
 
 vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
@@ -96,28 +107,25 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-async function runTrial(user: ReturnType<typeof userEvent.setup>, value = "What is 2+2?") {
-  await user.type(screen.getByLabelText("question"), value);
+async function runTrial(
+  user: ReturnType<typeof userEvent.setup>,
+  value = "What is 2+2?",
+) {
+  await user.type(screen.getByLabelText("Input question"), value);
   await user.click(screen.getByRole("button", { name: "Run" }));
 }
 
-// Only the confirm action (never "Cancel") lives beside it in the ConfirmDialog footer,
-// so this is the one implementation-agnostic way to click it without knowing the exact
-// confirm label the component chooses.
-function confirmButtonIn(dialog: HTMLElement): HTMLElement {
-  const button = within(dialog)
-    .getAllByRole("button")
-    .find((b) => b.textContent !== "Cancel");
-  if (!button) throw new Error("no confirm button found in dialog");
-  return button;
-}
-
 describe("AgentTrialPanel", () => {
-  it("renders one labelled input per required column", () => {
-    render(<AgentTrialPanel version={makeVersion({ required_columns: ["question", "context"] })} />);
+  it("renders one labelled input per required column", async () => {
+    render(
+      <AgentTrialPanel
+        version={makeVersion({ required_columns: ["question", "context"] })}
+      />,
+    );
 
-    expect(screen.getByLabelText("question")).toBeInTheDocument();
-    expect(screen.getByLabelText("context")).toBeInTheDocument();
+    expect(screen.getByLabelText("Input question")).toBeInTheDocument();
+    expect(screen.getByLabelText("Input context")).toBeInTheDocument();
+    await waitFor(() => expect(datasetsListMock).toHaveBeenCalled());
   });
 
   it("runs a trial with the typed inputs and renders the prompt, output, and latency", async () => {
@@ -127,11 +135,51 @@ describe("AgentTrialPanel", () => {
     await runTrial(user);
 
     await waitFor(() =>
-      expect(trialMock).toHaveBeenCalledWith("av-1", { inputs: { question: "What is 2+2?" } }),
+      expect(trialMock).toHaveBeenCalledWith("av-1", {
+        inputs: { question: "What is 2+2?" },
+      }),
     );
     expect(await screen.findByText("What is 2+2?")).toBeInTheDocument();
-    expect(screen.getByLabelText("answer")).toHaveTextContent("4");
-    expect(screen.getByText(/120/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Output answer")).toHaveTextContent("4");
+    expect(screen.getByText("Latency: 120 ms")).toBeInTheDocument();
+  });
+
+  it("includes empty values for required inputs the user did not type", async () => {
+    const user = userEvent.setup();
+    render(
+      <AgentTrialPanel
+        version={makeVersion({ required_columns: ["question", "context"] })}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("Input question"), "What is 2+2?");
+    await user.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() =>
+      expect(trialMock).toHaveBeenCalledWith("av-1", {
+        inputs: { question: "What is 2+2?", context: "" },
+      }),
+    );
+  });
+
+  it("distinguishes input and output controls with the same column name", async () => {
+    trialMock.mockResolvedValue(makeTrialResult({ output: { answer: "4" } }));
+    const user = userEvent.setup();
+    render(
+      <AgentTrialPanel
+        version={makeVersion({
+          required_columns: ["answer"],
+          response_columns: ["answer"],
+        })}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("Input answer"), "guess");
+    await user.click(screen.getByRole("button", { name: "Run" }));
+
+    expect(await screen.findByLabelText("Output answer")).toHaveTextContent(
+      "4",
+    );
   });
 
   it("disables Run and shows a busy state while the trial is in flight", async () => {
@@ -144,14 +192,16 @@ describe("AgentTrialPanel", () => {
     const user = userEvent.setup();
     render(<AgentTrialPanel version={makeVersion()} />);
 
-    await user.type(screen.getByLabelText("question"), "hi");
+    await user.type(screen.getByLabelText("Input question"), "hi");
     await user.click(screen.getByRole("button", { name: "Run" }));
 
     expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
     expect(screen.getByRole("status")).toBeInTheDocument();
 
     resolveTrial(makeTrialResult());
-    await waitFor(() => expect(screen.getByRole("button", { name: "Run" })).not.toBeDisabled());
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Run" })).not.toBeDisabled(),
+    );
   });
 
   it("shows a returned in-band error prominently instead of the output fields", async () => {
@@ -164,7 +214,7 @@ describe("AgentTrialPanel", () => {
     await runTrial(user);
 
     expect(await screen.findByText("Tool timed out")).toBeInTheDocument();
-    expect(screen.queryByLabelText("answer")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Output answer")).not.toBeInTheDocument();
   });
 
   it("shows the ApiError message and keeps the previous result visible without clearing it", async () => {
@@ -175,16 +225,18 @@ describe("AgentTrialPanel", () => {
     expect(await screen.findByText("What is 2+2?")).toBeInTheDocument();
 
     // Re-running an unsaved result requires confirming first.
-    trialMock.mockRejectedValueOnce(new ApiError("Trial failed", "ContractError", 422));
+    trialMock.mockRejectedValueOnce(
+      new ApiError("Trial failed", "ContractError", 422),
+    );
     await user.click(screen.getByRole("button", { name: "Run" }));
     const dialog = await screen.findByRole("dialog");
-    await user.click(confirmButtonIn(dialog));
+    await user.click(within(dialog).getByRole("button", { name: "Run again" }));
 
     expect(await screen.findByText("Trial failed")).toBeInTheDocument();
     // The prior successful result must still be on screen -- a failed rerun must not
     // silently wipe out the last good trial.
     expect(screen.getByText("What is 2+2?")).toBeInTheDocument();
-    expect(screen.getByLabelText("answer")).toHaveTextContent("4");
+    expect(screen.getByLabelText("Output answer")).toHaveTextContent("4");
   });
 
   it("shows a confirmation before re-running an unsaved result, and only reruns on confirm", async () => {
@@ -197,12 +249,14 @@ describe("AgentTrialPanel", () => {
     await user.click(screen.getByRole("button", { name: "Run" }));
 
     expect(
-      await screen.findByText("Running again will discard the unsaved response."),
+      await screen.findByText(
+        "Running again will discard the unsaved response.",
+      ),
     ).toBeInTheDocument();
     expect(trialMock).toHaveBeenCalledTimes(1);
 
     const dialog = screen.getByRole("dialog");
-    await user.click(confirmButtonIn(dialog));
+    await user.click(within(dialog).getByRole("button", { name: "Run again" }));
 
     await waitFor(() => expect(trialMock).toHaveBeenCalledTimes(2));
   });
@@ -273,12 +327,89 @@ describe("AgentTrialPanel", () => {
         }),
       ),
     );
-    expect(await screen.findByText(/7/)).toBeInTheDocument();
+    expect(
+      await screen.findByText("Saved as derivation 7."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
 
     // unsaved is now false: Run must not ask for confirmation again.
     await user.click(screen.getByRole("button", { name: "Run" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     await waitFor(() => expect(trialMock).toHaveBeenCalledTimes(2));
+  });
+
+  it("shows a busy state while saving", async () => {
+    let resolveSave!: (value: Derivation) => void;
+    saveDerivationMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSave = resolve;
+      }),
+    );
+    const user = userEvent.setup();
+    render(<AgentTrialPanel version={makeVersion()} />);
+
+    await runTrial(user);
+    await screen.findByText("What is 2+2?");
+    await user.selectOptions(await screen.findByLabelText("Dataset"), "ds-1");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(screen.getByRole("button", { name: "Loading" })).toBeDisabled();
+
+    resolveSave(makeDerivation());
+    expect(
+      await screen.findByText("Saved as derivation 7."),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the saved marker when a later run request fails", async () => {
+    const user = userEvent.setup();
+    render(<AgentTrialPanel version={makeVersion()} />);
+
+    await runTrial(user);
+    await screen.findByText("What is 2+2?");
+    await user.selectOptions(await screen.findByLabelText("Dataset"), "ds-1");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved as derivation 7.");
+
+    trialMock.mockRejectedValueOnce(
+      new ApiError("Trial failed", "ContractError", 422),
+    );
+    await user.click(screen.getByRole("button", { name: "Run" }));
+
+    expect(await screen.findByText("Trial failed")).toBeInTheDocument();
+    expect(screen.getByText("Saved as derivation 7.")).toBeInTheDocument();
+  });
+
+  it("clears ephemeral state and stale inputs when the version changes", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<AgentTrialPanel version={makeVersion()} />);
+
+    await runTrial(user);
+    await screen.findByText("What is 2+2?");
+
+    rerender(
+      <AgentTrialPanel
+        version={makeVersion({
+          id: "av-2",
+          version_name: "v2",
+          required_columns: ["context"],
+        })}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByText("What is 2+2?")).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByLabelText("Input question")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Input context")).toHaveValue("");
+
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(trialMock).toHaveBeenLastCalledWith("av-2", {
+        inputs: { context: "" },
+      }),
+    );
   });
 
   it("discards the result, clearing it and the unsaved flag", async () => {
@@ -291,7 +422,7 @@ describe("AgentTrialPanel", () => {
     await user.click(screen.getByRole("button", { name: "Discard" }));
 
     expect(screen.queryByText("What is 2+2?")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("answer")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Output answer")).not.toBeInTheDocument();
 
     // unsaved is now false: Run must not ask for confirmation.
     await user.click(screen.getByRole("button", { name: "Run" }));
@@ -313,12 +444,15 @@ describe("AgentTrialPanel", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(saveDerivationMock).toHaveBeenCalled());
 
-    expect(removeSpy).toHaveBeenCalledWith("beforeunload", expect.any(Function));
+    expect(removeSpy).toHaveBeenCalledWith(
+      "beforeunload",
+      expect.any(Function),
+    );
   });
 
-  it("loads the dataset list on mount", () => {
+  it("loads the dataset list on mount", async () => {
     render(<AgentTrialPanel version={makeVersion()} />);
 
-    expect(datasetsListMock).toHaveBeenCalled();
+    await waitFor(() => expect(datasetsListMock).toHaveBeenCalled());
   });
 });

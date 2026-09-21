@@ -2,7 +2,7 @@
 // response belongs in a persisted dataset derivation. Keeping this separate from the
 // detail page makes the ephemeral-versus-saved boundary explicit and reusable.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { agents, datasets } from "../api/client";
 import type { AgentVersion, DatasetSummary, TrialResult } from "../api/types";
 import { Button, ConfirmDialog, ErrorBanner, Select, Spinner } from "./ui";
@@ -12,7 +12,7 @@ export type AgentTrialPanelProps = {
   version: AgentVersion;
 };
 
-type SavedTrial = {
+type PendingTrial = {
   inputs: Record<string, unknown>;
   result: TrialResult;
 };
@@ -20,13 +20,20 @@ type SavedTrial = {
 function displayValue(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
+  // JSON preserves the structure of spec-defined object and array output fields.
   return JSON.stringify(value);
+}
+
+function emptyInputs(columns: string[]): Record<string, string> {
+  return Object.fromEntries(columns.map((column) => [column, ""]));
 }
 
 /** Runs a version with ad-hoc inputs and optionally persists its one response. */
 export default function AgentTrialPanel({ version }: AgentTrialPanelProps) {
-  const [inputs, setInputs] = useState<Record<string, string>>({});
-  const [trial, setTrial] = useState<SavedTrial | null>(null);
+  const [inputs, setInputs] = useState<Record<string, string>>(() =>
+    emptyInputs(version.required_columns),
+  );
+  const [trial, setTrial] = useState<PendingTrial | null>(null);
   const [unsaved, setUnsaved] = useState(false);
   const [rerunConfirmOpen, setRerunConfirmOpen] = useState(false);
   const [running, setRunning] = useState(false);
@@ -35,6 +42,20 @@ export default function AgentTrialPanel({ version }: AgentTrialPanelProps) {
   const [datasetList, setDatasetList] = useState<DatasetSummary[]>([]);
   const [datasetId, setDatasetId] = useState("");
   const [savedOrdinal, setSavedOrdinal] = useState<number | null>(null);
+  const versionIdRef = useRef(version.id);
+  versionIdRef.current = version.id;
+
+  useEffect(() => {
+    setInputs(emptyInputs(version.required_columns));
+    setTrial(null);
+    setUnsaved(false);
+    setRerunConfirmOpen(false);
+    setRunning(false);
+    setSaving(false);
+    setError(null);
+    setDatasetId("");
+    setSavedOrdinal(null);
+  }, [version.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -62,29 +83,31 @@ export default function AgentTrialPanel({ version }: AgentTrialPanelProps) {
     return () => window.removeEventListener("beforeunload", warnBeforeUnload);
   }, [unsaved]);
 
-  const canSave = useMemo(
-    () =>
-      trial !== null &&
-      trial.result.error === null &&
-      datasetId !== "" &&
-      !saving,
-    [datasetId, saving, trial],
-  );
+  const canSave =
+    unsaved &&
+    trial !== null &&
+    trial.result.error === null &&
+    datasetId !== "" &&
+    !saving;
 
   async function runTrial(): Promise<void> {
+    const trialVersionId = version.id;
     const trialInputs: Record<string, unknown> = { ...inputs };
     setRunning(true);
     setError(null);
-    setSavedOrdinal(null);
     try {
-      const result = await agents.trial(version.id, { inputs: trialInputs });
+      const result = await agents.trial(trialVersionId, {
+        inputs: trialInputs,
+      });
+      if (versionIdRef.current !== trialVersionId) return;
       setTrial({ inputs: trialInputs, result });
       setUnsaved(true);
+      setSavedOrdinal(null);
     } catch (err) {
       // Retaining the previous result lets a transient API failure be retried or saved.
-      setError(err);
+      if (versionIdRef.current === trialVersionId) setError(err);
     } finally {
-      setRunning(false);
+      if (versionIdRef.current === trialVersionId) setRunning(false);
     }
   }
 
@@ -97,20 +120,22 @@ export default function AgentTrialPanel({ version }: AgentTrialPanelProps) {
   }
 
   async function saveTrial(): Promise<void> {
-    if (!trial || !datasetId || trial.result.error !== null) return;
+    if (!unsaved || !trial || !datasetId || trial.result.error !== null) return;
+    const trialVersionId = version.id;
     setSaving(true);
     setError(null);
     try {
-      const derivation = await agents.saveDerivation(version.id, {
+      const derivation = await agents.saveDerivation(trialVersionId, {
         dataset_id: datasetId,
         entries: [{ inputs: trial.inputs, data: trial.result.output }],
       });
+      if (versionIdRef.current !== trialVersionId) return;
       setUnsaved(false);
       setSavedOrdinal(derivation.ordinal);
     } catch (err) {
-      setError(err);
+      if (versionIdRef.current === trialVersionId) setError(err);
     } finally {
-      setSaving(false);
+      if (versionIdRef.current === trialVersionId) setSaving(false);
     }
   }
 
@@ -136,7 +161,7 @@ export default function AgentTrialPanel({ version }: AgentTrialPanelProps) {
                 [column]: event.target.value,
               }))
             }
-            aria-label={column}
+            aria-label={`Input ${column}`}
           />
         </label>
       ))}
@@ -156,15 +181,13 @@ export default function AgentTrialPanel({ version }: AgentTrialPanelProps) {
             <p>{trial.result.prompt}</p>
           </div>
           {trial.result.error ? (
-            <div className="error-banner" role="alert">
-              {trial.result.error}
-            </div>
+            <ErrorBanner error={trial.result.error} />
           ) : (
             trial.result.response_columns.map((column) => (
               <label className="field" key={column}>
                 <span className="field-label">{column}</span>
                 <textarea
-                  aria-label={column}
+                  aria-label={`Output ${column}`}
                   readOnly
                   value={displayValue(trial.result.output[column])}
                 />
@@ -190,7 +213,7 @@ export default function AgentTrialPanel({ version }: AgentTrialPanelProps) {
           </label>
           <div className="form-actions">
             <Button onClick={() => void saveTrial()} disabled={!canSave}>
-              Save
+              {saving ? <Spinner /> : "Save"}
             </Button>
             <Button variant="secondary" onClick={discard} disabled={saving}>
               Discard
