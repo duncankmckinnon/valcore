@@ -43,6 +43,7 @@ from valcore.errors import ConfigError, ContractError, ValcoreError
 from valcore.export import render_dataset_module, render_judge_module, render_script
 from valcore.factory import agent_response_data, build_agent_from_version
 from valcore.models import (
+    AgentVersion,
     Annotation,
     Dataset,
     DatasetRow,
@@ -55,6 +56,7 @@ from valcore.models import (
     RunStatus,
     ScoreKind,
     label_set_fields_from_schema,
+    validate_agent_version,
     validate_version,
 )
 from valcore.paths import config_path
@@ -191,7 +193,7 @@ def list_(ctx: click.Context, kind: str, as_json: bool) -> None:
             )
             rows.append(
                 {
-                    "id": agent.id,
+                    "id": agent.id[:8],
                     "name": agent.name,
                     "version_count": len(store.list_agent_versions(agent.id)),
                     "active_version": active.version_name if active is not None else None,
@@ -567,20 +569,32 @@ def agent_import(ctx: click.Context, path: Path, name: str | None) -> None:
     if missing:
         raise ContractError(f"Agent spec is missing valcore binding fields: {', '.join(missing)}.")
 
-    store = _store(ctx)
-    agent = store.create_agent(name or spec.name or path.stem)
     stored_spec = spec.model_dump(mode="json", context={"use_short_form": True})
     stored_metadata = dict(stored_spec.get("metadata") or {})
     stored_metadata.pop("valcore", None)
     stored_spec["metadata"] = stored_metadata or None
+    version_fields = {
+        "version_name": "v1",
+        "model": binding["model"],
+        "spec": stored_spec,
+        "prompt_template": binding["prompt_template"],
+        "required_columns": binding["required_columns"],
+        "deps_mapping": binding["deps_mapping"],
+    }
+    try:
+        validate_agent_version(AgentVersion(agent_id="", **version_fields))
+    except ValcoreError:
+        raise
+    except Exception as exc:
+        raise ContractError(f"Invalid valcore binding: {exc}") from exc
+
+    # Store methods commit independently, so validate the complete version before creating its
+    # parent. Invalid artifacts must never leave a permanently empty agent behind.
+    store = _store(ctx)
+    agent = store.create_agent(name or spec.name or path.stem)
     version = store.create_agent_version(
         agent.id,
-        version_name="v1",
-        model=binding["model"],
-        spec=stored_spec,
-        prompt_template=binding["prompt_template"],
-        required_columns=binding["required_columns"],
-        deps_mapping=binding["deps_mapping"],
+        **version_fields,
     )
     click.echo(f"agent {agent.id} {agent.name} (version {version.id})")
 

@@ -2,6 +2,7 @@
 
 import pytest
 from pydantic_ai.agent.spec import AgentSpec
+
 from valcore.agent_spec import (
     build_deps,
     capability_names,
@@ -12,7 +13,6 @@ from valcore.agent_spec import (
     required_deps_properties,
     validate_binding,
 )
-
 from valcore.errors import ConfigError, ContractError
 
 

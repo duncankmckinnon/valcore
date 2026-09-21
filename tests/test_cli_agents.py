@@ -18,6 +18,8 @@ from pydantic_ai.agent.spec import AgentSpec
 from pydantic_ai.models.test import TestModel
 
 from valcore.cli.main import cli
+from valcore.cli.resolve import resolve_agent, resolve_agent_version
+from valcore.errors import ContractError, NotFoundError
 from valcore.models import Agent, AgentVersion
 from valcore.store import Store, create_engine, init_db
 
@@ -104,12 +106,74 @@ def test_list_agents_includes_version_count_and_active_name(
     payload = json.loads(result.output)
     assert payload == [
         {
-            "id": agent.id,
+            "id": agent.id[:8],
             "name": "writer",
             "version_count": 1,
             "active_version": "v1",
         }
     ]
+
+
+def test_resolve_agent_accepts_a_unique_id_prefix(store: Store) -> None:
+    """Agent references accept the same concise ID form as other CLI resources."""
+    agent, _ = _seed_agent(store)
+
+    assert resolve_agent(store, agent.id[:8]).id == agent.id
+
+
+def test_resolve_agent_rejects_a_too_short_id_prefix(store: Store) -> None:
+    """Short non-name references must not accidentally select an agent."""
+    agent, _ = _seed_agent(store)
+
+    with pytest.raises(NotFoundError, match="at least 4"):
+        resolve_agent(store, agent.id[:3])
+
+
+def test_resolve_agent_ambiguous_prefix_lists_candidates(store: Store) -> None:
+    """Ambiguous agent prefixes identify every candidate instead of choosing one."""
+    alpha = store.create_agent("alpha")
+    beta = store.create_agent("beta")
+    shared = "abcd1234"
+    with store.engine.connect() as connection:
+        from sqlalchemy import text
+
+        connection.execute(
+            text("UPDATE agent SET id = :new WHERE id = :old"),
+            {"new": shared + "0" * 23 + "a", "old": alpha.id},
+        )
+        connection.execute(
+            text("UPDATE agent SET id = :new WHERE id = :old"),
+            {"new": shared + "0" * 23 + "b", "old": beta.id},
+        )
+        connection.commit()
+
+    with pytest.raises(ContractError) as exc_info:
+        resolve_agent(store, shared)
+
+    assert "alpha" in str(exc_info.value)
+    assert "beta" in str(exc_info.value)
+
+
+def test_resolve_agent_missing_ref_names_it(store: Store) -> None:
+    """Missing-agent errors preserve the requested reference for diagnosis."""
+    with pytest.raises(NotFoundError, match="missing-agent"):
+        resolve_agent(store, "missing-agent")
+
+
+def test_resolve_agent_version_accepts_exact_name_and_id_prefix(store: Store) -> None:
+    """Explicit agent versions resolve by exact version name or unique ID prefix."""
+    agent, version = _seed_agent(store)
+
+    assert resolve_agent_version(store, agent, "v1").id == version.id
+    assert resolve_agent_version(store, agent, version.id[:8]).id == version.id
+
+
+def test_resolve_agent_version_without_active_version_errors(store: Store) -> None:
+    """Default version resolution clearly reports agents that have no active version."""
+    agent = store.create_agent("empty")
+
+    with pytest.raises(NotFoundError, match="Agent 'empty' has no active version"):
+        resolve_agent_version(store, agent, None)
 
 
 def test_agent_trial_with_ad_hoc_input_prints_response_and_writes_nothing(
@@ -299,3 +363,28 @@ def test_agent_import_rejects_spec_without_valcore_binding(
     assert result.exit_code == 1
     assert "prompt_template" in result.stderr
     assert "required_columns" in result.stderr
+
+
+def test_agent_import_invalid_binding_writes_no_orphaned_agent(
+    runner: CliRunner, store: Store, db_path: Path, tmp_path: Path
+) -> None:
+    """The complete imported version is validated before its parent agent is persisted."""
+    artifact = tmp_path / "invalid-binding.yaml"
+    AgentSpec(
+        model="test",
+        name="invalid",
+        metadata={
+            "valcore": {
+                "model": None,
+                "prompt_template": "Reply to: {input}",
+                "required_columns": ["input"],
+                "deps_mapping": {},
+            }
+        },
+    ).to_file(artifact)
+
+    result = _invoke(runner, db_path, "agent", "import", str(artifact))
+
+    assert result.exit_code == 1
+    assert "Invalid valcore binding" in result.stderr
+    assert store.list_agents() == []
