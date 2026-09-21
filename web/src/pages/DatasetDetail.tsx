@@ -15,7 +15,7 @@ import type {
   GeneratedConfig,
   LogfirePushResult,
 } from "../api/types";
-import { Button, ConfirmDialog, ErrorBanner, Spinner } from "../components/ui";
+import { Button, ConfirmDialog, ErrorBanner, Select, Spinner } from "../components/ui";
 import { useSetup } from "../components/useSetup";
 import { PageHeader } from "../components/PageHeader";
 import { datasetCasesUrl } from "../logfireLinks";
@@ -27,6 +27,7 @@ import GenerateMoreRows from "../components/GenerateMoreRows";
 import GenerationSettings from "../components/GenerationSettings";
 import LogfirePullMoreRows from "../components/LogfirePullMoreRows";
 import { LogfirePullSettings } from "../components/LogfirePullSettings";
+import { formatCell } from "../components/formatCell";
 
 // Mirrors the server's generation cap so an over-large ask is refused before it costs a
 // slow generation call.
@@ -39,12 +40,15 @@ type Props = {
 /** Renders saved agent responses without exposing the original rows' edit controls. */
 function DerivedRowsTable({
   page,
-  datasetColumns,
+  responseColumns,
 }: {
   page: DerivedRowsPage;
-  datasetColumns: string[];
+  responseColumns: string[];
 }) {
-  const responseColumns = page.columns.filter((column) => !datasetColumns.includes(column));
+  const displayedResponseColumns = page.columns.filter((column) =>
+    responseColumns.includes(column),
+  );
+  const firstResponseColumn = displayedResponseColumns[0];
 
   return (
     <div className="labeling-grid">
@@ -54,38 +58,40 @@ function DerivedRowsTable({
             {page.columns.map((column) => (
               <th key={column}>{column}</th>
             ))}
+            <th>latency</th>
           </tr>
         </thead>
         <tbody>
           {page.rows.map((row) => (
             <tr key={row.row_id} data-row-id={row.row_id}>
               {page.columns.map((column) => {
-                const isResponse = responseColumns.includes(column);
-                const showError = row.error !== null && isResponse;
-                const showLatency = row.latency_ms !== null && column === page.columns.at(-1);
+                const isResponse = displayedResponseColumns.includes(column);
+                if (row.error !== null && isResponse && column !== firstResponseColumn) {
+                  return null;
+                }
 
                 return (
-                  <td key={column}>
-                    {showError ? row.error : formatCell(row.data[column])}
-                    {showLatency && <span className="field-hint"> {row.latency_ms} ms</span>}
+                  <td
+                    key={column}
+                    colSpan={
+                      row.error !== null && column === firstResponseColumn
+                        ? displayedResponseColumns.length
+                        : undefined
+                    }
+                  >
+                    {row.error !== null && column === firstResponseColumn
+                      ? row.error
+                      : formatCell(row.data[column])}
                   </td>
                 );
               })}
+              <td>{row.latency_ms === null ? "" : `${row.latency_ms} ms`}</td>
             </tr>
           ))}
         </tbody>
       </table>
     </div>
   );
-}
-
-/** Converts an arbitrary API cell value to the display form used by the read-only table. */
-function formatCell(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  return JSON.stringify(value);
 }
 
 export default function DatasetDetail({ datasetId }: Props) {
@@ -114,6 +120,7 @@ export default function DatasetDetail({ datasetId }: Props) {
   const [selectedDerivationId, setSelectedDerivationId] = useState("");
   const [derivedRows, setDerivedRows] = useState<DerivedRowsPage | null>(null);
   const [derivedRowsError, setDerivedRowsError] = useState<unknown>(null);
+  const selectedDerivation = derivations.find((item) => item.id === selectedDerivationId);
 
   // Pushing needs the Logfire write key for the valcore project. The read key
   // queries a different project and cannot stand in.
@@ -403,27 +410,30 @@ export default function DatasetDetail({ datasetId }: Props) {
 
       {derivations.length > 0 && (
         <label className="field">
-          <span>View</span>
-          <select
+          <span className="field-label">View</span>
+          <Select
             aria-label="View"
             value={selectedDerivationId}
             onChange={(event) => setSelectedDerivationId(event.target.value)}
-          >
-            <option value="">Original</option>
-            {derivations.map((derivation) => (
-              <option key={derivation.id} value={derivation.id}>
-                {`${derivation.agent_name} · ${derivation.version_name} · run ${derivation.ordinal}`}
-              </option>
-            ))}
-          </select>
+            options={[
+              { value: "", label: "Original" },
+              ...derivations.map((derivation) => ({
+                value: derivation.id,
+                label: `${derivation.agent_name} · ${derivation.version_name} · run ${derivation.ordinal}`,
+              })),
+            ]}
+          />
         </label>
       )}
 
       {selectedDerivationId ? (
         <>
           {derivedRowsError !== null && <ErrorBanner error={derivedRowsError} />}
-          {derivedRows !== null && (
-            <DerivedRowsTable page={derivedRows} datasetColumns={dataset.columns} />
+          {derivedRows !== null && selectedDerivation !== undefined && (
+            <DerivedRowsTable
+              page={derivedRows}
+              responseColumns={selectedDerivation.response_columns}
+            />
           )}
           {derivedRows === null && derivedRowsError === null && <Spinner />}
         </>

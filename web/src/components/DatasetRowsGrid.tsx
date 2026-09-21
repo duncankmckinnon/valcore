@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { datasets } from "../api/client";
 import type { DatasetRow } from "../api/types";
+import { formatCell } from "./formatCell";
 import { Button, ConfirmDialog, ErrorBanner, Spinner } from "./ui";
 
 type Props = {
@@ -15,14 +16,6 @@ type Props = {
 
 const PAGE_SIZE = 100;
 const CELL_TRUNCATE = 80;
-
-function scalar(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  return JSON.stringify(value, null, 2);
-}
 
 export default function DatasetRowsGrid({ datasetId, columns, onChange }: Props) {
   const [rows, setRows] = useState<DatasetRow[]>([]);
@@ -141,7 +134,7 @@ export default function DatasetRowsGrid({ datasetId, columns, onChange }: Props)
             <tr key={row.id} data-row-id={row.id}>
               {columns.map((column) => {
                 const key = `${row.id}:${column}`;
-                const display = scalar(row.data[column]);
+                const display = formatCell(row.data[column]);
                 const isLong = display.length > CELL_TRUNCATE;
 
                 if (isLong && !expanded.has(key)) {

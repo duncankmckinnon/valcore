@@ -536,6 +536,16 @@ describe("DatasetDetail derived views", () => {
     expect(derivedRowsMock).not.toHaveBeenCalled();
   });
 
+  it("keeps the Original view when loading derivations fails", async () => {
+    listDerivationsMock.mockRejectedValue(new Error("Could not list derivations"));
+    renderDetail();
+    await ready();
+    await waitFor(() => expect(listDerivationsMock).toHaveBeenCalledTimes(1));
+
+    expect(screen.queryByRole("combobox", { name: "View" })).toBeNull();
+    expect(screen.getByTestId("dataset-rows-grid")).toBeTruthy();
+  });
+
   it("offers a view selector listing Original plus a labelled option per derivation", async () => {
     listDerivationsMock.mockResolvedValue([
       madeDerivation({ id: "dv1", agent_name: "Support bot", version_name: "v1", ordinal: 1 }),
@@ -553,6 +563,8 @@ describe("DatasetDetail derived views", () => {
       "Support bot · v1 · run 1",
       "Support bot · v2 · run 3",
     ]);
+    expect(viewSelect.classList.contains("select")).toBe(true);
+    expect(screen.getByText("View").classList.contains("field-label")).toBe(true);
   });
 
   it("defaults to Original, showing the existing rows grid without fetching derived rows", async () => {
@@ -583,13 +595,12 @@ describe("DatasetDetail derived views", () => {
     const headers = within(headerRow)
       .getAllByRole("columnheader")
       .map((cell) => cell.textContent);
-    expect(headers).toEqual(["question", "answer", "answer_score"]);
+    expect(headers).toEqual(["question", "answer", "answer_score", "latency"]);
 
     const firstRow = screen.getByText("Q1").closest("tr")!;
     expect(within(firstRow).getByText("A1")).toBeTruthy();
     expect(within(firstRow).getByText("good")).toBeTruthy();
-    // latency_ms is surfaced for a row that has one.
-    expect(within(firstRow).getByText(/120/)).toBeTruthy();
+    expect(within(firstRow).getByText("120 ms")).toBeTruthy();
   });
 
   it("shows a row's error in place of its response values, leaving dataset columns intact", async () => {
@@ -610,6 +621,75 @@ describe("DatasetDetail derived views", () => {
     expect(within(erroredRow).getByText("A2")).toBeTruthy();
     // ...but the response value is suppressed in favor of the error.
     expect(within(erroredRow).queryByText("bad")).toBeNull();
+  });
+
+  it("renders an error once across multiple response columns", async () => {
+    listDerivationsMock.mockResolvedValue([
+      madeDerivation({ response_columns: ["answer_score", "reason"] }),
+    ]);
+    derivedRowsMock.mockResolvedValue({
+      columns: ["question", "answer", "answer_score", "reason"],
+      rows: [
+        {
+          row_id: "r2",
+          idx: 1,
+          data: {
+            question: "Q2",
+            answer: "A2",
+            answer_score: "bad",
+            reason: "Incomplete",
+          },
+          latency_ms: 120,
+          error: "Model timed out",
+        },
+      ],
+    });
+    renderDetail();
+    await ready();
+
+    await userEvent.selectOptions(
+      await screen.findByRole("combobox", { name: "View" }),
+      "Support bot · v1 · run 1",
+    );
+
+    const erroredRow = (await screen.findByText("Q2")).closest("tr")!;
+    const errors = within(erroredRow).getAllByText("Model timed out");
+    expect(errors).toHaveLength(1);
+    expect(errors[0].closest("td")).toHaveAttribute("colspan", "2");
+    expect(within(erroredRow).queryByText("bad")).toBeNull();
+    expect(within(erroredRow).queryByText("Incomplete")).toBeNull();
+    expect(within(erroredRow).getByText("120 ms")).toBeTruthy();
+  });
+
+  it("shows a loading indicator while derived rows are pending", async () => {
+    listDerivationsMock.mockResolvedValue([madeDerivation()]);
+    derivedRowsMock.mockReturnValue(new Promise<DerivedRowsPage>(() => undefined));
+    renderDetail();
+    await ready();
+
+    await userEvent.selectOptions(
+      await screen.findByRole("combobox", { name: "View" }),
+      "Support bot · v1 · run 1",
+    );
+
+    expect(await screen.findByRole("status", { name: "Loading" })).toBeTruthy();
+    expect(screen.queryByTestId("dataset-rows-grid")).toBeNull();
+  });
+
+  it("shows a derived-row error without replacing the dataset page", async () => {
+    listDerivationsMock.mockResolvedValue([madeDerivation()]);
+    derivedRowsMock.mockRejectedValue(new Error("Could not load derived rows"));
+    renderDetail();
+    await ready();
+
+    await userEvent.selectOptions(
+      await screen.findByRole("combobox", { name: "View" }),
+      "Support bot · v1 · run 1",
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load derived rows");
+    expect(screen.getByRole("heading", { name: "My set" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "View" })).toBeTruthy();
   });
 
   it("does not offer editing controls on a derived view", async () => {
