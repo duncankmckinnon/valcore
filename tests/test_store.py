@@ -504,6 +504,53 @@ def test_save_derivation_rolls_back_when_a_later_response_is_invalid(store: Stor
     assert store.list_derivations(dataset_id=dataset_id) == []
 
 
+def test_save_derivation_rejects_missing_dataset_row(store: Store) -> None:
+    """Prevent responses from pointing at rows that cannot participate in the joined view."""
+    dataset_id, version_id, _ = _agent_version_and_dataset(store)
+
+    with pytest.raises(ContractError, match="missing-row"):
+        store.save_derivation(
+            dataset_id=dataset_id,
+            agent_version_id=version_id,
+            response_columns=["response"],
+            responses=[_response("missing-row")],
+        )
+
+    assert store.list_derivations(dataset_id=dataset_id) == []
+
+
+def test_save_derivation_rejects_row_from_another_dataset(store: Store) -> None:
+    """Keep each response overlay bound to rows from its declared source dataset."""
+    dataset_id, version_id, _ = _agent_version_and_dataset(store)
+    other_dataset = store.create_dataset("other", "", ["question"])
+    other_row = store.add_rows(other_dataset.id, [{"question": "other"}])[0]
+
+    with pytest.raises(ContractError, match=other_row.id):
+        store.save_derivation(
+            dataset_id=dataset_id,
+            agent_version_id=version_id,
+            response_columns=["response"],
+            responses=[_response(other_row.id)],
+        )
+
+    assert store.list_derivations(dataset_id=dataset_id) == []
+
+
+def test_save_derivation_rejects_duplicate_row_ids(store: Store) -> None:
+    """Report duplicate responses as a domain error before the unique constraint is reached."""
+    dataset_id, version_id, rows = _agent_version_and_dataset(store)
+
+    with pytest.raises(ContractError, match=rows[0].id):
+        store.save_derivation(
+            dataset_id=dataset_id,
+            agent_version_id=version_id,
+            response_columns=["response"],
+            responses=[_response(rows[0].id, "first"), _response(rows[0].id, "second")],
+        )
+
+    assert store.list_derivations(dataset_id=dataset_id) == []
+
+
 def test_derived_rows_joins_response_overlay_in_dataset_order(store: Store) -> None:
     dataset_id, version_id, rows = _agent_version_and_dataset(store)
     derivation = store.save_derivation(

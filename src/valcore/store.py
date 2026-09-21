@@ -496,6 +496,37 @@ class Store:
         with session_scope(self.engine) as session:
             _require(session, Dataset, dataset_id)
             _require(session, AgentVersion, agent_version_id)
+            row_ids = [response["row_id"] for response in responses]
+            seen_row_ids: set[str] = set()
+            duplicate_row_ids: set[str] = set()
+            for row_id in row_ids:
+                if row_id in seen_row_ids:
+                    duplicate_row_ids.add(row_id)
+                seen_row_ids.add(row_id)
+            if duplicate_row_ids:
+                raise ContractError(
+                    "Derivation responses contain duplicate row_id values: "
+                    f"{sorted(duplicate_row_ids)}."
+                )
+
+            # Responses are overlays on one declared dataset, so an orphan or foreign row
+            # would make the derived view silently incomplete or join unrelated input data.
+            source_rows = session.exec(select(DatasetRow).where(DatasetRow.id.in_(row_ids))).all()
+            rows_by_id = {row.id: row for row in source_rows}
+            missing_row_ids = [row_id for row_id in row_ids if row_id not in rows_by_id]
+            if missing_row_ids:
+                raise ContractError(
+                    f"Derivation responses reference missing row_id values: {missing_row_ids}."
+                )
+            wrong_dataset_row_ids = [
+                row_id for row_id in row_ids if rows_by_id[row_id].dataset_id != dataset_id
+            ]
+            if wrong_dataset_row_ids:
+                raise ContractError(
+                    "Derivation responses reference rows outside dataset "
+                    f"{dataset_id!r}: {wrong_dataset_row_ids}."
+                )
+
             current_max = session.exec(
                 select(func.max(DatasetDerivation.ordinal)).where(
                     DatasetDerivation.dataset_id == dataset_id,
