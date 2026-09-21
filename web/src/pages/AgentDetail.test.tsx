@@ -310,4 +310,16 @@ describe("AgentDetail", () => {
     );
     expect(screen.getByTestId("trial-panel")).toHaveTextContent("av-2");
   });
+
+  it("keeps the selected version's trial panel available while drafting a new version", async () => {
+    vi.mocked(agents.get).mockResolvedValue(makeDetail());
+    const user = userEvent.setup();
+    renderDetail();
+
+    expect(await screen.findByTestId("trial-panel")).toHaveTextContent("av-1");
+    await user.click(screen.getByRole("button", { name: "New version" }));
+
+    expect(screen.getByRole("button", { name: "Create version" })).toBeInTheDocument();
+    expect(screen.getByTestId("trial-panel")).toHaveTextContent("av-1");
+  });
 });
