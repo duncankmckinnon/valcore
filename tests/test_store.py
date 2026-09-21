@@ -468,6 +468,42 @@ def test_save_derivation_requires_row_id_and_data(
     assert store.list_derivations(dataset_id=dataset_id) == []
 
 
+@pytest.mark.parametrize(
+    ("response", "invalid_value"),
+    [({"row_id": 1, "data": {}}, "row_id"), ({"row_id": "row", "data": "answer"}, "data")],
+)
+def test_save_derivation_requires_typed_response_values(
+    store: Store, response: dict, invalid_value: str
+) -> None:
+    """Reject payload values that cannot represent the persisted response contract."""
+    dataset_id, version_id, _ = _agent_version_and_dataset(store)
+
+    with pytest.raises(ContractError, match=invalid_value):
+        store.save_derivation(
+            dataset_id=dataset_id,
+            agent_version_id=version_id,
+            response_columns=["response"],
+            responses=[response],
+        )
+
+    assert store.list_derivations(dataset_id=dataset_id) == []
+
+
+def test_save_derivation_rolls_back_when_a_later_response_is_invalid(store: Store) -> None:
+    """Keep the derivation and earlier responses atomic when later payload validation fails."""
+    dataset_id, version_id, rows = _agent_version_and_dataset(store)
+
+    with pytest.raises(ContractError, match="data"):
+        store.save_derivation(
+            dataset_id=dataset_id,
+            agent_version_id=version_id,
+            response_columns=["response"],
+            responses=[_response(rows[0].id), {"row_id": rows[1].id}],
+        )
+
+    assert store.list_derivations(dataset_id=dataset_id) == []
+
+
 def test_derived_rows_joins_response_overlay_in_dataset_order(store: Store) -> None:
     dataset_id, version_id, rows = _agent_version_and_dataset(store)
     derivation = store.save_derivation(
