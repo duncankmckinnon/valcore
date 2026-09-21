@@ -81,7 +81,9 @@ describe("AgentsPage", () => {
       "href",
       "/agents/agent-2",
     );
-    expect(screen.getByText("Answers customer questions.")).toBeTruthy();
+    // Descriptions belong to each row, so identical copy must not silently disappear
+    // from later agents.
+    expect(screen.getAllByText("Answers customer questions.")).toHaveLength(2);
     expect(screen.getByRole("cell", { name: "2" })).toBeTruthy();
     expect(screen.getByRole("cell", { name: "7" })).toBeTruthy();
   });
