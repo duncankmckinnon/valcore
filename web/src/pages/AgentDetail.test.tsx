@@ -184,6 +184,45 @@ describe("AgentDetail", () => {
     );
   });
 
+  it("creates a new version from the editable draft without mutating the selected version", async () => {
+    const created = makeVersion({ id: "av-2", version_name: "new draft" });
+    vi.mocked(agents.get)
+      .mockResolvedValueOnce(makeDetail())
+      .mockResolvedValueOnce(
+        makeDetail({
+          agent: {
+            ...makeDetail().agent,
+            active_version_id: "av-2",
+            version_count: 2,
+          },
+          versions: [makeVersion(), created],
+        }),
+      );
+    vi.mocked(agents.createVersion).mockResolvedValue(created);
+    const user = userEvent.setup();
+    renderDetail();
+
+    await screen.findByRole("button", { name: "New version" });
+    await user.click(screen.getByRole("button", { name: "New version" }));
+    const name = screen.getByLabelText("Version name");
+    await user.clear(name);
+    await user.type(name, "new draft");
+    await user.click(screen.getByRole("button", { name: "Create version" }));
+
+    await waitFor(() =>
+      expect(agents.createVersion).toHaveBeenCalledWith("agent-1", {
+        version_name: "new draft",
+        notes: "First revision.",
+        model: "gateway/openai:gpt-4o",
+        prompt_template: "Question: {question}",
+        required_columns: ["question", "context"],
+        deps_mapping: { account_id: "account" },
+        spec: { name: "support-agent", instructions: ["Help the user."] },
+      }),
+    );
+    expect(agents.updateVersion).not.toHaveBeenCalled();
+  });
+
   it("renders a frozen version as read-only and offers Copy instead of Save", async () => {
     vi.mocked(agents.get).mockResolvedValue(
       makeDetail({ versions: [makeVersion({ frozen: true })] }),
