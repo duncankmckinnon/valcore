@@ -13,7 +13,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict
-from pydantic_ai import Agent
+from pydantic_ai import Agent as PydanticAgent
 from sse_starlette.sse import EventSourceResponse
 
 from valcore import config
@@ -37,7 +37,7 @@ router = APIRouter(prefix="/api/runs", tags=["runs"])
 
 StoreDep = Annotated[Store, Depends(get_store)]
 
-AgentFactory = Callable[[EvaluatorVersion], Agent]
+AgentFactory = Callable[[EvaluatorVersion], PydanticAgent]
 
 _DEFAULT_CONCURRENCY = 4
 _TERMINAL_STATUSES: frozenset[RunStatus] = frozenset(
@@ -195,7 +195,7 @@ async def _run_to_completion(
         version = await asyncio.to_thread(store.get_version, run.version_id)
         if not is_local_cli_model(version.model):
             config.require_gateway_key()
-        agent: Agent | None = None
+        agent: PydanticAgent | None = None
         if agent_factory is not None:
             agent = agent_factory(version)
         if experiment:

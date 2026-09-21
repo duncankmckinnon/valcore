@@ -3,7 +3,7 @@
 from collections import Counter
 
 from pydantic import BaseModel
-from pydantic_ai import Agent
+from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 from valcore import settings
@@ -43,11 +43,11 @@ class GeneratedDataset(BaseModel):
     rows: list[GeneratedRow]
 
 
-def build_datagen_agent(model: str | None = None) -> Agent[None, GeneratedDataset]:
+def build_datagen_agent(model: str | None = None) -> PydanticAgent[None, GeneratedDataset]:
     """Build the dataset-generation agent, defaulting to the configured model."""
     resolved = model or settings.get_settings().default_model
     settings.validate_model_string(resolved)
-    return Agent(
+    return PydanticAgent(
         resolve_model(resolved),
         output_type=GeneratedDataset,
         name="datagen_agent",
@@ -267,7 +267,7 @@ async def generate_rows(
     label_guidance: str | None = None,
     label_mix: dict[str, float] | None = None,
     model: str | None = None,
-    agent: Agent | None = None,
+    agent: PydanticAgent | None = None,
 ) -> list[GeneratedRow]:
     """Generate up to `count` valid rows, making at most one top-up call for shortfall.
 

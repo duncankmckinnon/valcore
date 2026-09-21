@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel
-from pydantic_ai import Agent
+from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai.usage import RunUsage
 from sqlmodel import select
 
@@ -88,7 +88,7 @@ async def execute_run(
     store: Store,
     run_id: str,
     *,
-    agent: Agent | None = None,
+    agent: PydanticAgent | None = None,
     on_event: Callable[[RunEvent], Awaitable[None]] | None = None,
     only_row_ids: Sequence[str] | None = None,
 ) -> Run:
@@ -258,7 +258,7 @@ async def _score_row(
     store: Store,
     run_id: str,
     version: EvaluatorVersion,
-    agent: Agent,
+    agent: PydanticAgent,
     row: DatasetRow,
     label_value: str | float | None,
 ) -> _Outcome:

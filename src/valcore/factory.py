@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, create_model
-from pydantic_ai import Agent
+from pydantic_ai import Agent as PydanticAgent
 
 from valcore.capabilities import CAPABILITY_REGISTRY
 from valcore.errors import ConfigError, ContractError
@@ -81,7 +81,7 @@ def build_capabilities(specs: Sequence[CapabilitySpec]) -> list[Any]:
     return capabilities
 
 
-def build_agent(version: EvaluatorVersion) -> Agent[None, BaseModel]:
+def build_agent(version: EvaluatorVersion) -> PydanticAgent[None, BaseModel]:
     """Build a live evaluator Agent from a validated version configuration.
 
     Named ``scoring_agent`` so instrumented traces identify it, rather than falling back to the
@@ -98,7 +98,7 @@ def build_agent(version: EvaluatorVersion) -> Agent[None, BaseModel]:
     validate_version(version)
     local = is_local_cli_model(version.model)
     specs = [] if local else [CapabilitySpec.model_validate(c) for c in version.capabilities]
-    return Agent(
+    return PydanticAgent(
         resolve_model(version.model),
         output_type=build_output_model(version),
         name="scoring_agent",
