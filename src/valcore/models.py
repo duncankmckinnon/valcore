@@ -10,7 +10,7 @@ from pydantic import BaseModel, ValidationError, model_validator
 from sqlalchemy import Column, UniqueConstraint
 from sqlmodel import JSON, Field, SQLModel
 
-from valcore import agent_spec, capabilities, settings
+from valcore import capabilities, settings
 from valcore.capabilities import VALID_CAPABILITIES
 from valcore.errors import ConfigError, ContractError
 
@@ -664,11 +664,13 @@ def validate_version(version: EvaluatorVersion) -> None:
 
 def validate_agent_version(version: AgentVersion) -> None:
     """Raise ConfigError if an agent version's configuration is invalid."""
+    # Keep pydantic-ai's expensive spec/model imports off models.py's module import path.
+    from pydantic_ai.capabilities import CAPABILITY_TYPES
+
+    from valcore import agent_spec
+
     settings.validate_model_string(version.model)
     spec = agent_spec.parse_spec(version.spec)
-
-    # This deferred import preserves the fast import path for ordinary CLI commands.
-    from pydantic_ai.capabilities import CAPABILITY_TYPES
 
     allowed = set(CAPABILITY_TYPES) | capabilities.spec_capability_names()
     for name in agent_spec.capability_names(spec):

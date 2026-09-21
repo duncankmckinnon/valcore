@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from valcore.errors import ConfigError, ContractError
 from valcore.models import (
@@ -676,6 +676,19 @@ def test_agent_version_harness_capability_passes() -> None:
     )
 
 
+def test_agent_version_configured_mcp_capability_passes() -> None:
+    validate_agent_version(
+        make_agent_version(spec={"instructions": "hi", "capabilities": [{"MCP": {"servers": []}}]})
+    )
+
+
+def test_agent_version_configured_subagents_capability_raises_specific_message() -> None:
+    with pytest.raises(ConfigError, match="SubAgents.*serialize"):
+        validate_agent_version(
+            make_agent_version(spec={"instructions": "hi", "capabilities": [{"SubAgents": {}}]})
+        )
+
+
 def test_agent_version_prompt_template_unknown_column_raises() -> None:
     with pytest.raises(ConfigError):
         validate_agent_version(
@@ -742,6 +755,20 @@ def test_agent_version_defaults() -> None:
     assert version.frozen is False
 
 
+def test_agent_version_has_no_evaluator_scoring_fields() -> None:
+    evaluator_only = {
+        "output_fields",
+        "score_field",
+        "score_kind",
+        "score_labels",
+        "score_minimum",
+        "score_maximum",
+        "capabilities",
+        "tools",
+    }
+    assert evaluator_only.isdisjoint(AgentVersion.model_fields)
+
+
 def test_dataset_derivation_defaults() -> None:
     derivation = DatasetDerivation(dataset_id="ds-1", agent_version_id="av-1")
     assert derivation.id
@@ -776,7 +803,7 @@ def test_agent_response_unique_constraint(tmp_path: Path) -> None:
 
 
 def test_agent_response_allows_same_row_across_different_derivations(tmp_path: Path) -> None:
-    engine = create_engine(tmp_path / "models2.db")
+    engine = create_engine(tmp_path / "models.db")
     init_db(engine)
     try:
         with Session(engine) as session:
@@ -784,5 +811,44 @@ def test_agent_response_allows_same_row_across_different_derivations(tmp_path: P
             session.commit()
             session.add(AgentResponse(derivation_id="deriv-2", dataset_row_id="row-1", data={}))
             session.commit()
+            assert len(session.exec(select(AgentResponse)).all()) == 2
+    finally:
+        engine.dispose()
+
+
+def test_agent_response_and_derivation_json_and_telemetry_round_trip(tmp_path: Path) -> None:
+    engine = create_engine(tmp_path / "models.db")
+    init_db(engine)
+    try:
+        with Session(engine) as session:
+            derivation = DatasetDerivation(
+                dataset_id="ds-1",
+                agent_version_id="av-1",
+                ordinal=2,
+                response_columns=["answer", "confidence"],
+            )
+            response = AgentResponse(
+                derivation_id=derivation.id,
+                dataset_row_id="row-1",
+                data={"answer": "hello", "confidence": 0.9},
+                latency_ms=125,
+                usage={"input_tokens": 7, "output_tokens": 2},
+                error="provider warning",
+            )
+            session.add(derivation)
+            session.add(response)
+            session.commit()
+
+            session.expire_all()
+            restored_derivation = session.get(DatasetDerivation, derivation.id)
+            restored_response = session.get(AgentResponse, response.id)
+
+            assert restored_derivation is not None
+            assert restored_derivation.response_columns == ["answer", "confidence"]
+            assert restored_response is not None
+            assert restored_response.data == {"answer": "hello", "confidence": 0.9}
+            assert restored_response.latency_ms == 125
+            assert restored_response.usage == {"input_tokens": 7, "output_tokens": 2}
+            assert restored_response.error == "provider warning"
     finally:
         engine.dispose()
