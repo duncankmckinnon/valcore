@@ -1384,7 +1384,8 @@ kbd {
   max-width: 640px;
 }
 
-.evaluator-detail {
+.evaluator-detail,
+.agent-detail {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
