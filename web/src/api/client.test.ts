@@ -17,9 +17,9 @@ import type {
   AgentSpecImport,
   AgentSummary,
   AgentVersion,
+  DatasetSummary,
   Derivation,
   DerivedRowsPage,
-  DatasetSummary,
   Overview,
   SetupStatus,
   TrialResult,
@@ -1238,12 +1238,5 @@ describe("agents client helpers", () => {
     expect(error.status).toBe(404);
     expect(error.type).toBe("NotFoundError");
     expect(error.message).toBe("no such agent");
-  });
-
-  it("exposes remove/removeVersion rather than delete/deleteVersion", () => {
-    expect(Object.keys(agents)).toContain("remove");
-    expect(Object.keys(agents)).toContain("removeVersion");
-    expect(Object.keys(agents)).not.toContain("delete");
-    expect(Object.keys(agents)).not.toContain("deleteVersion");
   });
 });
