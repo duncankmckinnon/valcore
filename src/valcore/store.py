@@ -20,8 +20,12 @@ from valcore.errors import (
     ReferencedError,
 )
 from valcore.models import (
+    Agent,
+    AgentResponse,
+    AgentVersion,
     Annotation,
     Dataset,
+    DatasetDerivation,
     DatasetGeneration,
     DatasetHostedFetch,
     DatasetLogfirePull,
@@ -37,6 +41,7 @@ from valcore.models import (
     RunStatus,
     ScoreKind,
     annotation_ground_truth,
+    validate_agent_version,
     validate_annotation,
     validate_label_set,
     validate_version,
@@ -103,6 +108,16 @@ def _raise_referenced(runs: list[Run], noun: str) -> None:
     )
 
 
+def _raise_referenced_by_derivations(derivations: list[DatasetDerivation], noun: str) -> None:
+    """Raise ReferencedError naming the derivations that block a delete."""
+    derivation_ids = [derivation.id for derivation in derivations]
+    plural = "derivation" if len(derivation_ids) == 1 else "derivations"
+    raise ReferencedError(
+        f"{len(derivation_ids)} {plural} reference this {noun}; delete them first.",
+        detail={"derivation_count": len(derivation_ids), "derivation_ids": derivation_ids},
+    )
+
+
 @dataclass
 class DatasetSummary:
     """A dataset carrying its row and labeled-row counts, as returned by ``list_datasets``.
@@ -121,6 +136,25 @@ class DatasetSummary:
 
     def model_dump(self) -> dict:
         """Match the ``Dataset.model_dump`` the CLI relied on before counts were added."""
+        return asdict(self)
+
+
+@dataclass
+class DerivedRow:
+    """One row of a derived view: a dataset row's inputs joined to an agent's response.
+
+    Responses are an overlay, so this view is computed as a join rather than stored as a
+    dataset copy; that keeps every derivation tied to the exact same source inputs.
+    """
+
+    row_id: str
+    idx: int
+    data: dict
+    latency_ms: int | None
+    error: str | None
+
+    def model_dump(self) -> dict:
+        """Return this joined row in the model-dump shape used by store callers."""
         return asdict(self)
 
 
@@ -293,6 +327,253 @@ class Store:
                 ).first()
                 evaluator.active_version_id = survivor.id if survivor is not None else None
                 session.add(evaluator)
+
+    # -- Agents ---------------------------------------------------------------
+
+    def create_agent(self, name: str, description: str = "") -> Agent:
+        """Create and persist a new agent under test."""
+        with session_scope(self.engine) as session:
+            agent = Agent(name=name, description=description)
+            session.add(agent)
+            return agent
+
+    def get_agent(self, id: str) -> Agent:
+        """Return the agent with ``id`` or raise NotFoundError."""
+        with session_scope(self.engine) as session:
+            return _require(session, Agent, id)
+
+    def list_agents(self) -> list[Agent]:
+        """Return every agent ordered by creation time."""
+        with session_scope(self.engine) as session:
+            return list(session.exec(select(Agent).order_by(Agent.created_at)))
+
+    def update_agent(self, id: str, **fields: object) -> Agent:
+        """Update mutable fields on an agent."""
+        with session_scope(self.engine) as session:
+            agent = _require(session, Agent, id)
+            for key, value in fields.items():
+                setattr(agent, key, value)
+            session.add(agent)
+            return agent
+
+    def delete_agent(self, id: str) -> None:
+        """Delete an agent and its versions unless a derivation references one."""
+        with session_scope(self.engine) as session:
+            agent = _require(session, Agent, id)
+            version_ids = list(
+                session.exec(select(AgentVersion.id).where(AgentVersion.agent_id == id))
+            )
+            derivations = (
+                session.exec(
+                    select(DatasetDerivation).where(
+                        DatasetDerivation.agent_version_id.in_(version_ids)
+                    )
+                ).all()
+                if version_ids
+                else []
+            )
+            if derivations:
+                _raise_referenced_by_derivations(derivations, "agent")
+            versions = session.exec(select(AgentVersion).where(AgentVersion.agent_id == id))
+            for version in versions:
+                session.delete(version)
+            session.delete(agent)
+
+    def create_agent_version(self, agent_id: str, **fields: object) -> AgentVersion:
+        """Validate and persist a new agent version, making it active."""
+        with session_scope(self.engine) as session:
+            agent = _require(session, Agent, agent_id)
+            version = AgentVersion(agent_id=agent_id, **fields)
+            validate_agent_version(version)
+            session.add(version)
+            session.flush()
+            agent.active_version_id = version.id
+            session.add(agent)
+            return version
+
+    def get_agent_version(self, id: str) -> AgentVersion:
+        """Return the agent version with ``id`` or raise NotFoundError."""
+        with session_scope(self.engine) as session:
+            return _require(session, AgentVersion, id)
+
+    def list_agent_versions(self, agent_id: str) -> list[AgentVersion]:
+        """Return every version of an agent ordered by creation time."""
+        with session_scope(self.engine) as session:
+            return list(
+                session.exec(
+                    select(AgentVersion)
+                    .where(AgentVersion.agent_id == agent_id)
+                    .order_by(AgentVersion.created_at)
+                )
+            )
+
+    def update_agent_version(self, id: str, **fields: object) -> AgentVersion:
+        """Update an unfrozen agent version after validating its complete binding."""
+        with session_scope(self.engine) as session:
+            version = _require(session, AgentVersion, id)
+            if version.frozen:
+                raise FrozenVersionError(f"Agent version {id!r} is frozen and cannot be edited.")
+            for key, value in fields.items():
+                setattr(version, key, value)
+            validate_agent_version(version)
+            session.add(version)
+            return version
+
+    def freeze_agent_version(self, id: str) -> AgentVersion:
+        """Mark an agent version frozen so it can no longer be edited."""
+        with session_scope(self.engine) as session:
+            version = _require(session, AgentVersion, id)
+            version.frozen = True
+            session.add(version)
+            return version
+
+    def delete_agent_version(self, id: str) -> None:
+        """Delete an agent version, repointing its active version when needed."""
+        with session_scope(self.engine) as session:
+            version = _require(session, AgentVersion, id)
+            derivations = session.exec(
+                select(DatasetDerivation).where(DatasetDerivation.agent_version_id == id)
+            ).all()
+            if derivations:
+                _raise_referenced_by_derivations(derivations, "agent version")
+            agent = session.get(Agent, version.agent_id)
+            session.delete(version)
+            session.flush()
+            if agent is not None and agent.active_version_id == id:
+                survivor = session.exec(
+                    select(AgentVersion)
+                    .where(AgentVersion.agent_id == agent.id)
+                    .order_by(AgentVersion.created_at.desc())
+                ).first()
+                agent.active_version_id = survivor.id if survivor is not None else None
+                session.add(agent)
+
+    def copy_agent_version(self, id: str, version_name: str) -> AgentVersion:
+        """Copy an agent version into a new, unfrozen active version."""
+        with session_scope(self.engine) as session:
+            source = _require(session, AgentVersion, id)
+            agent = _require(session, Agent, source.agent_id)
+            version = AgentVersion(
+                agent_id=source.agent_id,
+                version_name=version_name,
+                notes=source.notes,
+                frozen=False,
+                model=source.model,
+                spec=source.spec,
+                prompt_template=source.prompt_template,
+                required_columns=source.required_columns,
+                deps_mapping=source.deps_mapping,
+            )
+            validate_agent_version(version)
+            session.add(version)
+            session.flush()
+            agent.active_version_id = version.id
+            session.add(agent)
+            return version
+
+    # -- Derivations ----------------------------------------------------------
+
+    def save_derivation(
+        self,
+        *,
+        dataset_id: str,
+        agent_version_id: str,
+        response_columns: list[str],
+        responses: list[dict],
+    ) -> DatasetDerivation:
+        """Persist one complete agent-response overlay for a dataset."""
+        if not responses:
+            raise ContractError("A derivation must contain at least one response.")
+        with session_scope(self.engine) as session:
+            _require(session, Dataset, dataset_id)
+            _require(session, AgentVersion, agent_version_id)
+            current_max = session.exec(
+                select(func.max(DatasetDerivation.ordinal)).where(
+                    DatasetDerivation.dataset_id == dataset_id,
+                    DatasetDerivation.agent_version_id == agent_version_id,
+                )
+            ).one()
+            derivation = DatasetDerivation(
+                dataset_id=dataset_id,
+                agent_version_id=agent_version_id,
+                ordinal=0 if current_max is None else current_max + 1,
+                response_columns=response_columns,
+            )
+            session.add(derivation)
+            session.flush()
+            for response in responses:
+                if "row_id" not in response:
+                    raise ContractError("Derivation response is missing required key 'row_id'.")
+                if "data" not in response:
+                    raise ContractError("Derivation response is missing required key 'data'.")
+                session.add(
+                    AgentResponse(
+                        derivation_id=derivation.id,
+                        dataset_row_id=response["row_id"],
+                        data=response["data"],
+                        latency_ms=response.get("latency_ms"),
+                        usage=response.get("usage"),
+                        error=response.get("error"),
+                    )
+                )
+            return derivation
+
+    def get_derivation(self, id: str) -> DatasetDerivation:
+        """Return the derivation with ``id`` or raise NotFoundError."""
+        with session_scope(self.engine) as session:
+            return _require(session, DatasetDerivation, id)
+
+    def list_derivations(
+        self, *, dataset_id: str | None = None, agent_version_id: str | None = None
+    ) -> list[DatasetDerivation]:
+        """Return derivations filtered by their optional dataset and agent version bindings."""
+        with session_scope(self.engine) as session:
+            statement = select(DatasetDerivation)
+            if dataset_id is not None:
+                statement = statement.where(DatasetDerivation.dataset_id == dataset_id)
+            if agent_version_id is not None:
+                statement = statement.where(DatasetDerivation.agent_version_id == agent_version_id)
+            return list(session.exec(statement.order_by(DatasetDerivation.created_at)))
+
+    def list_agent_responses(self, derivation_id: str) -> list[AgentResponse]:
+        """Return every response saved for a derivation."""
+        with session_scope(self.engine) as session:
+            _require(session, DatasetDerivation, derivation_id)
+            return list(
+                session.exec(
+                    select(AgentResponse).where(AgentResponse.derivation_id == derivation_id)
+                )
+            )
+
+    def derived_rows(self, derivation_id: str) -> list[DerivedRow]:
+        """Return the dataset inputs overlaid with a derivation's responses by row index."""
+        with session_scope(self.engine) as session:
+            _require(session, DatasetDerivation, derivation_id)
+            responses = session.exec(
+                select(AgentResponse).where(AgentResponse.derivation_id == derivation_id)
+            ).all()
+            row_ids = [response.dataset_row_id for response in responses]
+            rows = (
+                session.exec(select(DatasetRow).where(DatasetRow.id.in_(row_ids))).all()
+                if row_ids
+                else []
+            )
+            rows_by_id = {row.id: row for row in rows}
+            joined = []
+            for response in responses:
+                row = rows_by_id.get(response.dataset_row_id)
+                if row is None:
+                    continue
+                joined.append(
+                    DerivedRow(
+                        row_id=row.id,
+                        idx=row.idx,
+                        data={**row.data, **response.data},
+                        latency_ms=response.latency_ms,
+                        error=response.error,
+                    )
+                )
+            return sorted(joined, key=lambda row: row.idx)
 
     # -- Datasets -------------------------------------------------------------
 
