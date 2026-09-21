@@ -484,6 +484,15 @@ class Store:
         """Persist one complete agent-response overlay for a dataset."""
         if not responses:
             raise ContractError("A derivation must contain at least one response.")
+        for response in responses:
+            if "row_id" not in response:
+                raise ContractError("Derivation response is missing required key 'row_id'.")
+            if not isinstance(response["row_id"], str):
+                raise ContractError("Derivation response key 'row_id' must be a string.")
+            if "data" not in response:
+                raise ContractError("Derivation response is missing required key 'data'.")
+            if not isinstance(response["data"], dict):
+                raise ContractError("Derivation response key 'data' must be a dict.")
         with session_scope(self.engine) as session:
             _require(session, Dataset, dataset_id)
             _require(session, AgentVersion, agent_version_id)
@@ -502,10 +511,6 @@ class Store:
             session.add(derivation)
             session.flush()
             for response in responses:
-                if "row_id" not in response:
-                    raise ContractError("Derivation response is missing required key 'row_id'.")
-                if "data" not in response:
-                    raise ContractError("Derivation response is missing required key 'data'.")
                 session.add(
                     AgentResponse(
                         derivation_id=derivation.id,
