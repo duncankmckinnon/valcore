@@ -111,13 +111,7 @@ function AgentsList(): JSX.Element {
           },
           {
             header: "Description",
-            // Repeating an identical description adds no information in a dense list.
-            cell: (row) =>
-              rows.findIndex(
-                (candidate) => candidate.description === row.description,
-              ) === rows.indexOf(row)
-                ? row.description
-                : "",
+            cell: (row) => row.description,
           },
           { header: "Versions", cell: (row) => row.version_count },
           {
