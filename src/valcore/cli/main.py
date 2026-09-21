@@ -583,8 +583,6 @@ def agent_import(ctx: click.Context, path: Path, name: str | None) -> None:
     }
     try:
         validate_agent_version(AgentVersion(agent_id="", **version_fields))
-    except ValcoreError:
-        raise
     except Exception as exc:
         raise ContractError(f"Invalid valcore binding: {exc}") from exc
 

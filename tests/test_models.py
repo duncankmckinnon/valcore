@@ -641,6 +641,26 @@ def test_agent_version_bad_model_raises() -> None:
         validate_agent_version(make_agent_version(model="openai:gpt-5"))
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("model", None, "model must be a string"),
+        ("spec", [], "spec must be an object"),
+        ("prompt_template", None, "prompt_template must be a string"),
+        ("required_columns", {"question"}, "required_columns must be a list of strings"),
+        ("required_columns", [1], "required_columns must be a list of strings"),
+        ("deps_mapping", [], "deps_mapping must be an object of string values"),
+        ("deps_mapping", {"name": 1}, "deps_mapping must be an object of string values"),
+    ],
+)
+def test_agent_version_binding_fields_require_json_compatible_types(
+    field: str, value: object, message: str
+) -> None:
+    """Table models must reject malformed JSON binding values before persistence."""
+    with pytest.raises(ConfigError, match=message):
+        validate_agent_version(make_agent_version(**{field: value}))
+
+
 def test_agent_version_malformed_spec_raises() -> None:
     with pytest.raises(ConfigError, match="Invalid agent spec"):
         validate_agent_version(make_agent_version(spec={"retries": "not-an-int"}))

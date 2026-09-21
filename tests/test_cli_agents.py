@@ -388,3 +388,30 @@ def test_agent_import_invalid_binding_writes_no_orphaned_agent(
     assert result.exit_code == 1
     assert "Invalid valcore binding" in result.stderr
     assert store.list_agents() == []
+
+
+def test_agent_import_malformed_binding_type_writes_no_orphaned_agent(
+    runner: CliRunner, store: Store, db_path: Path, tmp_path: Path
+) -> None:
+    """Non-JSON binding containers fail before the parent agent is committed."""
+    artifact = tmp_path / "set-binding.yaml"
+    artifact.write_text(
+        """\
+model: test
+name: invalid
+metadata:
+  valcore:
+    model: local/codex
+    prompt_template: 'Reply to: {input}'
+    required_columns: !!set
+      input:
+    deps_mapping: {}
+"""
+    )
+
+    result = _invoke(runner, db_path, "agent", "import", str(artifact))
+
+    assert result.exit_code == 1
+    assert "Invalid valcore binding" in result.stderr
+    assert "required_columns must be a list of strings" in result.stderr
+    assert store.list_agents() == []
