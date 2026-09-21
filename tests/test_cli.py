@@ -14,8 +14,10 @@ regardless of how ``cli.main`` imports the module, as long as it calls through a
 module reference rather than a name bound at import time.
 """
 
+import gc
 import json
-from collections.abc import Iterator
+import warnings
+from collections.abc import Callable, Iterator
 from importlib.metadata import version as package_version
 
 import pytest
@@ -24,6 +26,7 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
+from sqlalchemy.engine import Engine
 
 from valcore.cli.main import cli
 from valcore.cli.resolve import resolve_dataset, resolve_evaluator, resolve_version
@@ -137,6 +140,25 @@ def _invoke(runner: CliRunner, db_path, *args: str, **kwargs):
 @pytest.fixture
 def runner() -> CliRunner:
     return CliRunner()
+
+
+def test_invocation_leaves_no_open_database_connection(runner: CliRunner, tmp_path) -> None:
+    """Every command opens its own engine, so an undisposed one keeps a SQLite
+    connection alive until the garbage collector finalises it -- which surfaces as a
+    ResourceWarning charged to whichever unrelated test happens to be running then.
+    """
+    db_path = tmp_path / "dispose.db"
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("ignore")
+        warnings.filterwarnings(
+            "always",
+            "unclosed database in <sqlite3.Connection object at",
+            ResourceWarning,
+        )
+        result = _invoke(runner, db_path, "list", "evaluators")
+        gc.collect()
+    assert result.exit_code == 0
+    assert [str(w.message) for w in caught] == []
 
 
 @pytest.fixture(autouse=True)
@@ -650,14 +672,30 @@ def test_export_json_overwrites_the_named_output(runner, store, db_path, tmp_pat
 # -- import -------------------------------------------------------------------
 
 
-def _fresh_store(db_path) -> Store:
-    """Open a Store on a (possibly import-created) db for post-import inspection."""
-    engine = create_engine(db_path)
-    init_db(engine)
-    return Store(engine)
+@pytest.fixture
+def fresh_store() -> Iterator[Callable[[object], Store]]:
+    """Open Stores on (possibly import-created) dbs, disposing each one at teardown.
+
+    An undisposed engine keeps its SQLite connection alive until the garbage collector
+    finalises it, which surfaces as a ResourceWarning charged to whichever unrelated
+    test happens to be running at that moment.
+    """
+    engines: list[Engine] = []
+
+    def open_store(db_path) -> Store:
+        engine = create_engine(db_path)
+        init_db(engine)
+        engines.append(engine)
+        return Store(engine)
+
+    try:
+        yield open_store
+    finally:
+        for engine in engines:
+            engine.dispose()
 
 
-def test_import_bundled_round_trips(runner, store, db_path, tmp_path):
+def test_import_bundled_round_trips(runner, store, db_path, tmp_path, fresh_store):
     out = tmp_path / "pkg.json"
     exported = _invoke(
         runner, db_path, "export", "judge", "--dataset", "cases", "--format", "json", "-o", str(out)
@@ -668,7 +706,7 @@ def test_import_bundled_round_trips(runner, store, db_path, tmp_path):
     imported = _invoke(runner, dest, "import", str(out))
     assert imported.exit_code == 0
 
-    s = _fresh_store(dest)
+    s = fresh_store(dest)
 
     datasets = s.list_datasets()
     assert len(datasets) == 1
@@ -697,7 +735,7 @@ def test_import_bundled_round_trips(runner, store, db_path, tmp_path):
     assert parse_output_fields(version) == expected_fields
 
 
-def test_import_name_override(runner, store, db_path, tmp_path):
+def test_import_name_override(runner, store, db_path, tmp_path, fresh_store):
     out = tmp_path / "pkg.json"
     _invoke(runner, db_path, "export", "--dataset", "cases", "--format", "json", "-o", str(out))
 
@@ -705,11 +743,11 @@ def test_import_name_override(runner, store, db_path, tmp_path):
     result = _invoke(runner, dest, "import", str(out), "--name", "renamed-cases")
     assert result.exit_code == 0
 
-    s = _fresh_store(dest)
+    s = fresh_store(dest)
     assert [d.name for d in s.list_datasets()] == ["renamed-cases"]
 
 
-def test_import_invalid_agent_persists_nothing(runner, store, db_path, tmp_path):
+def test_import_invalid_agent_persists_nothing(runner, store, db_path, tmp_path, fresh_store):
     out = tmp_path / "pkg.json"
     _invoke(
         runner, db_path, "export", "judge", "--dataset", "cases", "--format", "json", "-o", str(out)
@@ -726,7 +764,7 @@ def test_import_invalid_agent_persists_nothing(runner, store, db_path, tmp_path)
     assert result.exit_code != 0
 
     # Validation happens before any persistence, so nothing is created.
-    s = _fresh_store(dest)
+    s = fresh_store(dest)
     assert s.list_evaluators() == []
     assert s.list_datasets() == []
 
@@ -1116,7 +1154,7 @@ def test_logfire_list_prints_hosted_dataset_names(runner, db_path, monkeypatch):
     assert "12" in result.output
 
 
-def test_logfire_fetch_creates_local_dataset(runner, db_path, monkeypatch):
+def test_logfire_fetch_creates_local_dataset(runner, db_path, monkeypatch, fresh_store):
     from valcore.logfire_io import HostedFetch
 
     async def fake_fetch(id_or_name, *, api_key=None):
@@ -1134,7 +1172,7 @@ def test_logfire_fetch_creates_local_dataset(runner, db_path, monkeypatch):
     assert result.exit_code == 0, result.stderr
     assert "qa-set" in result.output
 
-    s = _fresh_store(db_path)
+    s = fresh_store(db_path)
     ds = s.get_dataset(s.list_datasets()[0].id)
     # The schema lives on a LabelSet.
     label_sets = s.list_label_sets(ds.id)

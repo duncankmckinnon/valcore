@@ -94,8 +94,8 @@ def agent_version_fields(**overrides: object) -> dict[str, object]:
 # -- Engine / schema ---------------------------------------------------------
 
 
-def test_create_engine_enables_pragmas(tmp_path: Path) -> None:
-    engine = create_engine(tmp_path / "pragma.db")
+def test_create_engine_enables_pragmas(tmp_path: Path, make_engine) -> None:
+    engine = make_engine(tmp_path / "pragma.db")
     init_db(engine)
     with engine.connect() as conn:
         assert conn.exec_driver_sql("PRAGMA foreign_keys").scalar() == 1
@@ -103,13 +103,13 @@ def test_create_engine_enables_pragmas(tmp_path: Path) -> None:
 
 
 def test_create_engine_uses_settings_db_path_when_none(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_engine
 ) -> None:
     monkeypatch.setenv("VALCORE_HOME", str(tmp_path / "home"))
     from valcore import settings
 
     settings.get_settings.cache_clear()
-    engine = create_engine(None)
+    engine = make_engine(None)
     assert "valcore.db" in str(engine.url)
 
 
@@ -1491,14 +1491,14 @@ def test_deleting_a_dataset_removes_its_generation_record(store: Store) -> None:
         store.get_generation(dataset.id)
 
 
-def test_init_db_adds_the_generation_table_to_an_existing_database(tmp_path) -> None:
+def test_init_db_adds_the_generation_table_to_an_existing_database(tmp_path, make_engine) -> None:
     """A database written before ``DatasetGeneration`` existed gains it on the next start.
 
     This is why the settings live in their own table: ``init_db`` is a bare ``create_all``,
     which creates missing tables but never missing columns. Extra fields on ``Dataset``
     would leave an existing database raising ``no such column`` on every dataset query.
     """
-    engine = create_engine(tmp_path / "existing.db")
+    engine = make_engine(tmp_path / "existing.db")
     init_db(engine)
     store = Store(engine)
     dataset = store.create_dataset(name="from-before", description="d", columns=["a"])
@@ -1520,14 +1520,16 @@ def test_init_db_adds_the_generation_table_to_an_existing_database(tmp_path) -> 
 # -- Experiment runs -----------------------------------------------------------
 
 
-def test_init_db_adds_the_experiment_run_table_to_an_existing_database(tmp_path) -> None:
+def test_init_db_adds_the_experiment_run_table_to_an_existing_database(
+    tmp_path, make_engine
+) -> None:
     """A database written before ``ExperimentRun`` existed gains it on the next start.
 
     ``ExperimentRun`` is a separate table rather than a ``Run`` column precisely because
     ``init_db`` is a bare ``create_all``: it adds missing tables but never missing columns,
     so a new table reaches an existing database while a new ``Run`` field would not.
     """
-    engine = create_engine(tmp_path / "existing.db")
+    engine = make_engine(tmp_path / "existing.db")
     init_db(engine)
     store = Store(engine)
     version_id, dataset_id = _make_run_prereqs(store)
@@ -1636,8 +1638,8 @@ def test_logfire_pull_round_trips_and_is_removed_with_dataset(store: Store) -> N
         store.get_logfire_pull(dataset.id)
 
 
-def test_init_db_adds_the_logfire_pull_table_to_an_existing_database(tmp_path) -> None:
-    engine = create_engine(tmp_path / "existing.db")
+def test_init_db_adds_the_logfire_pull_table_to_an_existing_database(tmp_path, make_engine) -> None:
+    engine = make_engine(tmp_path / "existing.db")
     init_db(engine)
     store = Store(engine)
     dataset = store.create_dataset(name="from-before", description="", columns=["a"])

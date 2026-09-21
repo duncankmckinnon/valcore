@@ -104,6 +104,10 @@ def _store(ctx: click.Context) -> Store:
     """Open (creating tables if needed) the store at the resolved db path."""
     engine = create_engine(ctx.obj["db_path"])
     init_db(engine)
+    # A one-shot process would drop this on exit, but a host that invokes many commands
+    # in-process (the test suite, an embedding caller) would otherwise hold one live
+    # SQLite connection per invocation until the garbage collector finalised it.
+    ctx.call_on_close(engine.dispose)
     return Store(engine)
 
 

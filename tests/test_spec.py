@@ -35,7 +35,7 @@ from valcore.spec import (
     valcore_meta,
     version_to_spec,
 )
-from valcore.store import Store, create_engine, init_db
+from valcore.store import Store, init_db
 
 
 def make_version(**overrides: object) -> EvaluatorVersion:
@@ -464,7 +464,7 @@ def test_label_schema_bool_labels_fall_through_to_empty() -> None:
 # --- integration: prepared rows are accepted by the real store ----------------
 
 
-def test_prepared_rows_load_into_store(tmp_path) -> None:
+def test_prepared_rows_load_into_store(tmp_path, make_engine) -> None:
     """The prepared-row and row-annotation shapes must be exactly what the real store accepts.
 
     The other tests assert the dict shapes in isolation; this drives them through the real
@@ -472,7 +472,7 @@ def test_prepared_rows_load_into_store(tmp_path) -> None:
     ``row_annotations`` are valid ``Store.set_annotation`` keyword fields once the row's real
     id and a real label set both exist.
     """
-    engine = create_engine(tmp_path / "eval.db")
+    engine = make_engine(tmp_path / "eval.db")
     init_db(engine)
     store = Store(engine)
 
