@@ -3,13 +3,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { datasets } from "../api/client";
+import { agents, datasets } from "../api/client";
 import type {
   Dataset,
   DatasetGeneration,
   DatasetHostedFetch,
   DatasetLogfirePull,
   DatasetStats,
+  Derivation,
+  DerivedRowsPage,
   GeneratedConfig,
   LogfirePushResult,
 } from "../api/types";
@@ -34,6 +36,58 @@ type Props = {
   datasetId: string;
 };
 
+/** Renders saved agent responses without exposing the original rows' edit controls. */
+function DerivedRowsTable({
+  page,
+  datasetColumns,
+}: {
+  page: DerivedRowsPage;
+  datasetColumns: string[];
+}) {
+  const responseColumns = page.columns.filter((column) => !datasetColumns.includes(column));
+
+  return (
+    <div className="labeling-grid">
+      <table className="table labeling-table">
+        <thead>
+          <tr>
+            {page.columns.map((column) => (
+              <th key={column}>{column}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {page.rows.map((row) => (
+            <tr key={row.row_id} data-row-id={row.row_id}>
+              {page.columns.map((column) => {
+                const isResponse = responseColumns.includes(column);
+                const showError = row.error !== null && isResponse;
+                const showLatency = row.latency_ms !== null && column === page.columns.at(-1);
+
+                return (
+                  <td key={column}>
+                    {showError ? row.error : formatCell(row.data[column])}
+                    {showLatency && <span className="field-hint"> {row.latency_ms} ms</span>}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Converts an arbitrary API cell value to the display form used by the read-only table. */
+function formatCell(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return JSON.stringify(value);
+}
+
 export default function DatasetDetail({ datasetId }: Props) {
   const navigate = useNavigate();
   const [dataset, setDataset] = useState<Dataset | null>(null);
@@ -56,6 +110,10 @@ export default function DatasetDetail({ datasetId }: Props) {
   const [pushing, setPushing] = useState(false);
   const [pushResult, setPushResult] = useState<LogfirePushResult | null>(null);
   const [pushError, setPushError] = useState<unknown>(null);
+  const [derivations, setDerivations] = useState<Derivation[]>([]);
+  const [selectedDerivationId, setSelectedDerivationId] = useState("");
+  const [derivedRows, setDerivedRows] = useState<DerivedRowsPage | null>(null);
+  const [derivedRowsError, setDerivedRowsError] = useState<unknown>(null);
 
   // Pushing needs the Logfire write key for the valcore project. The read key
   // queries a different project and cannot stand in.
@@ -128,6 +186,44 @@ export default function DatasetDetail({ datasetId }: Props) {
         // Provenance is non-critical: a failure just leaves the Sync action hidden.
       });
   }, [datasetId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSelectedDerivationId("");
+    setDerivedRows(null);
+    setDerivedRowsError(null);
+    setDerivations([]);
+    agents
+      .listDerivations({ datasetId })
+      .then((items) => {
+        if (!cancelled) setDerivations(items);
+      })
+      .catch(() => {
+        // Derivations are supplementary; a failed lookup preserves the original dataset view.
+        if (!cancelled) setDerivations([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [datasetId]);
+
+  useEffect(() => {
+    if (!selectedDerivationId) return;
+    let cancelled = false;
+    setDerivedRows(null);
+    setDerivedRowsError(null);
+    agents
+      .derivedRows(selectedDerivationId)
+      .then((page) => {
+        if (!cancelled) setDerivedRows(page);
+      })
+      .catch((err) => {
+        if (!cancelled) setDerivedRowsError(err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDerivationId]);
 
   const syncFromLogfire = () => {
     setSyncing(true);
@@ -305,7 +401,35 @@ export default function DatasetDetail({ datasetId }: Props) {
       <GenerationSettings generation={generation} />
       <LogfirePullSettings pull={logfirePull} />
 
-      <DatasetRowsGrid datasetId={datasetId} columns={dataset.columns} onChange={refreshStats} />
+      {derivations.length > 0 && (
+        <label className="field">
+          <span>View</span>
+          <select
+            aria-label="View"
+            value={selectedDerivationId}
+            onChange={(event) => setSelectedDerivationId(event.target.value)}
+          >
+            <option value="">Original</option>
+            {derivations.map((derivation) => (
+              <option key={derivation.id} value={derivation.id}>
+                {`${derivation.agent_name} · ${derivation.version_name} · run ${derivation.ordinal}`}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+
+      {selectedDerivationId ? (
+        <>
+          {derivedRowsError !== null && <ErrorBanner error={derivedRowsError} />}
+          {derivedRows !== null && (
+            <DerivedRowsTable page={derivedRows} datasetColumns={dataset.columns} />
+          )}
+          {derivedRows === null && derivedRowsError === null && <Spinner />}
+        </>
+      ) : (
+        <DatasetRowsGrid datasetId={datasetId} columns={dataset.columns} onChange={refreshStats} />
+      )}
 
       <DatasetSettingsModal
         open={editing}
