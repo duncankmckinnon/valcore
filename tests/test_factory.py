@@ -3,17 +3,20 @@
 import pytest
 from pydantic import BaseModel, ValidationError
 from pydantic_ai import Agent
+from pydantic_ai.agent.spec import AgentSpec
 from pydantic_ai.models.test import TestModel
 
 from valcore.errors import ConfigError, ContractError
 from valcore.factory import (
+    agent_response_data,
     build_agent,
+    build_agent_from_version,
     build_capabilities,
     build_output_model,
     extract_score,
     render_prompt,
 )
-from valcore.models import CapabilitySpec, EvaluatorVersion, ScoreKind
+from valcore.models import AgentVersion, CapabilitySpec, EvaluatorVersion, ScoreKind
 
 
 @pytest.fixture
@@ -46,6 +49,21 @@ def make_version(**overrides: object) -> EvaluatorVersion:
     }
     base.update(overrides)
     return EvaluatorVersion(**base)
+
+
+def make_agent_version(**overrides: object) -> AgentVersion:
+    """Build a valid text-output AgentVersion, applying binding or spec overrides."""
+    base: dict[str, object] = {
+        "agent_id": "agent1",
+        "version_name": "support agent",
+        "model": "gateway/anthropic:claude-sonnet-5",
+        "spec": {"instructions": "You are a helpful assistant."},
+        "prompt_template": "Answer {question}.",
+        "required_columns": ["question"],
+        "deps_mapping": {},
+    }
+    base.update(overrides)
+    return AgentVersion(**base)
 
 
 # --- build_output_model -------------------------------------------------------
@@ -206,6 +224,162 @@ async def test_build_agent_numeric_score_round_trips() -> None:
     score = extract_score(version, result.output)
     assert isinstance(score, int)
     assert 1 <= score <= 5
+
+
+# --- build_agent_from_version -------------------------------------------------
+
+
+def test_build_agent_from_version_without_output_schema_returns_text_agent() -> None:
+    agent = build_agent_from_version(make_agent_version())
+
+    assert isinstance(agent, Agent)
+    assert agent.output_type is str
+
+
+@pytest.mark.anyio
+async def test_build_agent_from_version_structured_output_is_plain_dict() -> None:
+    version = make_agent_version(
+        spec={
+            "instructions": "Return a concise answer.",
+            "output_schema": {
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string"},
+                    "rating": {"type": "integer"},
+                },
+                "required": ["summary", "rating"],
+            },
+        }
+    )
+    agent = build_agent_from_version(version)
+
+    with agent.override(model=TestModel()):
+        result = await agent.run("Summarize this.")
+
+    assert isinstance(result.output, dict)
+    assert set(result.output) == {"summary", "rating"}
+
+
+def test_build_agent_from_version_loads_filesystem_spec_capability() -> None:
+    version = make_agent_version(
+        spec={
+            "instructions": "You may inspect files when useful.",
+            "capabilities": [{"FileSystem": {}}],
+        }
+    )
+
+    agent = build_agent_from_version(version)
+
+    assert isinstance(agent, Agent)
+
+
+def test_build_agent_from_version_unknown_capability_is_config_error() -> None:
+    version = make_agent_version(
+        spec={
+            "instructions": "You are a helpful assistant.",
+            "capabilities": [{"NotARealCapability": {}}],
+        }
+    )
+
+    with pytest.raises(ConfigError) as exc:
+        build_agent_from_version(version)
+
+    assert "NotARealCapability" in str(exc.value)
+
+
+def test_build_agent_from_version_invalid_model_fails_before_model_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def model_resolution_must_not_run(model: str) -> object:
+        raise AssertionError(f"model resolution should not run for {model!r}")
+
+    monkeypatch.setattr("valcore.factory.resolve_model", model_resolution_must_not_run)
+
+    with pytest.raises(ConfigError):
+        build_agent_from_version(make_agent_version(model="not-a-gateway-model"))
+
+
+# --- agent_response_data ------------------------------------------------------
+
+
+def test_agent_response_data_maps_text_output_to_response_column() -> None:
+    spec = AgentSpec.from_dict({"instructions": "hi"})
+
+    assert agent_response_data(spec, "A plain response") == {"response": "A plain response"}
+
+
+def test_agent_response_data_maps_each_structured_output_property() -> None:
+    spec = AgentSpec.from_dict(
+        {
+            "instructions": "hi",
+            "output_schema": {
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string"},
+                    "rating": {"type": "integer"},
+                },
+            },
+        }
+    )
+
+    assert agent_response_data(
+        spec, {"summary": "Looks good.", "rating": 5, "extra": "ignored"}
+    ) == {
+        "summary": "Looks good.",
+        "rating": 5,
+    }
+
+
+def test_agent_response_data_uses_none_for_missing_structured_property() -> None:
+    spec = AgentSpec.from_dict(
+        {
+            "instructions": "hi",
+            "output_schema": {
+                "type": "object",
+                "properties": {"summary": {"type": "string"}, "rating": {"type": "integer"}},
+            },
+        }
+    )
+
+    assert agent_response_data(spec, {"summary": "Partial"}) == {
+        "summary": "Partial",
+        "rating": None,
+    }
+
+
+def test_agent_response_data_falls_back_to_text_for_non_dict_structured_output() -> None:
+    spec = AgentSpec.from_dict(
+        {
+            "instructions": "hi",
+            "output_schema": {"type": "object", "properties": {"summary": {"type": "string"}}},
+        }
+    )
+
+    assert agent_response_data(spec, ["unexpected", "shape"]) == {
+        "response": "['unexpected', 'shape']"
+    }
+
+
+@pytest.mark.anyio
+async def test_build_agent_from_version_renders_deps_in_templated_instructions() -> None:
+    version = make_agent_version(
+        spec={
+            "instructions": "You serve a {{tier}} customer.",
+            "deps_schema": {
+                "type": "object",
+                "properties": {"tier": {"type": "string"}},
+                "required": ["tier"],
+            },
+        },
+        deps_mapping={"tier": "tier"},
+        required_columns=["question", "tier"],
+    )
+    agent = build_agent_from_version(version)
+
+    with agent.override(model=TestModel()):
+        result = await agent.run("How can I help?", deps={"tier": "pro"})
+
+    assert "pro" in str(result.all_messages())
 
 
 # --- extract_score ------------------------------------------------------------
