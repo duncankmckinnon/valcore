@@ -4,6 +4,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 from pydantic_ai import Agent
 from pydantic_ai.agent.spec import AgentSpec
+from pydantic_ai.exceptions import UserError
 from pydantic_ai.models.test import TestModel
 
 from valcore.errors import ConfigError, ContractError
@@ -234,6 +235,32 @@ def test_build_agent_from_version_without_output_schema_returns_text_agent() -> 
 
     assert isinstance(agent, Agent)
     assert agent.output_type is str
+
+
+def test_build_agent_from_version_uses_binding_model_not_spec_model() -> None:
+    version = make_agent_version(
+        model="gateway/openai:gpt-5",
+        spec={
+            "model": "test",
+            "instructions": "The stored spec model must not control this binding.",
+        },
+    )
+
+    agent = build_agent_from_version(version)
+
+    assert agent.model == "gateway/openai:gpt-5"
+
+
+def test_build_agent_from_version_converts_user_error_to_config_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def cannot_build(*args: object, **kwargs: object) -> None:
+        raise UserError("capability setup failed")
+
+    monkeypatch.setattr("valcore.factory.PydanticAgent.from_spec", cannot_build)
+
+    with pytest.raises(ConfigError, match="capability setup failed"):
+        build_agent_from_version(make_agent_version())
 
 
 @pytest.mark.anyio
