@@ -515,6 +515,7 @@ def test_derived_rows_joins_response_overlay_in_dataset_order(store: Store) -> N
                 "row_id": rows[1].id,
                 "data": {"response": "second response", "shared": "response-2"},
                 "latency_ms": 42,
+                "usage": {"input_tokens": 12, "output_tokens": 4},
                 "error": "partial failure",
             },
             {"row_id": rows[0].id, "data": {"response": "first response"}},
@@ -539,8 +540,15 @@ def test_derived_rows_joins_response_overlay_in_dataset_order(store: Store) -> N
     assert derived[1].model_dump()["row_id"] == rows[1].id
 
     assert store.get_derivation(derivation.id).id == derivation.id
+    assert store.get_derivation(derivation.id).response_columns == ["response", "shared"]
     responses = store.list_agent_responses(derivation.id)
     assert {response.dataset_row_id for response in responses} == {rows[0].id, rows[1].id}
+    assert next(
+        response for response in responses if response.dataset_row_id == rows[1].id
+    ).usage == {
+        "input_tokens": 12,
+        "output_tokens": 4,
+    }
 
 
 def test_list_derivations_filters_by_dataset_and_agent_version(store: Store) -> None:
