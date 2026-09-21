@@ -189,6 +189,35 @@ async def test_export_and_import_round_trip_spec_and_binding(store: Store) -> No
         }
 
 
+@pytest.mark.anyio
+async def test_import_rejects_invalid_documents_and_ignores_non_mapping_binding(
+    store: Store,
+) -> None:
+    """Imports expose parse failures and do not trust malformed transport metadata."""
+    async with _client(store) as client:
+        invalid = await client.post(
+            "/api/agents/import", json={"content": "not: [valid", "format": "yaml"}
+        )
+        assert invalid.status_code == 422
+        assert invalid.json()["error"]["type"] == "ContractError"
+
+        imported = await client.post(
+            "/api/agents/import",
+            json={
+                "content": "instructions: Be helpful.\nmetadata:\n  valcore: not-a-mapping\n",
+                "format": "yaml",
+            },
+        )
+        assert imported.status_code == 200, imported.text
+        assert imported.json() | {"spec": None} == {
+            "spec": None,
+            "model": None,
+            "prompt_template": None,
+            "required_columns": [],
+            "deps_mapping": {},
+        }
+
+
 # -- Trials and derivations ---------------------------------------------------
 
 
@@ -232,6 +261,32 @@ async def test_trial_runs_stored_row_and_reports_model_failure(store: Store, mon
         assert failed.status_code == 200
         assert failed.json()["output"] == {}
         assert failed.json()["error"] == "model unavailable"
+
+
+@pytest.mark.anyio
+async def test_local_trial_skips_gateway_key_guard(store: Store, monkeypatch) -> None:
+    """A local CLI binding must remain runnable when no gateway credential is configured."""
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY")
+    monkeypatch.setattr(
+        "valcore.api.routes.agents.config.require_gateway_key",
+        lambda: pytest.fail("local CLI trials must not require a gateway key"),
+    )
+    monkeypatch.setattr(
+        "valcore.api.routes.agents.build_agent_from_version",
+        lambda version: PydanticAgent(TestModel(), output_type=str),
+    )
+    async with _client(store) as client:
+        created = await client.post("/api/agents", json={"name": "Local agent"})
+        version = await client.post(
+            f"/api/agents/{created.json()['id']}/versions",
+            json=_version_body(model="local/codex"),
+        )
+        trial = await client.post(
+            f"/api/agents/versions/{version.json()['id']}/trial",
+            json={"inputs": {"question": "Hi"}},
+        )
+        assert trial.status_code == 200, trial.text
+        assert trial.json()["error"] is None
 
 
 @pytest.mark.anyio
