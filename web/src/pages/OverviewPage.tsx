@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { overview } from "../api/client";
+import { agents, overview } from "../api/client";
 import type { Overview, SetupKey, SetupStatus } from "../api/types";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
@@ -122,11 +122,17 @@ function DefaultModelCard({ status }: { status: SetupStatus | null }): JSX.Eleme
 
 export default function OverviewPage(): JSX.Element {
   const [data, setData] = useState<Overview | null>(null);
+  const [agentCount, setAgentCount] = useState<number | null>(null);
   const [error, setError] = useState<unknown>(null);
   const { status: setupStatus, refetch: setupRefetch } = useSetup();
 
   useEffect(() => {
-    overview.get().then(setData).catch(setError);
+    Promise.all([overview.get(), agents.list()])
+      .then(([overviewData, listedAgents]) => {
+        setData(overviewData);
+        setAgentCount(listedAgents.length);
+      })
+      .catch(setError);
   }, []);
 
   if (error) {
@@ -138,7 +144,7 @@ export default function OverviewPage(): JSX.Element {
     );
   }
 
-  if (data === null) {
+  if (data === null || agentCount === null) {
     return (
       <section>
         <PageHeader title="Overview" />
@@ -153,7 +159,10 @@ export default function OverviewPage(): JSX.Element {
   // A fresh install has nothing to show. Lead with the flow and a single action
   // rather than a wall of zeroes.
   const empty =
-    data.evaluator_count === 0 && data.dataset_count === 0 && data.run_count === 0;
+    data.evaluator_count === 0 &&
+    data.dataset_count === 0 &&
+    data.run_count === 0 &&
+    agentCount === 0;
 
   if (empty) {
     return (
@@ -203,6 +212,10 @@ export default function OverviewPage(): JSX.Element {
           <div className="stat-card-label">Datasets</div>
           <div className="stat-card-sub">{`${data.labeled_rows} of ${data.total_rows} labeled`}</div>
         </div>
+        <Link className="stat-card" to="/agents">
+          <div className="stat-card-value">{agentCount}</div>
+          <div className="stat-card-label">Agents</div>
+        </Link>
         <div className="stat-card">
           <div className="stat-card-value">{formatAccuracy(data.best_accuracy)}</div>
           <div className="stat-card-label">Best accuracy</div>
