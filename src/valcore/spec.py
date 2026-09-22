@@ -17,10 +17,10 @@ import ``yaml``, touch the store, read the environment, or use ``Dataset.to_file
 from typing import Any, Literal
 
 from pydantic import create_model
-from pydantic_ai.agent.spec import AgentSpec
 from pydantic_evals import Dataset as EvalsDataset
 from pydantic_evals.dataset import Case
 
+from valcore.agent_spec import AgentSpec
 from valcore.capabilities import VALID_CAPABILITIES
 from valcore.errors import ContractError
 from valcore.factory import build_output_model

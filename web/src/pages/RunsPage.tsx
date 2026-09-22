@@ -42,12 +42,18 @@ const STATUS_TONE: Record<
   failed: "danger",
 };
 
-function headlineMetric(metrics: Record<string, unknown> | null): string {
-  if (!metrics) return "—";
-  if (typeof metrics.accuracy === "number")
-    return `acc ${(metrics.accuracy * 100).toFixed(0)}%`;
-  if (typeof metrics.mae === "number") return `MAE ${metrics.mae.toFixed(2)}`;
-  if (typeof metrics.scored === "number") return `${metrics.scored} rows`;
+function headlineMetric(
+  metrics: Record<string, unknown> | null,
+  derivedRowCount?: number,
+): string {
+  if (metrics) {
+    if (typeof metrics.accuracy === "number")
+      return `acc ${(metrics.accuracy * 100).toFixed(0)}%`;
+    if (typeof metrics.mae === "number")
+      return `MAE ${metrics.mae.toFixed(2)}`;
+    if (typeof metrics.scored === "number") return `${metrics.scored} rows`;
+  }
+  if (typeof derivedRowCount === "number") return `${derivedRowCount} rows`;
   return "—";
 }
 
@@ -215,7 +221,16 @@ function RunsList() {
                 </Badge>
               ),
             },
-            { header: "Metric", cell: (run) => headlineMetric(run.metrics) },
+            {
+              header: "Metric",
+              cell: (run) =>
+                headlineMetric(
+                  run.metrics,
+                  run.kind === "derive" && run.derivation_id
+                    ? derivations[run.derivation_id]?.response_count
+                    : undefined,
+                ),
+            },
             { header: "Started", cell: (run) => formatTime(run.started_at) },
           ]}
         />

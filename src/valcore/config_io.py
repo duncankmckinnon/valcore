@@ -19,9 +19,9 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import ValidationError
-from pydantic_ai.agent.spec import AgentSpec
 from pydantic_evals import Dataset as EvalsDataset
 
+from valcore.agent_spec import AgentSpec
 from valcore.errors import ContractError
 from valcore.models import Dataset as VDataset
 from valcore.models import DatasetRow, EvaluatorVersion, ScoreKind

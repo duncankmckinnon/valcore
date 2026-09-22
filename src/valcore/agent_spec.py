@@ -6,14 +6,32 @@ API validate it identically, and lets it be tested without a database or model
 call.
 """
 
+import re
 import string
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from pydantic import ValidationError
-from pydantic_ai.agent.spec import AgentSpec
+from pydantic_ai import RunContext
+from pydantic_ai.agent.spec import AgentSpec as PydanticAgentSpec
 from pydantic_ai.exceptions import UserError
 
 from valcore.errors import ConfigError, ContractError
+
+
+class AgentSpec(PydanticAgentSpec):
+    """Agent spec validated without Pydantic AI's optional Handlebars dependency.
+
+    Valcore stores instruction templates as portable strings and renders their dependency
+    placeholders locally when building the agent. All other fields retain the upstream
+    ``AgentSpec`` validation and serialization contract.
+    """
+
+    description: str | None = None
+    instructions: str | list[str] | None = None
+
+
+_HANDLEBARS_VARIABLE = re.compile(r"{{\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*}}")
 
 
 def parse_spec(blob: dict[str, Any]) -> AgentSpec:
@@ -22,6 +40,53 @@ def parse_spec(blob: dict[str, Any]) -> AgentSpec:
         return AgentSpec.from_dict(blob)
     except (ValidationError, UserError) as exc:
         raise ConfigError(f"Invalid agent spec: {exc}") from exc
+
+
+def _dependency_value(deps: object, path: str) -> object:
+    """Resolve one dotted instruction-template variable from run dependencies."""
+    value = deps
+    for part in path.split("."):
+        try:
+            value = value[part] if isinstance(value, Mapping) else getattr(value, part)
+        except (KeyError, AttributeError) as exc:
+            raise ConfigError(
+                f"Instruction template references dependency {path!r}, which is unavailable."
+            ) from exc
+    return value
+
+
+def _render_instruction(template: str, deps: object) -> str:
+    """Render simple Handlebars-style dependency variables without an optional package."""
+    rendered = _HANDLEBARS_VARIABLE.sub(
+        lambda match: str(_dependency_value(deps, match.group(1))), template
+    )
+    if "{{" in rendered or "}}" in rendered:
+        raise ConfigError(
+            "Instruction templates support dependency variables such as '{{customer.tier}}'."
+        )
+    return rendered
+
+
+def _instruction_renderer(template: str) -> Callable[[RunContext[Any]], str]:
+    """Bind a template into the callable instruction form accepted by Pydantic AI."""
+
+    def render(ctx: RunContext[Any]) -> str:
+        return _render_instruction(template, ctx.deps)
+
+    return render
+
+
+def runtime_instructions(spec: AgentSpec) -> list[str | Callable[[RunContext[Any]], str]]:
+    """Return static or locally rendered instructions for constructing a live agent."""
+    if spec.instructions is None:
+        return []
+    instructions = (
+        spec.instructions if isinstance(spec.instructions, list) else [spec.instructions]
+    )
+    return [
+        _instruction_renderer(instruction) if "{{" in instruction else instruction
+        for instruction in instructions
+    ]
 
 
 def capability_names(spec: AgentSpec) -> list[str]:

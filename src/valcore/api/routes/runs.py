@@ -381,6 +381,8 @@ async def compare_runs(a: str, b: str, store: StoreDep) -> CompareOut:
     """
     run_a = store.get_run(a)
     run_b = store.get_run(b)
+    if run_a.kind is RunKind.DERIVE or run_b.kind is RunKind.DERIVE:
+        raise ContractError("Derive runs cannot be compared as evaluator runs.")
     if run_a.dataset_id != run_b.dataset_id:
         raise ContractError(
             "Runs target different datasets and cannot be compared "
@@ -496,6 +498,8 @@ async def list_run_results(
 ) -> ResultsPage:
     """Return a paginated slice of a run's results joined with their row data."""
     run = store.get_run(id)
+    if run.kind is RunKind.DERIVE:
+        raise ContractError("Derive runs do not have evaluator results.")
     rows_by_id = {row.id: row for row in store.list_rows(run.dataset_id)}
 
     version = store.get_version(run.version_id)
@@ -618,6 +622,8 @@ async def retry_failed(id: str, store: StoreDep, agent_factory: AgentFactoryDep)
     rather than the gateway.
     """
     existing = store.get_run(id)
+    if existing.kind is RunKind.DERIVE:
+        raise ContractError("Derive runs only support whole-dataset execution.")
     version = store.get_version(existing.version_id)
     if not is_local_cli_model(version.model):
         config.require_gateway_key()

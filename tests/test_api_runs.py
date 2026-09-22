@@ -576,6 +576,22 @@ async def test_list_runs_filters_by_dataset(store: Store) -> None:
 
 
 @pytest.mark.anyio
+async def test_derive_results_are_rejected_without_resolving_an_evaluator_version(
+    store: Store,
+) -> None:
+    """Derive runs persist agent responses, not evaluator result rows."""
+    agent_version = make_agent_version(store)
+    dataset, _ = make_dataset(store, ["pass"])
+    run = store.create_run(RunKind.DERIVE, agent_version.id, dataset.id, concurrency=1)
+
+    async with _client(store, constant_factory()) as client:
+        response = await client.get(f"/api/runs/{run.id}/results")
+
+    assert response.status_code == 422
+    assert "derive runs do not have evaluator results" in response.text.lower()
+
+
+@pytest.mark.anyio
 async def test_results_filter_disagreements_and_errors(store: Store) -> None:
     version = make_version(store)
     # Row 0 agrees (pass==pass), row 1 disagrees (pass!=fail), row 2 errors on "BOOM".
@@ -768,6 +784,21 @@ async def test_cancel_transitions_to_cancelled(store: Store) -> None:
 
 
 @pytest.mark.anyio
+async def test_retry_failed_rejects_derive_runs(store: Store) -> None:
+    """Agent passes can only be rerun as whole-dataset derive runs."""
+    agent_version = make_agent_version(store)
+    dataset, _ = make_dataset(store, ["pass"])
+    run = store.create_run(RunKind.DERIVE, agent_version.id, dataset.id, concurrency=1)
+
+    async with _client(store, constant_factory()) as client:
+        response = await client.post(f"/api/runs/{run.id}/retry-failed")
+
+    assert response.status_code == 422
+    assert "whole-dataset" in response.text
+    assert store.get_run(run.id).status is RunStatus.PENDING
+
+
+@pytest.mark.anyio
 async def test_retry_failed_reruns_only_failed_rows(store: Store) -> None:
     version = make_version(store)
     dataset, rows = make_dataset(store, ["pass", "pass", "pass"], inputs=["ok0", "BOOM", "ok2"])
@@ -829,6 +860,32 @@ async def test_compare_rejects_mismatched_datasets(store: Store) -> None:
         resp = await client.get("/api/runs/compare", params={"a": run_a.id, "b": run_b.id})
 
     assert resp.status_code == 422
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("derive_side", ["a", "b"])
+async def test_compare_rejects_derive_runs(store: Store, derive_side: str) -> None:
+    """Evaluator comparisons cannot interpret an agent version as an evaluator version."""
+    version = make_version(store)
+    agent_version = make_agent_version(store)
+    dataset, rows = make_dataset(store, ["pass"])
+    evaluator_run = _seed_run_with_scores(
+        store, dataset.id, version.id, {rows[0].id: "pass"}
+    )
+    derive_run = store.create_run(
+        RunKind.DERIVE, agent_version.id, dataset.id, concurrency=1
+    )
+    params = (
+        {"a": derive_run.id, "b": evaluator_run.id}
+        if derive_side == "a"
+        else {"a": evaluator_run.id, "b": derive_run.id}
+    )
+
+    async with _client(store, constant_factory()) as client:
+        response = await client.get("/api/runs/compare", params=params)
+
+    assert response.status_code == 422
+    assert "derive runs cannot be compared" in response.text.lower()
 
 
 @pytest.mark.anyio

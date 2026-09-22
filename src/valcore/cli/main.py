@@ -23,11 +23,16 @@ from typing import Any
 
 import click
 import yaml
-from pydantic_ai.agent.spec import AgentSpec
 
 from valcore import config as config_module
 from valcore import experiment, logfire_io, logfire_pull, tracing
-from valcore.agent_spec import build_deps, output_column_names, parse_spec, render_agent_prompt
+from valcore.agent_spec import (
+    AgentSpec,
+    build_deps,
+    output_column_names,
+    parse_spec,
+    render_agent_prompt,
+)
 from valcore.cli.output import emit
 from valcore.cli.resolve import (
     resolve_agent,

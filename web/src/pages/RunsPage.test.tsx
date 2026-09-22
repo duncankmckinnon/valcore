@@ -143,6 +143,16 @@ function renderPage() {
   );
 }
 
+function renderComparePage() {
+  render(
+    <MemoryRouter initialEntries={["/runs/compare"]}>
+      <Routes>
+        <Route path="/runs/compare" element={<RunsPage />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
 beforeEach(() => {
   runsListMock.mockResolvedValue([]);
   datasetsListMock.mockResolvedValue([]);
@@ -206,7 +216,7 @@ describe("RunsPage list and navigation", () => {
         kind: "derive",
         version_id: "agent-ver-1",
         derivation_id: "der-1",
-        metrics: { scored: 5 },
+        metrics: null,
       }),
     ]);
     listDerivationsMock.mockResolvedValue([makeDerivation()]);
@@ -221,8 +231,24 @@ describe("RunsPage list and navigation", () => {
     expect(agentVersion).toBeInTheDocument();
     expect(
       within(agentVersion.closest("tr")!).getAllByRole("cell")[4],
-    ).not.toHaveTextContent("—");
+    ).toHaveTextContent("5 rows");
     expect(evaluatorsGetMock).not.toHaveBeenCalledWith("agent-ver-1");
+  });
+
+  it("excludes derive runs from evaluator comparison choices", async () => {
+    runsListMock.mockResolvedValue([
+      makeRun({ id: "eval-run-1" }),
+      makeRun({ id: "derive-run-1", kind: "derive" }),
+    ]);
+
+    renderComparePage();
+
+    const select = await screen.findByRole("combobox", { name: "Run A" });
+    expect(within(select).getAllByRole("option")).toHaveLength(2);
+    expect(within(select).getByRole("option", { name: /eval$/ })).toBeTruthy();
+    expect(
+      within(select).queryByRole("option", { name: /derive$/ }),
+    ).toBeNull();
   });
 
   it.each([

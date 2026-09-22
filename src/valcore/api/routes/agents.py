@@ -11,9 +11,9 @@ from typing import Annotated, Any
 import yaml
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, ValidationError
-from pydantic_ai.agent.spec import AgentSpec
 
 from valcore import agent_spec, config
+from valcore.agent_spec import AgentSpec
 from valcore.api.deps import get_store
 from valcore.errors import ContractError, NotFoundError
 from valcore.factory import build_agent_from_version, execute_agent_version

@@ -12,11 +12,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, create_model
 from pydantic_ai import Agent as PydanticAgent
-from pydantic_ai.agent.spec import AgentSpec
 from pydantic_ai.exceptions import UserError
 from pydantic_ai.usage import RunUsage
 
 from valcore import agent_spec
+from valcore.agent_spec import AgentSpec
 from valcore.capabilities import CAPABILITY_REGISTRY, spec_capability_types
 from valcore.errors import ConfigError, ContractError
 from valcore.local_cli import resolve_model
@@ -153,10 +153,13 @@ def build_agent_from_version(version: AgentVersion) -> PydanticAgent:
     """
     validate_agent_version(version)
     spec = agent_spec.parse_spec(version.spec)
+    instructions = agent_spec.runtime_instructions(spec)
+    spec_without_instructions = spec.model_copy(update={"instructions": None})
     try:
         return PydanticAgent.from_spec(
-            spec,
+            spec_without_instructions,
             model=resolve_model(version.model),
+            instructions=instructions,
             custom_capability_types=spec_capability_types(),
             defer_model_check=True,
         )

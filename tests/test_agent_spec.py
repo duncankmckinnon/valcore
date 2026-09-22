@@ -1,5 +1,7 @@
 """Tests for pure validation and derivation over stored AgentSpec blobs."""
 
+from types import SimpleNamespace
+
 import pytest
 from pydantic_ai.agent.spec import AgentSpec
 
@@ -11,6 +13,7 @@ from valcore.agent_spec import (
     parse_spec,
     render_agent_prompt,
     required_deps_properties,
+    runtime_instructions,
     validate_binding,
 )
 from valcore.errors import ConfigError, ContractError
@@ -72,6 +75,48 @@ class TestParseSpec:
             pass
         except Exception as exc:  # noqa: BLE001 - explicitly asserting this doesn't happen
             pytest.fail(f"expected ConfigError, got {type(exc).__name__}: {exc}")
+
+
+# --- runtime_instructions ---------------------------------------------------
+
+
+class TestRuntimeInstructions:
+    """Rendering portable instruction variables without optional dependencies."""
+
+    def test_empty_when_spec_has_no_instructions(self) -> None:
+        assert runtime_instructions(parse_spec({})) == []
+
+    def test_preserves_static_instructions(self) -> None:
+        assert runtime_instructions(parse_spec({"instructions": ["First.", "Second."]})) == [
+            "First.",
+            "Second.",
+        ]
+
+    def test_renders_nested_dependency_variable(self) -> None:
+        [instruction] = runtime_instructions(
+            parse_spec({"instructions": "Serve the {{customer.tier}} customer."})
+        )
+        assert callable(instruction)
+
+        rendered = instruction(SimpleNamespace(deps={"customer": {"tier": "pro"}}))
+
+        assert rendered == "Serve the pro customer."
+
+    def test_missing_dependency_raises_config_error(self) -> None:
+        [instruction] = runtime_instructions(parse_spec({"instructions": "Hello {{name}}."}))
+        assert callable(instruction)
+
+        with pytest.raises(ConfigError, match="name"):
+            instruction(SimpleNamespace(deps={}))
+
+    def test_unsupported_handlebars_expression_raises_config_error(self) -> None:
+        [instruction] = runtime_instructions(
+            parse_spec({"instructions": "{{#if active}}Enabled{{/if}}"})
+        )
+        assert callable(instruction)
+
+        with pytest.raises(ConfigError, match="dependency variables"):
+            instruction(SimpleNamespace(deps={"active": True}))
 
 
 # --- capability_names --------------------------------------------------------
