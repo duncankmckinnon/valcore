@@ -1115,8 +1115,8 @@ describe("derivation run DTO types", () => {
     };
     const metrics = run.metrics!;
     const derivationId: string | null = run.derivation_id;
-    const scored: number = metrics.scored;
-    const skipped: Record<string, number> = metrics.skipped;
+    const scored: number | undefined = metrics.scored;
+    const skipped: Record<string, number> | undefined = metrics.skipped;
 
     expect(derivationId).toBe("der1");
     expect(scored).toBe(3);

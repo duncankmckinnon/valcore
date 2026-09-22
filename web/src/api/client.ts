@@ -28,7 +28,6 @@ import type {
   DatasetStats,
   DatasetUpdate,
   Derivation,
-  DerivationSave,
   DerivedRowsPage,
   Evaluator,
   EvaluatorUpdate,
@@ -374,15 +373,10 @@ export const agents = {
       method: "POST",
       ...jsonBody(data),
     }),
-  saveDerivation: (id: string, data?: DerivationSave) =>
-    data
-      ? api<Derivation>(`/api/agents/versions/${id}/derivations`, {
-          method: "POST",
-          ...jsonBody(data),
-        })
-      : api<Derivation>(`/api/agents/derivations/${id}/save`, {
-          method: "POST",
-        }),
+  saveDerivation: (id: string) =>
+    api<Derivation>(`/api/agents/derivations/${id}/save`, {
+      method: "POST",
+    }),
   deleteDerivation: (id: string) =>
     api<void>(`/api/agents/derivations/${id}`, { method: "DELETE" }),
   listDerivations: (params: {
