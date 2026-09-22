@@ -31,10 +31,32 @@ class LabelSource(str, Enum):
 
 
 class RunKind(str, Enum):
-    """Whether a run validates an evaluator or scores a dataset."""
+    """Whether a run validates, evaluates, or derives a dataset view."""
 
     VALIDATION = "validation"
     EVAL = "eval"
+    DERIVE = "derive"
+
+
+class DerivationState(str, Enum):
+    """Whether a derivation has been accepted into the dataset's history."""
+
+    STAGED = "staged"
+    SAVED = "saved"
+
+
+class DerivationRole(str, Enum):
+    """How a run relates to the derivation it is linked to."""
+
+    FILLS = "fills"
+    READS = "reads"
+
+
+class SkipReason(str, Enum):
+    """Why a row of a derived view was not scored."""
+
+    NO_RESPONSE = "no_response"
+    RESPONSE_ERROR = "response_error"
 
 
 class RunStatus(str, Enum):
@@ -439,6 +461,35 @@ class DatasetDerivation(SQLModel, table=True):
     response_columns: list[str] = Field(default_factory=list, sa_column=Column(JSON))
 
 
+class DerivationStatus(SQLModel, table=True):
+    """Whether a derivation is staged or saved.
+
+    A separate table rather than a ``DatasetDerivation`` column lets bare ``create_all`` add
+    the state to existing databases. Derivations without a row predate staging and read as saved.
+    """
+
+    __table_args__ = (UniqueConstraint("derivation_id", name="uq_derivation_status"),)
+
+    id: str = Field(default_factory=lambda: uuid4().hex, primary_key=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    derivation_id: str = Field(index=True)
+    state: DerivationState
+
+
+class RunDerivation(SQLModel, table=True):
+    """Links a run to the derivation it fills or reads.
+
+    A join table preserves existing ordinary runs while leaving room for a future comparison run
+    to read more than one derivation.
+    """
+
+    id: str = Field(default_factory=lambda: uuid4().hex, primary_key=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    run_id: str = Field(index=True)
+    derivation_id: str = Field(index=True)
+    role: DerivationRole
+
+
 class AgentResponse(SQLModel, table=True):
     """One agent response joined to its source dataset row.
 
@@ -712,6 +763,7 @@ def check_dataset_compatibility(
     label_sets: list[LabelSet],
     *,
     kind: RunKind = RunKind.VALIDATION,
+    derivation: DatasetDerivation | None = None,
 ) -> LabelSet | None:
     """Raise ContractError with an actionable message if the dataset and version disagree.
 
@@ -728,11 +780,18 @@ def check_dataset_compatibility(
     old empty ``label_schema``; only a dataset that has label sets, none of which match,
     raises.
     """
-    missing = [c for c in version.required_columns if c not in dataset.columns]
+    if kind is RunKind.VALIDATION and derivation is not None:
+        raise ContractError(
+            "Validation cannot target a derivation because derivation-scoped label sets do not "
+            "exist yet."
+        )
+
+    effective_columns = dataset.columns + (derivation.response_columns if derivation else [])
+    missing = [c for c in version.required_columns if c not in effective_columns]
     if missing:
         raise ContractError(
             f"Dataset {dataset.name!r} is missing required column(s) {missing}; "
-            f"it has columns {dataset.columns}."
+            f"its effective contract has columns {effective_columns}."
         )
 
     if kind is RunKind.EVAL:
@@ -758,3 +817,13 @@ def check_dataset_compatibility(
             f"Existing label sets: {existing}."
         )
     return match
+
+
+def check_agent_dataset_compatibility(version: AgentVersion, dataset: Dataset) -> None:
+    """Raise ContractError if an agent version cannot run over a dataset's columns."""
+    missing = [column for column in version.required_columns if column not in dataset.columns]
+    if missing:
+        raise ContractError(
+            f"Dataset {dataset.name!r} is missing required column(s) {missing}; "
+            f"it has columns {dataset.columns}."
+        )
