@@ -114,6 +114,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     kind: "eval",
     version_id: "ver-1",
     dataset_id: "ds-1",
+    derivation_id: null,
     status: "pending",
     concurrency: 8,
     started_at: null,
