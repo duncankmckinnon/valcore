@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import OverviewPage from "./OverviewPage";
@@ -43,7 +49,9 @@ function makeOverview(overrides: Partial<Overview> = {}): Overview {
 // test can flip just the one bit it cares about. Mirrors the helper in useSetup.test.tsx, but
 // keeps its own copy of the per-key label/command/purpose so this suite can assert on them
 // without importing test fixtures across modules.
-function makeSetupStatus(overrides: Partial<Record<SetupKey["name"], boolean>> = {}): SetupStatus {
+function makeSetupStatus(
+  overrides: Partial<Record<SetupKey["name"], boolean>> = {},
+): SetupStatus {
   const defaults: Record<SetupKey["name"], boolean> = {
     gateway_api_key: true,
     logfire_token: true,
@@ -103,7 +111,11 @@ function makeSetupStatus(overrides: Partial<Record<SetupKey["name"], boolean>> =
     logfire_explore_url: null,
     logfire_traces_url: null,
     logfire_datasets_url: null,
-    logfire_frontend: { trace_url: null, token_set: false, session_replay: false },
+    logfire_frontend: {
+      trace_url: null,
+      token_set: false,
+      session_replay: false,
+    },
   };
 }
 
@@ -155,6 +167,23 @@ describe("OverviewPage", () => {
 
     expect(screen.getByText("Best accuracy")).toBeTruthy();
     expect(screen.getByText("91%")).toBeTruthy();
+  });
+
+  it("shows the agent count and links agents to their workspace", async () => {
+    // agent_count is added with the agent surface; Object.assign keeps this test focused on
+    // page behavior until the shared API DTO is updated alongside the implementation.
+    getMock.mockResolvedValue(
+      Object.assign(makeOverview(), { agent_count: 3 }),
+    );
+
+    renderPage();
+
+    expect(await screen.findByText("Agents")).toBeTruthy();
+    expect(screen.getByText("3")).toBeTruthy();
+    expect(screen.getByRole("link", { name: /agents/i })).toHaveAttribute(
+      "href",
+      "/agents",
+    );
   });
 
   it("formats best_accuracy 0.91 as 91%", async () => {
@@ -225,9 +254,13 @@ describe("OverviewPage", () => {
 
     const links = screen.getAllByRole("link");
     // The prompt links the user to /datasets to create their first dataset...
-    expect(links.some((a) => a.getAttribute("href") === "/datasets")).toBe(true);
+    expect(links.some((a) => a.getAttribute("href") === "/datasets")).toBe(
+      true,
+    );
     // ...and no run card is rendered, so nothing links to a run detail page.
-    expect(links.some((a) => a.getAttribute("href")?.startsWith("/runs/"))).toBe(false);
+    expect(
+      links.some((a) => a.getAttribute("href")?.startsWith("/runs/")),
+    ).toBe(false);
   });
 
   it("links a populated latest_run to /runs/{id} and names the dataset", async () => {
@@ -261,7 +294,9 @@ describe("OverviewPage", () => {
 
     // The empty state offers a primary action into the evaluator flow.
     const links = await screen.findAllByRole("link");
-    expect(links.some((a) => a.getAttribute("href") === "/evaluators")).toBe(true);
+    expect(links.some((a) => a.getAttribute("href") === "/evaluators")).toBe(
+      true,
+    );
 
     // The stat cards belong to the populated state and must not appear.
     expect(screen.queryByText("Best accuracy")).toBeNull();
@@ -300,14 +335,18 @@ describe("OverviewPage setup card", () => {
     expect(rows).toHaveLength(4);
 
     for (const key of status.keys) {
-      const row = rows.find((candidate) => within(candidate).queryByText(key.label));
+      const row = rows.find((candidate) =>
+        within(candidate).queryByText(key.label),
+      );
       expect(row).toBeTruthy();
-      within(row as HTMLElement).getByText(key.required ? "Required" : "Optional");
+      within(row as HTMLElement).getByText(
+        key.required ? "Required" : "Optional",
+      );
       expect(within(row as HTMLElement).queryByText(key.command)).toBeNull();
     }
-    expect(screen.getByRole("link", { name: "Manage keys" }).getAttribute("href")).toBe(
-      "/settings",
-    );
+    expect(
+      screen.getByRole("link", { name: "Manage keys" }).getAttribute("href"),
+    ).toBe("/settings");
   });
 
   it("collapses to a summary line and still links to Settings when all keys are set", async () => {
@@ -318,11 +357,13 @@ describe("OverviewPage setup card", () => {
     renderPage();
     await screen.findByText("Overview");
 
-    expect(await screen.findByText(/all setup keys are configured/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/all setup keys are configured/i),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("listitem")).toBeNull();
-    expect(screen.getByRole("link", { name: "Manage keys" }).getAttribute("href")).toBe(
-      "/settings",
-    );
+    expect(
+      screen.getByRole("link", { name: "Manage keys" }).getAttribute("href"),
+    ).toBe("/settings");
   });
 
   it("Recheck triggers a second fetch and updates the card from expanded to collapsed", async () => {
@@ -338,7 +379,9 @@ describe("OverviewPage setup card", () => {
     await user.click(screen.getByRole("button", { name: "Recheck" }));
 
     await waitFor(() => expect(screen.queryByRole("listitem")).toBeNull());
-    expect(await screen.findByText(/all setup keys are configured/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/all setup keys are configured/i),
+    ).toBeInTheDocument();
     expect(setupGet).toHaveBeenCalledTimes(2);
   });
 
@@ -422,6 +465,8 @@ describe("OverviewPage default model card", () => {
     const label = await screen.findByText("Default model");
     const card = label.closest(".default-model-card") as HTMLElement;
     expect(within(card).getByText(/not set/i)).toBeInTheDocument();
-    expect(within(card).getByRole("link", { name: /settings/i })).toBeInTheDocument();
+    expect(
+      within(card).getByRole("link", { name: /settings/i }),
+    ).toBeInTheDocument();
   });
 });
