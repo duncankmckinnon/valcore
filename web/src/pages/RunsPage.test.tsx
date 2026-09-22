@@ -34,6 +34,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     kind: "eval",
     version_id: "ver-1",
     dataset_id: "ds-1",
+    derivation_id: null,
     status: "completed",
     concurrency: 1,
     started_at: "2026-01-01T00:00:00Z",

@@ -3,7 +3,8 @@
 
 export type ScoreKind = "categorical" | "numeric";
 export type LabelSource = "manual" | "accepted" | "generated";
-export type RunKind = "validation" | "eval";
+export type RunKind = "validation" | "eval" | "derive";
+export type DerivationState = "staged" | "saved";
 export type RunStatus =
   | "pending"
   | "running"
@@ -229,6 +230,7 @@ export type Derivation = {
   ordinal: number;
   response_columns: string[];
   response_count: number;
+  state: DerivationState;
 };
 
 // A saved response joined to its original dataset row for display.
@@ -341,17 +343,24 @@ export interface RunCoverage {
   labeled_rows: number;
 }
 
+// Runs may include response-scoring totals alongside the existing open set of metrics.
+export type RunMetrics = Record<string, unknown> & {
+  scored?: number;
+  skipped?: Record<string, number>;
+};
+
 export interface Run {
   id: string;
   created_at: string;
   kind: RunKind;
   version_id: string;
   dataset_id: string;
+  derivation_id: string | null;
   status: RunStatus;
   concurrency: number;
   started_at: string | null;
   finished_at: string | null;
-  metrics: Record<string, unknown> | null;
+  metrics: RunMetrics | null;
   error: string | null;
   cancel_requested: boolean;
 }

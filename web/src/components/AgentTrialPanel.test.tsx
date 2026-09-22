@@ -92,6 +92,7 @@ function makeDerivation(overrides: Partial<Derivation> = {}): Derivation {
     ordinal: 7,
     response_columns: ["answer"],
     response_count: 1,
+    state: "saved",
     ...overrides,
   };
 }
