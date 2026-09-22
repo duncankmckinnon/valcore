@@ -15,18 +15,15 @@ import { DOCS_BASE_URL } from "../docsLinks";
 type NavItem = { to: string; label: string; Icon: ComponentType<{ className?: string }> };
 type NavSection = { label: string; items: NavItem[] };
 
-// Overview and Docs are the two ungrouped entries at the top; the labelled sections
-// below them mirror the author-then-measure flow of the product. Docs sits up here
-// rather than at the bottom because it is what you read before you have anything to
-// author or measure — a new user needs it first, not last.
+// The authoring flow leads the sidebar, with agents first, then evaluators and data.
 const OVERVIEW: NavItem = { to: "/", label: "Overview", Icon: OverviewIcon };
 const SETTINGS: NavItem = { to: "/settings", label: "Settings", Icon: SettingsIcon };
 const SECTIONS: NavSection[] = [
   {
     label: "Author",
     items: [
-      { to: "/evaluators", label: "Evaluators", Icon: EvaluatorIcon },
       { to: "/agents", label: "Agents", Icon: EvaluatorIcon },
+      { to: "/evaluators", label: "Evals", Icon: EvaluatorIcon },
       { to: "/datasets", label: "Datasets", Icon: DatasetIcon },
       { to: "/annotations", label: "Annotations", Icon: AnnotationIcon },
     ],
@@ -73,9 +70,6 @@ export default function Layout() {
             <span className="nav-live-dot" /> local
           </span>
         </div>
-        {/* `end` keeps the "/" link from matching every route and staying active. */}
-        <NavItemLink {...OVERVIEW} end />
-        <NavItemLink {...SETTINGS} />
         {SECTIONS.map((section) => (
           <div className="nav-section" key={section.label}>
             <div className="nav-section-label">{section.label}</div>
@@ -84,6 +78,9 @@ export default function Layout() {
             ))}
           </div>
         ))}
+        {/* `end` keeps the "/" link from matching every route and staying active. */}
+        <NavItemLink {...OVERVIEW} end />
+        <NavItemLink {...SETTINGS} />
         <div className="nav-external">
           <a className="nav-link" href={DOCS_BASE_URL} target="_blank" rel="noreferrer">
             <span className="nav-icon"><DocsIcon /></span>

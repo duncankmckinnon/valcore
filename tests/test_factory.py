@@ -312,6 +312,29 @@ def test_build_agent_from_version_loads_filesystem_spec_capability() -> None:
     assert isinstance(agent, Agent)
 
 
+def test_local_agent_uses_cli_native_tools_instead_of_harness_wrappers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received: list[AgentSpec] = []
+
+    def capture(spec: AgentSpec, **kwargs: object) -> Agent:
+        received.append(spec)
+        return Agent("test")
+
+    monkeypatch.setattr("valcore.factory.PydanticAgent.from_spec", capture)
+    build_agent_from_version(
+        make_agent_version(
+            model="local/codex",
+            spec={
+                "instructions": "Help the user.",
+                "capabilities": [{"Planning": {}}],
+            },
+        )
+    )
+
+    assert received[0].capabilities == []
+
+
 def test_build_agent_from_version_unknown_capability_is_config_error() -> None:
     version = make_agent_version(
         spec={

@@ -200,16 +200,9 @@ class TestValidateBinding:
             deps_mapping={"topic": "topic", "max_results": "audience"},
         )
 
-    def test_empty_required_columns_raises(self) -> None:
-        spec = parse_spec(full_blob())
-        with pytest.raises(ConfigError) as exc:
-            validate_binding(
-                spec,
-                prompt_template="hi",
-                required_columns=[],
-                deps_mapping={},
-            )
-        assert "at least one required column" in str(exc.value)
+    def test_unmapped_input_is_optional(self) -> None:
+        spec = parse_spec({"instructions": "Help the user."})
+        validate_binding(spec, prompt_template="", required_columns=[], deps_mapping={})
 
     def test_prompt_placeholder_not_in_required_columns_raises(self) -> None:
         spec = parse_spec(full_blob())
@@ -325,3 +318,10 @@ class TestRenderAgentPrompt:
     def test_template_with_no_placeholders_ignores_row_data(self) -> None:
         result = render_agent_prompt("Static prompt.", {"anything": "value"})
         assert result == "Static prompt."
+
+    def test_no_template_forwards_plain_input_or_complete_row(self) -> None:
+        assert render_agent_prompt("", {"input": "Help me"}) == "Help me"
+        assert render_agent_prompt("", {"question": "Why?", "context": "A"}) == (
+            '{\n  "question": "Why?",\n  "context": "A"\n}'
+        )
+        assert render_agent_prompt("", {}) == ""

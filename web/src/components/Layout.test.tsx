@@ -29,7 +29,7 @@ describe("Layout nav", () => {
     // The icon span is aria-hidden, so each link's accessible name is the label
     // text alone.
     expect(screen.getByRole("link", { name: "Overview" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Evaluators" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Evals" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Agents" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Datasets" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Annotations" })).toBeTruthy();
@@ -52,14 +52,14 @@ describe("Layout nav", () => {
 
     // Docs is an external destination, so it follows the app-owned working surfaces.
     expect(screen.getAllByRole("link").map((link) => link.textContent)).toEqual([
-      "Overview",
-      "Settings",
-      "Evaluators",
       "Agents",
+      "Evals",
       "Datasets",
       "Annotations",
       "Runs",
       "Compare",
+      "Overview",
+      "Settings",
       "Docs",
     ]);
 
@@ -90,7 +90,7 @@ describe("Layout nav", () => {
   it("routes the other links to their sections", () => {
     renderLayout("/");
 
-    expect(screen.getByRole("link", { name: "Evaluators" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "Evals" }).getAttribute("href")).toBe(
       "/evaluators",
     );
     expect(screen.getByRole("link", { name: "Agents" }).getAttribute("href")).toBe("/agents");
@@ -135,7 +135,7 @@ describe("Layout nav", () => {
     // The end-prop regression: without `end` on the Overview link, "/" matches
     // every route and Overview stays permanently active.
     expect(screen.getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBeNull();
-    expect(screen.getByRole("link", { name: "Evaluators" }).getAttribute("aria-current")).toBeNull();
+    expect(screen.getByRole("link", { name: "Evals" }).getAttribute("aria-current")).toBeNull();
     expect(screen.getByRole("link", { name: "Runs" }).getAttribute("aria-current")).toBeNull();
   });
 

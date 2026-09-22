@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cleanup,
+  fireEvent,
   render,
   screen,
   waitFor,
@@ -11,11 +12,13 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import AgentDetail from "./AgentDetail";
-import { ApiError, agents, api, datasets, runs } from "../api/client";
+import { ApiError, agents, api, datasets, evaluators, runs, setup } from "../api/client";
 import type {
   AgentDetail as AgentDetailData,
   AgentVersion,
   DatasetSummary,
+  GeneratedConfig,
+  SetupStatus,
   Run,
 } from "../api/types";
 
@@ -51,7 +54,9 @@ vi.mock("../api/client", async (importOriginal) => {
       importSpec: vi.fn(),
     },
     datasets: { ...actual.datasets, list: vi.fn() },
+    evaluators: { ...actual.evaluators, generate: vi.fn() },
     runs: { ...actual.runs, create: vi.fn() },
+    setup: { ...actual.setup, get: vi.fn() },
     api: vi.fn(),
   };
 });
@@ -133,6 +138,11 @@ beforeEach(() => {
     capabilities: [],
   });
   vi.mocked(datasets.list).mockResolvedValue([makeDataset()]);
+  vi.mocked(setup.get).mockResolvedValue({
+    keys: [{ name: "gateway_api_key", set: true }],
+    local_cli_default: null,
+    local_cli_options: ["claude", "codex", "cursor"],
+  } as SetupStatus);
 });
 
 afterEach(() => {
@@ -343,7 +353,7 @@ describe("AgentDetail", () => {
 
     const prompt = await screen.findByLabelText("Prompt template");
     await user.clear(prompt);
-    await user.type(prompt, "New question: {question}");
+    fireEvent.change(prompt, { target: { value: "New question: {question}" } });
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
@@ -351,6 +361,70 @@ describe("AgentDetail", () => {
         prompt_template: "New question: {question}",
       }),
     );
+  });
+
+  it("edits and backspaces the prompt normally", async () => {
+    vi.mocked(agents.get).mockResolvedValue(makeDetail());
+    const user = userEvent.setup();
+    renderDetail();
+
+    const prompt = await screen.findByLabelText("Prompt template");
+    await user.clear(prompt);
+    await user.type(prompt, "abc");
+    await user.keyboard("{Backspace}");
+    expect(prompt).toHaveValue("ab");
+  });
+
+  it("edits instructions and harness capabilities within the agent spec", async () => {
+    vi.mocked(api).mockResolvedValue({
+      models: ["gateway/openai:gpt-4o"],
+      default_model: "gateway/openai:gpt-4o",
+      tools: [],
+      capabilities: ["Planning", "CodeMode", "SubAgents"],
+    });
+    vi.mocked(agents.get).mockResolvedValue(makeDetail());
+    vi.mocked(agents.updateVersion).mockResolvedValue(makeVersion());
+    const user = userEvent.setup();
+    renderDetail();
+
+    const instructions = await screen.findByLabelText("Instructions");
+    await user.clear(instructions);
+    await user.type(instructions, "Plan before answering.");
+    await user.click(screen.getByRole("checkbox", { name: "Planning" }));
+    expect(screen.queryByRole("checkbox", { name: "SubAgents" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(agents.updateVersion).toHaveBeenCalledWith(
+      "av-1",
+      expect.objectContaining({
+        spec: expect.objectContaining({
+          instructions: "Plan before answering.",
+          capabilities: [{ Planning: {} }],
+        }),
+      }),
+    ));
+  });
+
+  it("starts evaluator generation from the selected agent contract", async () => {
+    vi.mocked(agents.get).mockResolvedValue(makeDetail());
+    const generated = { name: "Support judge" } as GeneratedConfig;
+    vi.mocked(evaluators.generate).mockResolvedValue(generated);
+    const user = userEvent.setup();
+    renderDetail();
+
+    await user.click(await screen.findByRole("button", { name: "Create evaluator" }));
+    const dialog = screen.getByRole("dialog", { name: "Generate evaluator from agent" });
+    await user.type(within(dialog).getByLabelText("Criteria"), "Helpful response");
+    await user.click(within(dialog).getByRole("button", { name: "Generate evaluator" }));
+
+    await waitFor(() => expect(evaluators.generate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        criteria: "Helpful response",
+        agent_version_id: "av-1",
+        columns: ["question", "context", "answer", "confidence"],
+      }),
+    ));
+    expect(navigate).toHaveBeenCalledWith("/evaluators", { state: { draft: generated } });
   });
 
   it("allows adding another dependency-to-column mapping", async () => {
@@ -430,13 +504,13 @@ describe("AgentDetail", () => {
     for (const label of [
       "Version name",
       "Notes",
-      "Model",
       "Prompt template",
       "Required columns",
       "Spec",
     ]) {
       expect(screen.getByLabelText(label)).toHaveAttribute("readonly");
     }
+    expect(screen.getByLabelText("Model")).toBeDisabled();
     expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Save" }),
@@ -545,8 +619,8 @@ describe("AgentDetail", () => {
     expect(
       screen.getByRole("button", { name: "Create version" }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText("Prompt template")).toHaveValue("{input}");
-    expect(screen.getByLabelText("Required columns")).toHaveValue("input");
+    expect(screen.getByLabelText("Prompt template")).toHaveValue("");
+    expect(screen.getByLabelText("Required columns")).toHaveValue("");
     expect(screen.getByLabelText("Spec")).toHaveValue("{}");
     // Nothing exists to pick between, export, or trial yet.
     expect(screen.queryByRole("combobox", { name: "Version" })).toBeNull();
@@ -571,6 +645,24 @@ describe("AgentDetail", () => {
         "gateway/openai:gpt-4o",
       ),
     );
+  });
+
+  it("shows local models when the gateway key is absent", async () => {
+    vi.mocked(setup.get).mockResolvedValue({
+      keys: [{ name: "gateway_api_key", set: false }],
+      local_cli_default: "codex",
+      local_cli_options: ["claude", "codex"],
+    } as SetupStatus);
+    vi.mocked(agents.get).mockResolvedValue(makeDetail({
+      versions: [],
+      agent: { ...makeDetail().agent, active_version_id: null, version_count: 0 },
+    }));
+    renderDetail();
+
+    const model = await screen.findByRole("combobox", { name: "Model" });
+    await waitFor(() => expect(model).toHaveValue("local/codex"));
+    expect(within(model).getByRole("option", { name: "local/claude" })).toBeInTheDocument();
+    expect(within(model).queryByRole("option", { name: "gateway/openai:gpt-4o" })).toBeNull();
   });
 
   it("creates the first version from the blank draft", async () => {
@@ -604,10 +696,8 @@ describe("AgentDetail", () => {
           version_name: "initial",
           model: "gateway/openai:gpt-4o",
           spec: {},
-          // The API rejects a version with no required columns, so the draft it
-          // opens on must be one the server will accept unedited.
-          prompt_template: "{input}",
-          required_columns: ["input"],
+          prompt_template: "",
+          required_columns: [],
         }),
       ),
     );
