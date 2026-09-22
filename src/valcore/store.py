@@ -361,7 +361,7 @@ class Store:
             return agent
 
     def delete_agent(self, id: str) -> None:
-        """Delete an agent and its versions unless a derivation references one."""
+        """Delete an agent and its versions unless persisted work references one."""
         with session_scope(self.engine) as session:
             agent = _require(session, Agent, id)
             version_ids = list(
@@ -378,6 +378,18 @@ class Store:
             )
             if derivations:
                 _raise_referenced_by_derivations(derivations, "agent")
+            runs = (
+                session.exec(
+                    select(Run).where(
+                        Run.kind == RunKind.DERIVE,
+                        Run.version_id.in_(version_ids),
+                    )
+                ).all()
+                if version_ids
+                else []
+            )
+            if runs:
+                _raise_referenced(runs, "agent")
             versions = session.exec(select(AgentVersion).where(AgentVersion.agent_id == id))
             for version in versions:
                 session.delete(version)
@@ -440,6 +452,11 @@ class Store:
             ).all()
             if derivations:
                 _raise_referenced_by_derivations(derivations, "agent version")
+            runs = session.exec(
+                select(Run).where(Run.kind == RunKind.DERIVE, Run.version_id == id)
+            ).all()
+            if runs:
+                _raise_referenced(runs, "agent version")
             agent = session.get(Agent, version.agent_id)
             session.delete(version)
             session.flush()
@@ -601,6 +618,13 @@ class Store:
             raise ContractError("Derivation response key 'data' must be a dict.")
         with session_scope(self.engine) as session:
             derivation = _require(session, DatasetDerivation, derivation_id)
+            status = session.exec(
+                select(DerivationStatus).where(DerivationStatus.derivation_id == derivation_id)
+            ).first()
+            if status is None or status.state is not DerivationState.STAGED:
+                raise ContractError(
+                    f"Derivation {derivation_id!r} is saved and cannot accept responses."
+                )
             row = _require(session, DatasetRow, response["row_id"])
             if row.dataset_id != derivation.dataset_id:
                 raise ContractError(
@@ -638,14 +662,13 @@ class Store:
         """Delete a discardable derivation and its dependent response and state records."""
         with session_scope(self.engine) as session:
             _require(session, DatasetDerivation, derivation_id)
-            reading_link = session.exec(
-                select(RunDerivation).where(
-                    RunDerivation.derivation_id == derivation_id,
-                    RunDerivation.role == DerivationRole.READS,
-                )
-            ).first()
-            if reading_link is not None:
+            links = session.exec(
+                select(RunDerivation).where(RunDerivation.derivation_id == derivation_id)
+            ).all()
+            if any(link.role is DerivationRole.READS for link in links):
                 raise ReferencedError(f"Derivation {derivation_id!r} is referenced by a run.")
+            for link in links:
+                session.delete(link)
             for response in session.exec(
                 select(AgentResponse).where(AgentResponse.derivation_id == derivation_id)
             ):
@@ -1279,10 +1302,17 @@ class Store:
     def link_run_derivation(
         self, run_id: str, derivation_id: str, role: DerivationRole
     ) -> RunDerivation:
-        """Link a run to the derivation it fills or reads, according to its kind."""
+        """Link a run to one valid derivation it fills or reads, according to its kind."""
         with session_scope(self.engine) as session:
             run = _require(session, Run, run_id)
-            _require(session, DatasetDerivation, derivation_id)
+            derivation = _require(session, DatasetDerivation, derivation_id)
+            existing = session.exec(
+                select(RunDerivation).where(RunDerivation.run_id == run_id)
+            ).first()
+            if existing is not None:
+                raise ContractError(f"Run {run_id!r} already has a derivation link.")
+            if run.kind is RunKind.VALIDATION:
+                raise ContractError("Validation runs cannot read or fill derivations.")
             expected_role = (
                 DerivationRole.FILLS if run.kind is RunKind.DERIVE else DerivationRole.READS
             )
@@ -1291,6 +1321,25 @@ class Store:
                     f"Run kind {run.kind.value!r} requires derivation role "
                     f"{expected_role.value!r}, not {role.value!r}."
                 )
+            if run.dataset_id != derivation.dataset_id:
+                raise ContractError(
+                    f"Run dataset {run.dataset_id!r} does not match derivation dataset "
+                    f"{derivation.dataset_id!r}."
+                )
+            status = session.exec(
+                select(DerivationStatus).where(DerivationStatus.derivation_id == derivation_id)
+            ).first()
+            state = DerivationState.SAVED if status is None else status.state
+            if role is DerivationRole.FILLS:
+                if run.version_id != derivation.agent_version_id:
+                    raise ContractError(
+                        f"Derive run agent version {run.version_id!r} does not match derivation "
+                        f"agent version {derivation.agent_version_id!r}."
+                    )
+                if state is not DerivationState.STAGED:
+                    raise ContractError("A derive run may only fill a staged derivation.")
+            elif state is not DerivationState.SAVED:
+                raise ContractError("An evaluator run may only read a saved derivation.")
             link = RunDerivation(run_id=run_id, derivation_id=derivation_id, role=role)
             session.add(link)
             # SQLite drops timezone information on round-trip; refresh so callers receive the

@@ -353,6 +353,20 @@ def test_delete_agent_version_referenced_by_derivation_raises(store: Store) -> N
     assert store.get_agent_version(version.id).id == version.id
 
 
+def test_delete_agent_version_referenced_by_derive_run_raises(store: Store) -> None:
+    """A derive run keeps its polymorphic agent-version reference valid."""
+    dataset = store.create_dataset("inputs", "", ["question"])
+    agent = store.create_agent("subject")
+    version = store.create_agent_version(agent.id, **agent_version_fields())
+    run = store.create_run(RunKind.DERIVE, version.id, dataset.id, concurrency=1)
+
+    with pytest.raises(ReferencedError) as exc:
+        store.delete_agent_version(version.id)
+
+    assert exc.value.detail == {"run_count": 1, "run_ids": [run.id]}
+    assert store.get_agent_version(version.id).id == version.id
+
+
 def test_delete_agent_referenced_by_derivation_is_blocked(store: Store) -> None:
     dataset = store.create_dataset("inputs", "", ["question"])
     row = store.add_rows(dataset.id, [{"question": "q"}])[0]
@@ -371,6 +385,20 @@ def test_delete_agent_referenced_by_derivation_is_blocked(store: Store) -> None:
     assert exc.value.detail == {"derivation_count": 1, "derivation_ids": [derivation.id]}
     assert store.get_agent(agent.id).id == agent.id
     assert store.get_agent_version(version.id).id == version.id
+
+
+def test_delete_agent_referenced_by_derive_run_is_blocked(store: Store) -> None:
+    """Deleting an agent cannot orphan a derive run's version reference."""
+    dataset = store.create_dataset("inputs", "", ["question"])
+    agent = store.create_agent("subject")
+    version = store.create_agent_version(agent.id, **agent_version_fields())
+    run = store.create_run(RunKind.DERIVE, version.id, dataset.id, concurrency=1)
+
+    with pytest.raises(ReferencedError) as exc:
+        store.delete_agent(agent.id)
+
+    assert exc.value.detail == {"run_count": 1, "run_ids": [run.id]}
+    assert store.get_agent(agent.id).id == agent.id
 
 
 def test_delete_agent_cascades_unreferenced_versions(store: Store) -> None:
@@ -770,6 +798,39 @@ def test_add_agent_response_is_safe_for_concurrent_derivation_workers(store: Sto
     }
 
 
+def test_add_agent_response_rejects_explicitly_saved_derivation(store: Store) -> None:
+    """Accepted derivations are immutable evaluator inputs."""
+    dataset_id, version_id, rows = _agent_version_and_dataset(store)
+    staged = store.create_staged_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=version_id,
+        response_columns=["response"],
+    )
+    store.save_staged_derivation(staged.id)
+
+    with pytest.raises(ContractError):
+        store.add_agent_response(staged.id, _response(rows[0].id))
+
+
+def test_add_agent_response_rejects_legacy_saved_derivation(store: Store) -> None:
+    """A missing status retains its legacy saved meaning for mutation checks."""
+    dataset_id, version_id, rows = _agent_version_and_dataset(store)
+    derivation = store.save_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=version_id,
+        response_columns=["response"],
+        responses=[_response(rows[0].id)],
+    )
+    with session_scope(store.engine) as session:
+        status = session.exec(
+            select(DerivationStatus).where(DerivationStatus.derivation_id == derivation.id)
+        ).one()
+        session.delete(status)
+
+    with pytest.raises(ContractError):
+        store.add_agent_response(derivation.id, _response(rows[1].id))
+
+
 def test_delete_derivation_removes_its_responses_and_status(store: Store) -> None:
     """Discarding a staged pass removes every record that made its overlay visible."""
     dataset_id, version_id, rows = _agent_version_and_dataset(store)
@@ -806,16 +867,16 @@ def test_delete_derivation_removes_its_responses_and_status(store: Store) -> Non
 def test_delete_derivation_allows_its_filling_run_but_not_a_reading_run(store: Store) -> None:
     """An evaluator's recorded input remains immutable while an abandoned fill may disappear."""
     dataset_id, version_id, rows = _agent_version_and_dataset(store)
-    fills_derivation = store.save_derivation(
+    fills_derivation = store.create_staged_derivation(
         dataset_id=dataset_id,
         agent_version_id=version_id,
         response_columns=["response"],
-        responses=[_response(rows[0].id)],
     )
     fill_run = store.create_run(RunKind.DERIVE, version_id, dataset_id, concurrency=1)
     store.link_run_derivation(fill_run.id, fills_derivation.id, DerivationRole.FILLS)
 
     store.delete_derivation(fills_derivation.id)
+    assert store.get_run_derivation(fill_run.id) is None
 
     reads_derivation = store.save_derivation(
         dataset_id=dataset_id,
@@ -871,6 +932,100 @@ def test_run_derivation_links_enforce_the_role_implied_by_run_kind(store: Store)
     link = store.link_run_derivation(eval_run.id, derivation.id, DerivationRole.READS)
     assert store.get_run_derivation(eval_run.id) == link
     assert store.get_run_derivation(derive_run.id) is None
+
+
+def test_validation_run_cannot_link_a_derivation(store: Store) -> None:
+    """Validation remains grounded on the base dataset contract."""
+    dataset_id, agent_version_id, rows = _agent_version_and_dataset(store)
+    derivation = store.save_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=agent_version_id,
+        response_columns=["response"],
+        responses=[_response(rows[0].id)],
+    )
+    evaluator_version_id, _ = _make_run_prereqs(store)
+    run = store.create_run(RunKind.VALIDATION, evaluator_version_id, dataset_id, concurrency=1)
+
+    with pytest.raises(ContractError):
+        store.link_run_derivation(run.id, derivation.id, DerivationRole.READS)
+
+
+def test_run_derivation_link_requires_matching_dataset(store: Store) -> None:
+    """A run can only consume an overlay of its own base dataset."""
+    dataset_id, agent_version_id, rows = _agent_version_and_dataset(store)
+    derivation = store.save_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=agent_version_id,
+        response_columns=["response"],
+        responses=[_response(rows[0].id)],
+    )
+    other_dataset = store.create_dataset("other", "", ["question"])
+    evaluator_version_id, _ = _make_run_prereqs(store)
+    run = store.create_run(RunKind.EVAL, evaluator_version_id, other_dataset.id, concurrency=1)
+
+    with pytest.raises(ContractError):
+        store.link_run_derivation(run.id, derivation.id, DerivationRole.READS)
+
+
+def test_derive_run_must_fill_staged_derivation_from_its_agent_version(store: Store) -> None:
+    """A derive run cannot claim another agent's pass or an accepted pass."""
+    dataset_id, agent_version_id, _ = _agent_version_and_dataset(store)
+    agent = store.create_agent("other subject")
+    other_version = store.create_agent_version(agent.id, **agent_version_fields())
+    wrong_version = store.create_staged_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=other_version.id,
+        response_columns=["response"],
+    )
+    saved = store.create_staged_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=agent_version_id,
+        response_columns=["response"],
+    )
+    store.save_staged_derivation(saved.id)
+    run = store.create_run(RunKind.DERIVE, agent_version_id, dataset_id, concurrency=1)
+
+    with pytest.raises(ContractError):
+        store.link_run_derivation(run.id, wrong_version.id, DerivationRole.FILLS)
+    with pytest.raises(ContractError):
+        store.link_run_derivation(run.id, saved.id, DerivationRole.FILLS)
+
+
+def test_eval_run_must_read_saved_derivation(store: Store) -> None:
+    """Evaluator runs cannot observe a pass while workers are still staging it."""
+    dataset_id, agent_version_id, _ = _agent_version_and_dataset(store)
+    staged = store.create_staged_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=agent_version_id,
+        response_columns=["response"],
+    )
+    evaluator_version_id, _ = _make_run_prereqs(store)
+    run = store.create_run(RunKind.EVAL, evaluator_version_id, dataset_id, concurrency=1)
+
+    with pytest.raises(ContractError):
+        store.link_run_derivation(run.id, staged.id, DerivationRole.READS)
+
+
+def test_run_derivation_link_is_singular(store: Store) -> None:
+    """A run cannot acquire duplicate or competing derivation associations."""
+    dataset_id, agent_version_id, rows = _agent_version_and_dataset(store)
+    derivations = [
+        store.save_derivation(
+            dataset_id=dataset_id,
+            agent_version_id=agent_version_id,
+            response_columns=["response"],
+            responses=[_response(rows[0].id, str(index))],
+        )
+        for index in range(2)
+    ]
+    evaluator_version_id, _ = _make_run_prereqs(store)
+    run = store.create_run(RunKind.EVAL, evaluator_version_id, dataset_id, concurrency=1)
+    store.link_run_derivation(run.id, derivations[0].id, DerivationRole.READS)
+
+    with pytest.raises(ContractError):
+        store.link_run_derivation(run.id, derivations[0].id, DerivationRole.READS)
+    with pytest.raises(ContractError):
+        store.link_run_derivation(run.id, derivations[1].id, DerivationRole.READS)
 
 
 def test_derive_run_freezes_an_agent_version_not_an_evaluator_version(store: Store) -> None:
