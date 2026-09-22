@@ -28,6 +28,7 @@ from valcore.models import (
     RunDerivation,
     RunKind,
     ScoreKind,
+    SkipReason,
     annotation_ground_truth,
     check_agent_dataset_compatibility,
     check_dataset_compatibility,
@@ -861,6 +862,33 @@ def test_dataset_derivation_defaults() -> None:
 
 
 # -- Derivation status and run links ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("enum_type", "value", "expected"),
+    [
+        pytest.param(RunKind, "derive", RunKind.DERIVE, id="run-kind-derive"),
+        pytest.param(DerivationState, "staged", DerivationState.STAGED, id="state-staged"),
+        pytest.param(DerivationState, "saved", DerivationState.SAVED, id="state-saved"),
+        pytest.param(DerivationRole, "fills", DerivationRole.FILLS, id="role-fills"),
+        pytest.param(DerivationRole, "reads", DerivationRole.READS, id="role-reads"),
+        pytest.param(SkipReason, "no_response", SkipReason.NO_RESPONSE, id="skip-no-response"),
+        pytest.param(
+            SkipReason,
+            "response_error",
+            SkipReason.RESPONSE_ERROR,
+            id="skip-response-error",
+        ),
+    ],
+)
+def test_derivation_enum_values_round_trip(
+    enum_type: type[RunKind] | type[DerivationState] | type[DerivationRole] | type[SkipReason],
+    value: str,
+    expected: RunKind | DerivationState | DerivationRole | SkipReason,
+) -> None:
+    """Derivation-related enum values remain stable across their string boundary."""
+    assert expected.value == value
+    assert enum_type(value) is expected
 
 
 def test_run_kind_derive_round_trips_through_its_string_value() -> None:
