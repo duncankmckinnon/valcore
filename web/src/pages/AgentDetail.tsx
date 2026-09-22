@@ -117,6 +117,8 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
   const [runOpen, setRunOpen] = useState(false);
   const [datasetsForRun, setDatasetsForRun] = useState<DatasetSummary[]>([]);
   const [datasetId, setDatasetId] = useState("");
+  const [runError, setRunError] = useState<unknown>(null);
+  const [runSubmitting, setRunSubmitting] = useState(false);
   // React may batch the final keystrokes before a following button click. Keeping the
   // current draft in a ref ensures template braces are not lost in that interaction.
   const valuesRef = useRef<EditorValues | null>(null);
@@ -382,6 +384,7 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
       const availableDatasets = await datasets.list();
       setDatasetsForRun(availableDatasets);
       setDatasetId(availableDatasets[0]?.id ?? "");
+      setRunError(null);
       setRunOpen(true);
     } catch (err) {
       setError(err);
@@ -389,7 +392,9 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
   }
 
   async function runOverDataset(): Promise<void> {
-    if (!selected || !datasetId) return;
+    if (!selected || !datasetId || runSubmitting) return;
+    setRunSubmitting(true);
+    setRunError(null);
     try {
       const run = await runs.create({
         kind: "derive",
@@ -399,8 +404,15 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
       setRunOpen(false);
       navigate(`/runs/${run.id}`);
     } catch (err) {
-      setError(err);
+      setRunError(err);
+      setRunSubmitting(false);
     }
+  }
+
+  function closeRun(): void {
+    if (runSubmitting) return;
+    setRunOpen(false);
+    setRunError(null);
   }
 
   if (loading && !detail) return <Spinner />;
@@ -646,26 +658,32 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
       <Modal
         open={runOpen}
         title="Run agent over a dataset"
-        onClose={() => setRunOpen(false)}
+        onClose={closeRun}
         footer={
           <div className="form-actions">
-            <Button variant="secondary" onClick={() => setRunOpen(false)}>
+            <Button
+              variant="secondary"
+              onClick={closeRun}
+              disabled={runSubmitting}
+            >
               Cancel
             </Button>
             <Button
               onClick={() => void runOverDataset()}
-              disabled={!datasetId}
+              disabled={!datasetId || runSubmitting}
             >
-              Run agent
+              {runSubmitting ? <Spinner /> : "Run agent"}
             </Button>
           </div>
         }
       >
+        <ErrorBanner error={runError} onDismiss={() => setRunError(null)} />
         <label className="field">
           <span className="field-label">Dataset</span>
           <Select
             aria-label="Dataset"
             value={datasetId}
+            disabled={runSubmitting}
             options={datasetsForRun.map((dataset) => ({
               value: dataset.id,
               label: dataset.name,

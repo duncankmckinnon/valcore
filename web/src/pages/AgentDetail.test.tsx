@@ -206,16 +206,51 @@ describe("AgentDetail", () => {
     await user.click(
       screen.getByRole("button", { name: "Run over a dataset" }),
     );
+    const dialog = await screen.findByRole("dialog");
     await user.selectOptions(
-      await screen.findByLabelText("Dataset"),
+      within(dialog).getByLabelText("Dataset"),
       "dataset-1",
     );
-    await user.click(screen.getByRole("button", { name: "Run agent" }));
+    await user.click(within(dialog).getByRole("button", { name: "Run agent" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
       "Dataset is missing required columns: context",
     );
+    expect(
+      within(dialog).getByRole("button", { name: "Run agent" }),
+    ).not.toBeDisabled();
+    expect(
+      within(dialog).getByRole("button", { name: "Cancel" }),
+    ).not.toBeDisabled();
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("allows only one derive run request while submission is pending", async () => {
+    vi.mocked(agents.get).mockResolvedValue(makeDetail());
+    let resolveRun!: (run: Run) => void;
+    vi.mocked(runs.create).mockImplementation(
+      () => new Promise((resolve) => (resolveRun = resolve)),
+    );
+    const user = userEvent.setup();
+    renderDetail();
+
+    await screen.findByRole("heading", { name: "Support agent" });
+    await user.click(
+      screen.getByRole("button", { name: "Run over a dataset" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    const submit = within(dialog).getByRole("button", { name: "Run agent" });
+
+    await user.click(submit);
+    await user.click(submit);
+
+    expect(runs.create).toHaveBeenCalledOnce();
+    expect(submit).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(within(dialog).getByRole("status", { name: "Loading" })).toBeInTheDocument();
+
+    resolveRun(makeRun());
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/runs/run-derive-1"));
   });
 
   it("loads the active version and renders its bindings, raw spec, and response columns", async () => {
