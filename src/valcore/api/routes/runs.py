@@ -23,6 +23,7 @@ from valcore.errors import ContractError
 from valcore.experiment import execute_experiment
 from valcore.models import (
     DerivationRole,
+    DerivationState,
     EvaluatorVersion,
     Run,
     RunKind,
@@ -305,6 +306,8 @@ async def create_run(body: RunCreate, store: StoreDep, agent_factory: AgentFacto
     label spaces differ, which is the whole point of prescribing them.
     """
     if body.kind is RunKind.DERIVE:
+        if body.experiment:
+            raise ContractError("A derive run cannot use the evaluator experiment engine.")
         if body.derivation_id is not None:
             raise ContractError("A derive run creates its own derivation and cannot accept one.")
         version = store.get_agent_version(body.version_id)
@@ -334,6 +337,14 @@ async def create_run(body: RunCreate, store: StoreDep, agent_factory: AgentFacto
     derivation = (
         store.get_derivation(body.derivation_id) if body.derivation_id is not None else None
     )
+    if derivation is not None:
+        if derivation.dataset_id != dataset.id:
+            raise ContractError(
+                f"Run dataset {dataset.id!r} does not match derivation dataset "
+                f"{derivation.dataset_id!r}."
+            )
+        if store.derivation_state(derivation.id) is not DerivationState.SAVED:
+            raise ContractError("An evaluator run may only read a saved derivation.")
     check_dataset_compatibility(
         version,
         dataset,
@@ -557,7 +568,15 @@ async def run_events(id: str, store: StoreDep) -> EventSourceResponse:
 
     async def event_stream() -> AsyncIterator[dict]:
         run = await asyncio.to_thread(store.get_run, id)
-        completed = len(await asyncio.to_thread(store.list_results, id))
+        if run.kind is RunKind.DERIVE:
+            link = await asyncio.to_thread(store.get_run_derivation, id)
+            completed = (
+                len(await asyncio.to_thread(store.list_agent_responses, link.derivation_id))
+                if link is not None and link.role is DerivationRole.FILLS
+                else 0
+            )
+        else:
+            completed = len(await asyncio.to_thread(store.list_results, id))
         yield {
             "event": "status",
             "data": json.dumps(

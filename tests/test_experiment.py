@@ -24,7 +24,7 @@ from pydantic_ai.models.test import TestModel
 from valcore import tracing
 from valcore.errors import ContractError
 from valcore.factory import build_output_model
-from valcore.models import RunKind, RunStatus, ScoreKind
+from valcore.models import DerivationRole, RunKind, RunStatus, ScoreKind, SkipReason
 from valcore.runner import RunEvent, execute_run
 from valcore.store import Store, create_engine, init_db
 
@@ -409,6 +409,57 @@ async def test_eval_run_has_no_agreement(store: Store, monkeypatch: pytest.Monke
     assert len(results) == 3
     assert all(r.agreement is None for r in results)
     assert all(r.error is None for r in results)
+
+
+@pytest.mark.anyio
+async def test_eval_experiment_reads_derivation_and_tallies_skipped_rows(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Experiment mode evaluates merged response data with the runner's skip semantics."""
+    from valcore.experiment import execute_experiment
+
+    agent = store.create_agent("subject")
+    agent_version = store.create_agent_version(
+        agent.id,
+        version_name="v1",
+        model="gateway/anthropic:claude-sonnet-5",
+        spec={"instructions": "Answer."},
+        prompt_template="{input}",
+        required_columns=["input"],
+        deps_mapping={},
+    )
+    dataset = make_dataset(store, [None, None, None], with_label_set=False)
+    rows = store.list_rows(dataset.id)
+    derivation = store.save_derivation(
+        dataset_id=dataset.id,
+        agent_version_id=agent_version.id,
+        response_columns=["response"],
+        responses=[
+            {"row_id": rows[0].id, "data": {"response": "usable"}},
+            {"row_id": rows[1].id, "data": {}, "error": "agent failed"},
+        ],
+    )
+    version = make_version(
+        store,
+        prompt_template="Input: {input} Response: {response}",
+        required_columns=["input", "response"],
+    )
+    run = store.create_run(RunKind.EVAL, version.id, dataset.id, concurrency=1)
+    store.link_run_derivation(run.id, derivation.id, DerivationRole.READS)
+
+    patch_build_agent(monkeypatch, constant_agent(version))
+    result = await execute_experiment(store, run.id)
+
+    assert result.status is RunStatus.COMPLETED
+    persisted = store.list_results(run.id)
+    assert [item.row_id for item in persisted] == [rows[0].id]
+    assert result.metrics == {
+        "scored": 1,
+        "skipped": {
+            SkipReason.NO_RESPONSE.value: 1,
+            SkipReason.RESPONSE_ERROR.value: 1,
+        },
+    }
 
 
 # -- One result and one event per case -------------------------------------------
