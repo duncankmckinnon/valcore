@@ -21,6 +21,7 @@ import type {
   Derivation,
   DerivedRowsPage,
   Overview,
+  Run,
   SetupStatus,
   TrialResult,
 } from "./types";
@@ -46,7 +47,9 @@ describe("api", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse({ id: "e1", name: "Judge" }));
 
-    const result = await api<{ id: string; name: string }>("/api/evaluators/e1");
+    const result = await api<{ id: string; name: string }>(
+      "/api/evaluators/e1",
+    );
 
     expect(result).toEqual({ id: "e1", name: "Judge" });
     expect(fetchMock).toHaveBeenCalledOnce();
@@ -99,13 +102,22 @@ describe("resource helpers", () => {
     expect(url).toBe("/api/evaluators");
     expect(init?.method).toBe("POST");
     expect(init?.body).toBe(JSON.stringify({ name: "Judge" }));
-    expect(new Headers(init?.headers).get("Content-Type")).toBe("application/json");
+    expect(new Headers(init?.headers).get("Content-Type")).toBe(
+      "application/json",
+    );
   });
 
   it("datasets.patchRowData PATCHes the row URL", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse({ id: "r1", dataset_id: "d1", idx: 0, data: { note: "off" } }));
+      .mockResolvedValue(
+        jsonResponse({
+          id: "r1",
+          dataset_id: "d1",
+          idx: 0,
+          data: { note: "off" },
+        }),
+      );
 
     await datasets.patchRowData("r1", { data: { note: "off" } });
 
@@ -176,7 +188,9 @@ describe("export files client helpers", () => {
   it("evaluators.exportFiles code GETs export.py with no split param", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse({ files: { "refusal.py": "def evaluate(): ..." } }));
+      .mockResolvedValue(
+        jsonResponse({ files: { "refusal.py": "def evaluate(): ..." } }),
+      );
 
     await evaluators.exportFiles("v1", "code", "bundled");
 
@@ -192,7 +206,9 @@ describe("export files client helpers", () => {
     // script; layout must not leak into the URL for the "code" branch.
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse({ files: { "refusal.py": "def evaluate(): ..." } }));
+      .mockResolvedValue(
+        jsonResponse({ files: { "refusal.py": "def evaluate(): ..." } }),
+      );
 
     await evaluators.exportFiles("v1", "code", "split");
 
@@ -217,7 +233,9 @@ describe("export files client helpers", () => {
   it("evaluators.exportFiles json split GETs export.json with split=true", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse({ files: { "refusal.agent.json": "{}" } }));
+      .mockResolvedValue(
+        jsonResponse({ files: { "refusal.agent.json": "{}" } }),
+      );
 
     await evaluators.exportFiles("v1", "json", "split");
 
@@ -236,10 +254,15 @@ describe("export files client helpers", () => {
 
   it("evaluators.exportFiles surfaces a non-OK response as a rejection", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ error: { type: "NotFoundError", message: "no such version" } }, { status: 404 }),
+      jsonResponse(
+        { error: { type: "NotFoundError", message: "no such version" } },
+        { status: 404 },
+      ),
     );
 
-    const error = await evaluators.exportFiles("missing", "json", "bundled").catch((e) => e);
+    const error = await evaluators
+      .exportFiles("missing", "json", "bundled")
+      .catch((e) => e);
 
     expect(error).toBeInstanceOf(ApiError);
     if (!(error instanceof ApiError)) throw error;
@@ -250,7 +273,9 @@ describe("export files client helpers", () => {
   it("datasets.exportFiles code GETs export.py with no query params", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse({ files: { "refusal_dataset.py": "# ..." } }));
+      .mockResolvedValue(
+        jsonResponse({ files: { "refusal_dataset.py": "# ..." } }),
+      );
 
     await datasets.exportFiles("d1", "code", { layout: "bundled" });
 
@@ -266,9 +291,14 @@ describe("export files client helpers", () => {
     // "split" layout may surface as a query param on the "code" branch.
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse({ files: { "refusal_dataset.py": "# ..." } }));
+      .mockResolvedValue(
+        jsonResponse({ files: { "refusal_dataset.py": "# ..." } }),
+      );
 
-    await datasets.exportFiles("d1", "code", { versionId: "v1", layout: "split" });
+    await datasets.exportFiles("d1", "code", {
+      versionId: "v1",
+      layout: "split",
+    });
 
     const [url] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/datasets/d1/export.py");
@@ -282,7 +312,10 @@ describe("export files client helpers", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse({ files: { "refusal.json": "{}" } }));
 
-    await datasets.exportFiles("d1", "json", { versionId: "v1", layout: "bundled" });
+    await datasets.exportFiles("d1", "json", {
+      versionId: "v1",
+      layout: "bundled",
+    });
 
     const [url] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/datasets/d1/export.json?version_id=v1&split=false");
@@ -305,17 +338,24 @@ describe("export files client helpers", () => {
     const files = { "refusal.dataset.json": "{}" };
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ files }));
 
-    const result = await datasets.exportFiles("d1", "json", { layout: "bundled" });
+    const result = await datasets.exportFiles("d1", "json", {
+      layout: "bundled",
+    });
 
     expect(result).toEqual(files);
   });
 
   it("datasets.exportFiles surfaces a non-OK response as a rejection", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ error: { type: "NotFoundError", message: "no such dataset" } }, { status: 404 }),
+      jsonResponse(
+        { error: { type: "NotFoundError", message: "no such dataset" } },
+        { status: 404 },
+      ),
     );
 
-    const error = await datasets.exportFiles("missing", "json", { layout: "bundled" }).catch((e) => e);
+    const error = await datasets
+      .exportFiles("missing", "json", { layout: "bundled" })
+      .catch((e) => e);
 
     expect(error).toBeInstanceOf(ApiError);
     if (!(error instanceof ApiError)) throw error;
@@ -338,7 +378,9 @@ describe("manual CRUD helpers", () => {
   });
 
   it("evaluators.deleteVersion DELETEs /api/evaluators/versions/{vid}", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(noContentResponse());
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(noContentResponse());
 
     await evaluators.deleteVersion("ev1", "v1");
 
@@ -362,7 +404,9 @@ describe("manual CRUD helpers", () => {
 
   it("datasets.addRows POSTs {rows} to /api/datasets/{id}/rows and returns the rows", async () => {
     const created = [{ id: "r1" }, { id: "r2" }];
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(created));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(created));
 
     const rows = [{ text: "a" }, { text: "b" }];
     const result = await datasets.addRows("d1", rows);
@@ -375,7 +419,9 @@ describe("manual CRUD helpers", () => {
   });
 
   it("datasets.deleteRow DELETEs /api/datasets/rows/{rowId}", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(noContentResponse());
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(noContentResponse());
 
     await datasets.deleteRow("r1");
 
@@ -412,7 +458,9 @@ describe("seeded generation client helpers", () => {
     expect(url).toBe("/api/datasets/generate-from-version");
     expect(init?.method).toBe("POST");
     expect(init?.body).toBe(JSON.stringify(payload));
-    expect(new Headers(init?.headers).get("Content-Type")).toBe("application/json");
+    expect(new Headers(init?.headers).get("Content-Type")).toBe(
+      "application/json",
+    );
   });
 
   it("generateFromVersion omits optional fields left unset from the body", async () => {
@@ -442,7 +490,10 @@ describe("seeded generation client helpers", () => {
       count: 5,
     });
 
-    expect(result).toEqual({ dataset: { id: "d1", name: "Seeded" }, row_count: 5 });
+    expect(result).toEqual({
+      dataset: { id: "d1", name: "Seeded" },
+      row_count: 5,
+    });
   });
 
   it("datasets.generate still POSTs to /api/datasets/generate and forwards instructions", async () => {
@@ -453,7 +504,12 @@ describe("seeded generation client helpers", () => {
     const payload = {
       name: "Blank seeded",
       columns: ["input", "output"],
-      label_schema: { kind: "categorical" as const, labels: ["pass", "fail"], minimum: null, maximum: null },
+      label_schema: {
+        kind: "categorical" as const,
+        labels: ["pass", "fail"],
+        minimum: null,
+        maximum: null,
+      },
       instructions: "vary the tone",
       count: 4,
     };
@@ -467,9 +523,13 @@ describe("seeded generation client helpers", () => {
   });
 
   it("datasets.listLogfireHosted GETs /api/datasets/logfire-hosted", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse([{ id: "1", name: "qa-set", description: "Q&A", case_count: 12 }]),
-    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        jsonResponse([
+          { id: "1", name: "qa-set", description: "Q&A", case_count: 12 },
+        ]),
+      );
     await datasets.listLogfireHosted();
     expect(fetchMock.mock.calls[0][0]).toBe("/api/datasets/logfire-hosted");
   });
@@ -478,17 +538,24 @@ describe("seeded generation client helpers", () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse({ dataset: { id: "d1" }, row_count: 2 }));
-    await datasets.fromLogfireHosted({ source_name: "qa-set", name: "local-copy" });
+    await datasets.fromLogfireHosted({
+      source_name: "qa-set",
+      name: "local-copy",
+    });
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/datasets/from-logfire-hosted");
     expect(init?.method).toBe("POST");
-    expect(init?.body).toBe(JSON.stringify({ source_name: "qa-set", name: "local-copy" }));
+    expect(init?.body).toBe(
+      JSON.stringify({ source_name: "qa-set", name: "local-copy" }),
+    );
   });
 
   it("evaluators.generate forwards dataset_id and column_notes to /api/evaluators/generate", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse({ name: "Judge", required_columns: ["input"] }));
+      .mockResolvedValue(
+        jsonResponse({ name: "Judge", required_columns: ["input"] }),
+      );
 
     const payload = {
       criteria: "score for helpfulness",
@@ -511,7 +578,13 @@ describe("ApiError detail", () => {
   it("carries error.detail from a 409 ReferencedError body", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse(
-        { error: { type: "ReferencedError", message: "m", detail: { run_count: 4 } } },
+        {
+          error: {
+            type: "ReferencedError",
+            message: "m",
+            detail: { run_count: 4 },
+          },
+        },
         { status: 409 },
       ),
     );
@@ -561,7 +634,9 @@ describe("overview client helper", () => {
         finished_at: "2026-08-07T12:00:00Z",
       },
     };
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(body));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(body));
 
     const result = await overview.get();
 
@@ -667,7 +742,9 @@ describe("setup client helper", () => {
   };
 
   it("setup.get GETs /api/setup and returns the parsed SetupStatus with all four keys", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(body));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(body));
 
     const result = await setup.get();
 
@@ -684,7 +761,9 @@ describe("setup client helper", () => {
   });
 
   it("setup.save POSTs the payload to /api/setup", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(body));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(body));
 
     const result = await setup.save({ logfire_read_key: "lf-read" });
 
@@ -702,7 +781,9 @@ describe("setup client helper", () => {
       token: "lf-frontend-public",
       session_replay: true,
     };
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(frontend));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(frontend));
 
     const result = await setup.frontendTelemetry();
 
@@ -712,7 +793,10 @@ describe("setup client helper", () => {
 
   it("setup.get surfaces a non-OK response as a rejection", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ error: { type: "Error", message: "setup unavailable" } }, { status: 500 }),
+      jsonResponse(
+        { error: { type: "Error", message: "setup unavailable" } },
+        { status: 500 },
+      ),
     );
 
     const error = await setup.get().catch((e) => e);
@@ -724,7 +808,11 @@ describe("setup client helper", () => {
   });
 
   it("exposes get and save", () => {
-    expect(Object.keys(setup).sort()).toEqual(["frontendTelemetry", "get", "save"]);
+    expect(Object.keys(setup).sort()).toEqual([
+      "frontendTelemetry",
+      "get",
+      "save",
+    ]);
   });
 });
 
@@ -743,7 +831,9 @@ describe("dataset count fields", () => {
         labeled_count: 30,
       },
     ];
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(items));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(items));
 
     const result = await datasets.list();
 
@@ -772,7 +862,9 @@ describe("label set client helpers", () => {
         row_count: 5,
       },
     ];
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(items));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(items));
 
     const result = await labelSets.list("d1");
 
@@ -781,9 +873,21 @@ describe("label set client helpers", () => {
   });
 
   it("labelSets.create POSTs to /api/datasets/{id}/label-sets", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ id: "ls1", created_at: "2026-01-01T00:00:00Z", dataset_id: "d1", name: "quality", description: "", kind: "categorical", labels: [], minimum: null, maximum: null }),
-    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        jsonResponse({
+          id: "ls1",
+          created_at: "2026-01-01T00:00:00Z",
+          dataset_id: "d1",
+          name: "quality",
+          description: "",
+          kind: "categorical",
+          labels: [],
+          minimum: null,
+          maximum: null,
+        }),
+      );
 
     const body = { name: "quality", kind: "categorical" as const, labels: [] };
     await labelSets.create("d1", body);
@@ -795,13 +899,17 @@ describe("label set client helpers", () => {
   });
 
   it("labelSets.get GETs /api/label-sets/{id}", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ id: "ls1" }));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ id: "ls1" }));
     await labelSets.get("ls1");
     expect(fetchMock.mock.calls[0][0]).toBe("/api/label-sets/ls1");
   });
 
   it("labelSets.update PATCHes /api/label-sets/{id}", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ id: "ls1" }));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ id: "ls1" }));
     await labelSets.update("ls1", { name: "renamed" });
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/label-sets/ls1");
@@ -810,7 +918,9 @@ describe("label set client helpers", () => {
   });
 
   it("labelSets.remove DELETEs /api/label-sets/{id}", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(noContentResponse());
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(noContentResponse());
     await labelSets.remove("ls1");
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/label-sets/ls1");
@@ -818,17 +928,35 @@ describe("label set client helpers", () => {
   });
 
   it("labelSets.rows GETs /api/label-sets/{id}/rows with limit/offset", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ rows: [], total: 0, annotated_count: 0, limit: 100, offset: 0 }),
-    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        jsonResponse({
+          rows: [],
+          total: 0,
+          annotated_count: 0,
+          limit: 100,
+          offset: 0,
+        }),
+      );
     await labelSets.rows("ls1", { limit: 100, offset: 0 });
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/label-sets/ls1/rows?limit=100&offset=0");
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/label-sets/ls1/rows?limit=100&offset=0",
+    );
   });
 
   it("labelSets.rows GETs the bare path when no params are given", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ rows: [], total: 0, annotated_count: 0, limit: 100, offset: 0 }),
-    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        jsonResponse({
+          rows: [],
+          total: 0,
+          annotated_count: 0,
+          limit: 100,
+          offset: 0,
+        }),
+      );
     await labelSets.rows("ls1");
     expect(fetchMock.mock.calls[0][0]).toBe("/api/label-sets/ls1/rows");
   });
@@ -836,15 +964,32 @@ describe("label set client helpers", () => {
 
 describe("annotation client helpers", () => {
   it("annotations.get GETs the row's annotation", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(null));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(null));
     await annotations.get("ls1", "r1");
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/label-sets/ls1/rows/r1/annotation");
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/label-sets/ls1/rows/r1/annotation",
+    );
   });
 
   it("annotations.put PUTs the annotation body", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ id: "a1", label_set_id: "ls1", dataset_row_id: "r1", labels: ["good"], value: null, suggested_labels: null, suggested_value: null, source: "manual", reasoning: null, description: null }),
-    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        jsonResponse({
+          id: "a1",
+          label_set_id: "ls1",
+          dataset_row_id: "r1",
+          labels: ["good"],
+          value: null,
+          suggested_labels: null,
+          suggested_value: null,
+          source: "manual",
+          reasoning: null,
+          description: null,
+        }),
+      );
     const body = { labels: ["good"], value: null, description: null };
     await annotations.put("ls1", "r1", body);
     const [url, init] = fetchMock.mock.calls[0];
@@ -854,7 +999,9 @@ describe("annotation client helpers", () => {
   });
 
   it("annotations.remove DELETEs the annotation", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(noContentResponse());
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(noContentResponse());
     await annotations.remove("ls1", "r1");
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/label-sets/ls1/rows/r1/annotation");
@@ -862,9 +1009,22 @@ describe("annotation client helpers", () => {
   });
 
   it("annotations.accept POSTs to the accept endpoint", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ id: "a1", label_set_id: "ls1", dataset_row_id: "r1", labels: ["good"], value: null, suggested_labels: ["good"], suggested_value: null, source: "accepted", reasoning: null, description: null }),
-    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        jsonResponse({
+          id: "a1",
+          label_set_id: "ls1",
+          dataset_row_id: "r1",
+          labels: ["good"],
+          value: null,
+          suggested_labels: ["good"],
+          suggested_value: null,
+          source: "accepted",
+          reasoning: null,
+          description: null,
+        }),
+      );
     await annotations.accept("ls1", "r1");
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/label-sets/ls1/rows/r1/annotation/accept");
@@ -874,12 +1034,93 @@ describe("annotation client helpers", () => {
 
 describe("runs.coverage client helper", () => {
   it("GETs /api/runs/coverage with dataset_id and version_id", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ label_set_id: "ls1", total_rows: 10, labeled_rows: 6 }),
-    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        jsonResponse({ label_set_id: "ls1", total_rows: 10, labeled_rows: 6 }),
+      );
     const result = await runs.coverage("d1", "v1");
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/runs/coverage?dataset_id=d1&version_id=v1");
-    expect(result).toEqual({ label_set_id: "ls1", total_rows: 10, labeled_rows: 6 });
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/runs/coverage?dataset_id=d1&version_id=v1",
+    );
+    expect(result).toEqual({
+      label_set_id: "ls1",
+      total_rows: 10,
+      labeled_rows: 6,
+    });
+  });
+});
+
+describe("runs.create derivation client helper", () => {
+  it("forwards derivation_id when creating an evaluator run over a derivation", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ id: "run1" }));
+    const payload = {
+      kind: "eval",
+      version_id: "ev1",
+      dataset_id: "ds1",
+      derivation_id: "der1",
+    };
+
+    await runs.create({
+      kind: "eval",
+      version_id: "ev1",
+      dataset_id: "ds1",
+      derivation_id: "der1",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/runs");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe(JSON.stringify(payload));
+  });
+
+  it("omits derivation_id when creating a run on the base dataset", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ id: "run1" }));
+    const payload = {
+      kind: "validation",
+      version_id: "ev1",
+      dataset_id: "ds1",
+    };
+
+    await runs.create(payload);
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init?.body).toBe(JSON.stringify(payload));
+    expect(JSON.parse(init?.body as string)).not.toHaveProperty(
+      "derivation_id",
+    );
+  });
+});
+
+describe("derivation run DTO types", () => {
+  it("exposes derivation state and typed scored/skipped metrics", () => {
+    const run: Run = {
+      id: "run1",
+      created_at: "2026-09-02T00:00:00Z",
+      kind: "derive",
+      version_id: "av1",
+      dataset_id: "ds1",
+      derivation_id: "der1",
+      status: "completed",
+      concurrency: 1,
+      started_at: "2026-09-02T00:00:00Z",
+      finished_at: "2026-09-02T00:01:00Z",
+      metrics: { scored: 3, skipped: { error: 1 } },
+      error: null,
+      cancel_requested: false,
+    };
+    const metrics = run.metrics!;
+    const derivationId: string | null = run.derivation_id;
+    const scored: number = metrics.scored;
+    const skipped: Record<string, number> = metrics.skipped;
+
+    expect(derivationId).toBe("der1");
+    expect(scored).toBe(3);
+    expect(skipped).toEqual({ error: 1 });
   });
 });
 
@@ -912,7 +1153,9 @@ describe("agents client helpers", () => {
   };
 
   it("agents.list GETs /api/agents and returns the parsed body", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse([agentSummary]));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse([agentSummary]));
 
     const result = await agents.list();
 
@@ -923,20 +1166,29 @@ describe("agents client helpers", () => {
   });
 
   it("agents.create POSTs JSON to /api/agents", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(agentSummary));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(agentSummary));
 
-    const body = { name: "Support triager", description: "Classifies incoming tickets" };
+    const body = {
+      name: "Support triager",
+      description: "Classifies incoming tickets",
+    };
     await agents.create(body);
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/agents");
     expect(init?.method).toBe("POST");
     expect(init?.body).toBe(JSON.stringify(body));
-    expect(new Headers(init?.headers).get("Content-Type")).toBe("application/json");
+    expect(new Headers(init?.headers).get("Content-Type")).toBe(
+      "application/json",
+    );
   });
 
   it("agents.create omits an unset description from the body", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(agentSummary));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(agentSummary));
 
     await agents.create({ name: "Support triager" });
 
@@ -945,8 +1197,13 @@ describe("agents client helpers", () => {
   });
 
   it("agents.get GETs /api/agents/{id} and returns an AgentDetail envelope", async () => {
-    const detail: AgentDetail = { agent: agentSummary, versions: [agentVersion] };
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(detail));
+    const detail: AgentDetail = {
+      agent: agentSummary,
+      versions: [agentVersion],
+    };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(detail));
 
     const result = await agents.get("a1");
 
@@ -968,7 +1225,9 @@ describe("agents client helpers", () => {
   });
 
   it("agents.remove DELETEs /api/agents/{id}", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(noContentResponse());
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(noContentResponse());
 
     await agents.remove("a1");
 
@@ -978,7 +1237,9 @@ describe("agents client helpers", () => {
   });
 
   it("agents.listVersions GETs /api/agents/{id}/versions", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse([agentVersion]));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse([agentVersion]));
 
     const result = await agents.listVersions("a1");
 
@@ -987,7 +1248,9 @@ describe("agents client helpers", () => {
   });
 
   it("agents.createVersion POSTs the full body to /api/agents/{id}/versions", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(agentVersion));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(agentVersion));
 
     const body = {
       version_name: "v1",
@@ -1006,7 +1269,9 @@ describe("agents client helpers", () => {
   });
 
   it("agents.createVersion omits optional fields left unset from the body", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(agentVersion));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(agentVersion));
 
     const body = {
       version_name: "v1",
@@ -1029,7 +1294,9 @@ describe("agents client helpers", () => {
   });
 
   it("agents.updateVersion PATCHes /api/agents/versions/{vid} with no agent id", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(agentVersion));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(agentVersion));
 
     await agents.updateVersion("av1", { notes: "tweak" });
 
@@ -1055,7 +1322,9 @@ describe("agents client helpers", () => {
   it("agents.copyVersion POSTs {version_name} to /api/agents/versions/{vid}/copy", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse({ ...agentVersion, id: "av2", version_name: "v2" }));
+      .mockResolvedValue(
+        jsonResponse({ ...agentVersion, id: "av2", version_name: "v2" }),
+      );
 
     await agents.copyVersion("av1", "v2");
 
@@ -1066,7 +1335,9 @@ describe("agents client helpers", () => {
   });
 
   it("agents.removeVersion DELETEs /api/agents/versions/{vid}", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(noContentResponse());
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(noContentResponse());
 
     await agents.removeVersion("av1");
 
@@ -1076,8 +1347,13 @@ describe("agents client helpers", () => {
   });
 
   it("agents.exportVersion GETs /api/agents/versions/{vid}/export", async () => {
-    const exportBody: AgentSpecExport = { filename: "triager.agent.json", content: "{}" };
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(exportBody));
+    const exportBody: AgentSpecExport = {
+      filename: "triager.agent.json",
+      content: "{}",
+    };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(exportBody));
 
     const result = await agents.exportVersion("av1");
 
@@ -1095,14 +1371,18 @@ describe("agents client helpers", () => {
       required_columns: ["input"],
       deps_mapping: {},
     };
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(importBody));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(importBody));
 
     const result = await agents.importSpec("name: triager", "yaml");
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/agents/import");
     expect(init?.method).toBe("POST");
-    expect(init?.body).toBe(JSON.stringify({ content: "name: triager", format: "yaml" }));
+    expect(init?.body).toBe(
+      JSON.stringify({ content: "name: triager", format: "yaml" }),
+    );
     expect(result).toEqual(importBody);
   });
 
@@ -1116,7 +1396,9 @@ describe("agents client helpers", () => {
       usage: { input_tokens: 10, output_tokens: 5 },
       error: null,
     };
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(trialResult));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(trialResult));
 
     const body = { row_id: "r1" };
     const result = await agents.trial("av1", body);
@@ -1145,55 +1427,74 @@ describe("agents client helpers", () => {
     expect(result.error).toBe("model timed out");
   });
 
-  it("agents.saveDerivation POSTs to /api/agents/versions/{vid}/derivations", async () => {
-    const derivation: Derivation = {
-      id: "d1",
-      created_at: "2026-09-02T00:00:00Z",
-      dataset_id: "ds1",
-      dataset_name: "Support tickets",
-      agent_version_id: "av1",
-      agent_name: "Support triager",
-      version_name: "v1",
-      ordinal: 1,
-      response_columns: ["label"],
-      response_count: 2,
-    };
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(derivation));
+  const derivation: Derivation = {
+    id: "d1",
+    created_at: "2026-09-02T00:00:00Z",
+    dataset_id: "ds1",
+    dataset_name: "Support tickets",
+    agent_version_id: "av1",
+    agent_name: "Support triager",
+    version_name: "v1",
+    ordinal: 1,
+    response_columns: ["label"],
+    response_count: 2,
+    state: "staged",
+  };
 
-    const body = {
-      dataset_id: "ds1",
-      entries: [
-        { row_id: "r1", data: { label: "billing" }, latency_ms: 100, usage: null, error: null },
-        { row_id: "r2", data: { label: "sales" }, latency_ms: 90, usage: null, error: null },
-      ],
-    };
-    const result = await agents.saveDerivation("av1", body);
+  it("agents.saveDerivation POSTs to the derivation save endpoint and returns it", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(derivation));
+
+    const result = await agents.saveDerivation("d1");
 
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("/api/agents/versions/av1/derivations");
+    expect(url).toBe("/api/agents/derivations/d1/save");
     expect(init?.method).toBe("POST");
-    expect(init?.body).toBe(JSON.stringify(body));
+    expect(init?.body).toBeUndefined();
     expect(result).toEqual(derivation);
   });
 
+  it("agents.deleteDerivation DELETEs a derivation and resolves without a body", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(noContentResponse());
+
+    await expect(agents.deleteDerivation("d1")).resolves.toBeUndefined();
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents/derivations/d1");
+    expect(init?.method).toBe("DELETE");
+  });
+
   it("agents.listDerivations produces ?dataset_id=<id> when only datasetId is given", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse([]));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse([]));
 
     await agents.listDerivations({ datasetId: "d1" });
 
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/agents/derivations?dataset_id=d1");
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/agents/derivations?dataset_id=d1",
+    );
   });
 
   it("agents.listDerivations produces ?agent_version_id=<id> when only agentVersionId is given", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse([]));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse([]));
 
     await agents.listDerivations({ agentVersionId: "av1" });
 
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/agents/derivations?agent_version_id=av1");
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/agents/derivations?agent_version_id=av1",
+    );
   });
 
   it("agents.listDerivations combines both params when both are given", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse([]));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse([]));
 
     await agents.listDerivations({ datasetId: "d1", agentVersionId: "av1" });
 
@@ -1202,8 +1503,33 @@ describe("agents client helpers", () => {
     );
   });
 
+  it("agents.listDerivations includes staged derivations only when requested", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse([derivation]));
+
+    await agents.listDerivations({ includeStaged: true });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/agents/derivations?include_staged=true",
+    );
+  });
+
+  it("agents.listDerivations omits include_staged when false", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse([]));
+
+    await agents.listDerivations({ includeStaged: false });
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/agents/derivations");
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain("include_staged");
+  });
+
   it("agents.listDerivations produces no query string at all when given {}", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse([]));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse([]));
 
     await agents.listDerivations({});
 
@@ -1215,10 +1541,18 @@ describe("agents client helpers", () => {
     const page: DerivedRowsPage = {
       columns: ["input", "label"],
       rows: [
-        { row_id: "r1", idx: 0, data: { input: "hi", label: "billing" }, latency_ms: 100, error: null },
+        {
+          row_id: "r1",
+          idx: 0,
+          data: { input: "hi", label: "billing" },
+          latency_ms: 100,
+          error: null,
+        },
       ],
     };
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(page));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(page));
 
     const result = await agents.derivedRows("d1");
 
@@ -1228,7 +1562,10 @@ describe("agents client helpers", () => {
 
   it("agents.get surfaces a non-OK response as an ApiError carrying the server's message", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ error: { type: "NotFoundError", message: "no such agent" } }, { status: 404 }),
+      jsonResponse(
+        { error: { type: "NotFoundError", message: "no such agent" } },
+        { status: 404 },
+      ),
     );
 
     const error = await agents.get("missing").catch((e) => e);
