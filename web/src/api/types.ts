@@ -3,7 +3,8 @@
 
 export type ScoreKind = "categorical" | "numeric";
 export type LabelSource = "manual" | "accepted" | "generated";
-export type RunKind = "validation" | "eval";
+export type RunKind = "validation" | "eval" | "derive";
+export type DerivationState = "staged" | "saved";
 export type RunStatus =
   | "pending"
   | "running"
@@ -229,6 +230,7 @@ export type Derivation = {
   ordinal: number;
   response_columns: string[];
   response_count: number;
+  state?: DerivationState;
 };
 
 // A saved response joined to its original dataset row for display.
@@ -341,20 +343,39 @@ export interface RunCoverage {
   labeled_rows: number;
 }
 
-export interface Run {
+// A derivation run always records how many rows were scored or skipped. Keeping the
+// remaining entries open preserves the existing evaluator metric contracts.
+export type DerivationRunMetrics = Record<string, unknown> & {
+  scored: number;
+  skipped: Record<string, number>;
+};
+
+interface RunBase {
   id: string;
   created_at: string;
-  kind: RunKind;
   version_id: string;
   dataset_id: string;
   status: RunStatus;
   concurrency: number;
   started_at: string | null;
   finished_at: string | null;
-  metrics: Record<string, unknown> | null;
   error: string | null;
   cancel_requested: boolean;
 }
+
+// The derivation kind narrows metrics for consumers that need the response-skip
+// tally, while validation and evaluation runs retain their pre-existing metrics.
+export type Run =
+  | (RunBase & {
+      kind: "derive";
+      derivation_id: string | null;
+      metrics: DerivationRunMetrics | null;
+    })
+  | (RunBase & {
+      kind: "validation" | "eval";
+      derivation_id?: string | null;
+      metrics: Record<string, unknown> | null;
+    });
 
 export interface RunResult {
   id: string;

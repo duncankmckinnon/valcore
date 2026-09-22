@@ -84,7 +84,8 @@ export class ApiError extends Error {
 
 async function parseError(response: Response): Promise<ApiError> {
   let type = "Error";
-  let message = response.statusText || `Request failed with status ${response.status}`;
+  let message =
+    response.statusText || `Request failed with status ${response.status}`;
   let detail: Record<string, unknown> | null = null;
   try {
     const body = await response.json();
@@ -101,7 +102,11 @@ async function parseError(response: Response): Promise<ApiError> {
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
-  if (init?.body !== undefined && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
+  if (
+    init?.body !== undefined &&
+    !(init.body instanceof FormData) &&
+    !headers.has("Content-Type")
+  ) {
     headers.set("Content-Type", "application/json");
   }
   const response = await fetch(path, { ...init, headers });
@@ -128,19 +133,32 @@ export const evaluators = {
   create: (data: { name: string; description?: string }) =>
     api<Evaluator>("/api/evaluators", { method: "POST", ...jsonBody(data) }),
   update: (id: string, data: EvaluatorUpdate) =>
-    api<Evaluator>(`/api/evaluators/${id}`, { method: "PATCH", ...jsonBody(data) }),
-  remove: (id: string) => api<void>(`/api/evaluators/${id}`, { method: "DELETE" }),
+    api<Evaluator>(`/api/evaluators/${id}`, {
+      method: "PATCH",
+      ...jsonBody(data),
+    }),
+  remove: (id: string) =>
+    api<void>(`/api/evaluators/${id}`, { method: "DELETE" }),
   createVersion: (id: string, data: Partial<EvaluatorVersion>) =>
-    api<EvaluatorVersion>(`/api/evaluators/${id}/versions`, { method: "POST", ...jsonBody(data) }),
+    api<EvaluatorVersion>(`/api/evaluators/${id}/versions`, {
+      method: "POST",
+      ...jsonBody(data),
+    }),
   // The version routes are keyed by version id alone; there is no evaluator-id
   // segment. `id` is kept only so existing callers keep their arity.
-  updateVersion: (_id: string, versionId: string, data: Partial<EvaluatorVersion>) =>
+  updateVersion: (
+    _id: string,
+    versionId: string,
+    data: Partial<EvaluatorVersion>,
+  ) =>
     api<EvaluatorVersion>(`/api/evaluators/versions/${versionId}`, {
       method: "PATCH",
       ...jsonBody(data),
     }),
   copyVersion: (_id: string, versionId: string) =>
-    api<EvaluatorVersion>(`/api/evaluators/versions/${versionId}/copy`, { method: "POST" }),
+    api<EvaluatorVersion>(`/api/evaluators/versions/${versionId}/copy`, {
+      method: "POST",
+    }),
   deleteVersion: (_id: string, versionId: string) =>
     api<void>(`/api/evaluators/versions/${versionId}`, { method: "DELETE" }),
   generate: (data: {
@@ -155,9 +173,20 @@ export const evaluators = {
     // Prescribes the score space instead of inheriting the dataset's. Sending one makes the
     // evaluator EVAL-only against that dataset, since validation compares the label sets.
     label_schema?: LabelSchema;
-  }) => api<GeneratedConfig>("/api/evaluators/generate", { method: "POST", ...jsonBody(data) }),
-  refine: (data: { config: GeneratedConfig; instruction: string; model?: string }) =>
-    api<RefinedConfig>("/api/evaluators/refine", { method: "POST", ...jsonBody(data) }),
+  }) =>
+    api<GeneratedConfig>("/api/evaluators/generate", {
+      method: "POST",
+      ...jsonBody(data),
+    }),
+  refine: (data: {
+    config: GeneratedConfig;
+    instruction: string;
+    model?: string;
+  }) =>
+    api<RefinedConfig>("/api/evaluators/refine", {
+      method: "POST",
+      ...jsonBody(data),
+    }),
   exportScript: async (_id: string, versionId: string) => {
     const response = await api<ExportResponse>(
       `/api/evaluators/versions/${versionId}/export`,
@@ -166,7 +195,11 @@ export const evaluators = {
   },
   // "code" is the single-file Python script and carries no layout param; only the
   // JSON package distinguishes bundled from split via `split`.
-  exportFiles: async (versionId: string, format: ExportFormat, layout: ExportLayout) => {
+  exportFiles: async (
+    versionId: string,
+    format: ExportFormat,
+    layout: ExportLayout,
+  ) => {
     const base = `/api/evaluators/versions/${versionId}`;
     const path =
       format === "code"
@@ -180,13 +213,21 @@ export const evaluators = {
 export const datasets = {
   list: () => api<DatasetSummary[]>("/api/datasets"),
   get: (id: string) => api<Dataset>(`/api/datasets/${id}`),
-  create: (data: { name: string; description?: string; columns: string[]; label_schema?: LabelSchema }) =>
-    api<Dataset>("/api/datasets", { method: "POST", ...jsonBody(data) }),
+  create: (data: {
+    name: string;
+    description?: string;
+    columns: string[];
+    label_schema?: LabelSchema;
+  }) => api<Dataset>("/api/datasets", { method: "POST", ...jsonBody(data) }),
   update: (id: string, data: DatasetUpdate) =>
     api<Dataset>(`/api/datasets/${id}`, { method: "PATCH", ...jsonBody(data) }),
-  remove: (id: string) => api<void>(`/api/datasets/${id}`, { method: "DELETE" }),
+  remove: (id: string) =>
+    api<void>(`/api/datasets/${id}`, { method: "DELETE" }),
   addRows: (id: string, rows: Record<string, unknown>[]) =>
-    api<DatasetRow[]>(`/api/datasets/${id}/rows`, { method: "POST", ...jsonBody({ rows }) }),
+    api<DatasetRow[]>(`/api/datasets/${id}/rows`, {
+      method: "POST",
+      ...jsonBody({ rows }),
+    }),
   deleteRow: (rowId: string) =>
     api<void>(`/api/datasets/rows/${rowId}`, { method: "DELETE" }),
   upload: (form: FormData) =>
@@ -200,15 +241,23 @@ export const datasets = {
     instructions?: string;
     label_mix?: LabelMix;
     count: number;
-  }) => api<DatasetCreated>("/api/datasets/generate", { method: "POST", ...jsonBody(data) }),
+  }) =>
+    api<DatasetCreated>("/api/datasets/generate", {
+      method: "POST",
+      ...jsonBody(data),
+    }),
   generateFromVersion: (data: DatasetGenerateFromVersion) =>
     api<DatasetCreated>("/api/datasets/generate-from-version", {
       method: "POST",
       ...jsonBody(data),
     }),
   fromLogfire: (data: DatasetFromLogfire) =>
-    api<DatasetCreated>("/api/datasets/from-logfire", { method: "POST", ...jsonBody(data) }),
-  listLogfireHosted: () => api<HostedDatasetSummary[]>("/api/datasets/logfire-hosted"),
+    api<DatasetCreated>("/api/datasets/from-logfire", {
+      method: "POST",
+      ...jsonBody(data),
+    }),
+  listLogfireHosted: () =>
+    api<HostedDatasetSummary[]>("/api/datasets/logfire-hosted"),
   fromLogfireHosted: (data: DatasetFromLogfireHosted) =>
     api<DatasetCreated>("/api/datasets/from-logfire-hosted", {
       method: "POST",
@@ -217,7 +266,10 @@ export const datasets = {
   logfirePull: (id: string) =>
     api<DatasetLogfirePull | null>(`/api/datasets/${id}/logfire-pull`),
   pullMoreFromLogfire: (id: string, data: RowsLogfirePull = {}) =>
-    api<DatasetRow[]>(`/api/datasets/${id}/logfire-pull`, { method: "POST", ...jsonBody(data) }),
+    api<DatasetRow[]>(`/api/datasets/${id}/logfire-pull`, {
+      method: "POST",
+      ...jsonBody(data),
+    }),
   hostedFetch: (id: string) =>
     api<DatasetHostedFetch | null>(`/api/datasets/${id}/hosted-fetch`),
   pullMoreFromLogfireHosted: (id: string) =>
@@ -233,14 +285,20 @@ export const datasets = {
   rows: (id: string, params?: { limit?: number; offset?: number }) => {
     const query = new URLSearchParams();
     if (params?.limit !== undefined) query.set("limit", String(params.limit));
-    if (params?.offset !== undefined) query.set("offset", String(params.offset));
+    if (params?.offset !== undefined)
+      query.set("offset", String(params.offset));
     const suffix = query.toString();
-    return api<RowsPage>(`/api/datasets/${id}/rows${suffix ? `?${suffix}` : ""}`);
+    return api<RowsPage>(
+      `/api/datasets/${id}/rows${suffix ? `?${suffix}` : ""}`,
+    );
   },
   // The API patches a row's own data by row id alone; there is no dataset-id path
   // segment, and it never touches annotations (those go through the `annotations` group).
   patchRowData: (rowId: string, data: RowDataUpdate) =>
-    api<DatasetRow>(`/api/datasets/rows/${rowId}`, { method: "PATCH", ...jsonBody(data) }),
+    api<DatasetRow>(`/api/datasets/rows/${rowId}`, {
+      method: "PATCH",
+      ...jsonBody(data),
+    }),
   stats: (id: string) => api<DatasetStats>(`/api/datasets/${id}/stats`),
   // "code" emits the Python module with no query params; "json" threads an optional
   // `version_id` (omitted entirely when absent) and the `split` layout flag.
@@ -259,7 +317,10 @@ export const datasets = {
     const response = await api<ExportFilesResponse>(path);
     return response.files;
   },
-  logfirePush: (id: string, body: { name?: string; description?: string } = {}) =>
+  logfirePush: (
+    id: string,
+    body: { name?: string; description?: string } = {},
+  ) =>
     api<LogfirePushResult>(`/api/datasets/${id}/logfire/push`, {
       method: "POST",
       ...jsonBody(body),
@@ -313,18 +374,26 @@ export const agents = {
       method: "POST",
       ...jsonBody(data),
     }),
-  saveDerivation: (vid: string, data: DerivationSave) =>
-    api<Derivation>(`/api/agents/versions/${vid}/derivations`, {
-      method: "POST",
-      ...jsonBody(data),
-    }),
+  saveDerivation: (id: string, data?: DerivationSave) =>
+    data
+      ? api<Derivation>(`/api/agents/versions/${id}/derivations`, {
+          method: "POST",
+          ...jsonBody(data),
+        })
+      : api<Derivation>(`/api/agents/derivations/${id}/save`, {
+          method: "POST",
+        }),
+  deleteDerivation: (id: string) =>
+    api<void>(`/api/agents/derivations/${id}`, { method: "DELETE" }),
   listDerivations: (params: {
     datasetId?: string;
     agentVersionId?: string;
+    includeStaged?: boolean;
   }) => {
     const q = new URLSearchParams();
     if (params.datasetId) q.set("dataset_id", params.datasetId);
     if (params.agentVersionId) q.set("agent_version_id", params.agentVersionId);
+    if (params.includeStaged) q.set("include_staged", "true");
     const qs = q.toString();
     return api<Derivation[]>(`/api/agents/derivations${qs ? `?${qs}` : ""}`);
   },
@@ -333,36 +402,54 @@ export const agents = {
 };
 
 export const labelSets = {
-  list: (datasetId: string) => api<LabelSetProgress[]>(`/api/datasets/${datasetId}/label-sets`),
+  list: (datasetId: string) =>
+    api<LabelSetProgress[]>(`/api/datasets/${datasetId}/label-sets`),
   create: (datasetId: string, data: LabelSetCreate) =>
-    api<LabelSet>(`/api/datasets/${datasetId}/label-sets`, { method: "POST", ...jsonBody(data) }),
+    api<LabelSet>(`/api/datasets/${datasetId}/label-sets`, {
+      method: "POST",
+      ...jsonBody(data),
+    }),
   get: (id: string) => api<LabelSet>(`/api/label-sets/${id}`),
   update: (id: string, data: LabelSetUpdate) =>
-    api<LabelSet>(`/api/label-sets/${id}`, { method: "PATCH", ...jsonBody(data) }),
-  remove: (id: string) => api<void>(`/api/label-sets/${id}`, { method: "DELETE" }),
+    api<LabelSet>(`/api/label-sets/${id}`, {
+      method: "PATCH",
+      ...jsonBody(data),
+    }),
+  remove: (id: string) =>
+    api<void>(`/api/label-sets/${id}`, { method: "DELETE" }),
   rows: (id: string, params?: { limit?: number; offset?: number }) => {
     const query = new URLSearchParams();
     if (params?.limit !== undefined) query.set("limit", String(params.limit));
-    if (params?.offset !== undefined) query.set("offset", String(params.offset));
+    if (params?.offset !== undefined)
+      query.set("offset", String(params.offset));
     const suffix = query.toString();
-    return api<AnnotationRowsPage>(`/api/label-sets/${id}/rows${suffix ? `?${suffix}` : ""}`);
+    return api<AnnotationRowsPage>(
+      `/api/label-sets/${id}/rows${suffix ? `?${suffix}` : ""}`,
+    );
   },
 };
 
 export const annotations = {
   get: (labelSetId: string, rowId: string) =>
-    api<Annotation | null>(`/api/label-sets/${labelSetId}/rows/${rowId}/annotation`),
+    api<Annotation | null>(
+      `/api/label-sets/${labelSetId}/rows/${rowId}/annotation`,
+    ),
   put: (labelSetId: string, rowId: string, data: AnnotationPut) =>
     api<Annotation>(`/api/label-sets/${labelSetId}/rows/${rowId}/annotation`, {
       method: "PUT",
       ...jsonBody(data),
     }),
   remove: (labelSetId: string, rowId: string) =>
-    api<void>(`/api/label-sets/${labelSetId}/rows/${rowId}/annotation`, { method: "DELETE" }),
-  accept: (labelSetId: string, rowId: string) =>
-    api<Annotation>(`/api/label-sets/${labelSetId}/rows/${rowId}/annotation/accept`, {
-      method: "POST",
+    api<void>(`/api/label-sets/${labelSetId}/rows/${rowId}/annotation`, {
+      method: "DELETE",
     }),
+  accept: (labelSetId: string, rowId: string) =>
+    api<Annotation>(
+      `/api/label-sets/${labelSetId}/rows/${rowId}/annotation/accept`,
+      {
+        method: "POST",
+      },
+    ),
 };
 
 export const overview = {
@@ -384,6 +471,7 @@ export const runs = {
     kind: string;
     version_id: string;
     dataset_id: string;
+    derivation_id?: string;
     concurrency?: number;
     // Engine, not kind: drives pydantic-evals so the run lands in Logfire's experiments
     // view. Cannot be cancelled, since `Dataset.evaluate` has no cancellation.
@@ -391,20 +479,32 @@ export const runs = {
   }) => api<Run>("/api/runs", { method: "POST", ...jsonBody(data) }),
   results: (
     id: string,
-    params?: { only_disagreements?: boolean; only_errors?: boolean; limit?: number; offset?: number },
+    params?: {
+      only_disagreements?: boolean;
+      only_errors?: boolean;
+      limit?: number;
+      offset?: number;
+    },
   ) => {
     const query = new URLSearchParams();
     if (params?.only_disagreements) query.set("only_disagreements", "true");
     if (params?.only_errors) query.set("only_errors", "true");
     if (params?.limit !== undefined) query.set("limit", String(params.limit));
-    if (params?.offset !== undefined) query.set("offset", String(params.offset));
+    if (params?.offset !== undefined)
+      query.set("offset", String(params.offset));
     const suffix = query.toString();
-    return api<ResultsPage>(`/api/runs/${id}/results${suffix ? `?${suffix}` : ""}`);
+    return api<ResultsPage>(
+      `/api/runs/${id}/results${suffix ? `?${suffix}` : ""}`,
+    );
   },
-  cancel: (id: string) => api<Run>(`/api/runs/${id}/cancel`, { method: "POST" }),
-  retryFailed: (id: string) => api<Run>(`/api/runs/${id}/retry-failed`, { method: "POST" }),
+  cancel: (id: string) =>
+    api<Run>(`/api/runs/${id}/cancel`, { method: "POST" }),
+  retryFailed: (id: string) =>
+    api<Run>(`/api/runs/${id}/retry-failed`, { method: "POST" }),
   compare: (a: string, b: string) =>
-    api<CompareOut>(`/api/runs/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`),
+    api<CompareOut>(
+      `/api/runs/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`,
+    ),
   coverage: (datasetId: string, versionId: string) =>
     api<RunCoverage>(
       `/api/runs/coverage?dataset_id=${encodeURIComponent(datasetId)}&version_id=${encodeURIComponent(versionId)}`,
@@ -412,7 +512,10 @@ export const runs = {
   // The API streams *named* SSE events (`status`, `started`, `row`, `finished`, ...),
   // so we attach a listener per name and fold the event name into the payload as
   // `type`. `onmessage` alone would silently miss every named event.
-  streamEvents: (runId: string, onEvent: (event: RunStreamEvent) => void): (() => void) => {
+  streamEvents: (
+    runId: string,
+    onEvent: (event: RunStreamEvent) => void,
+  ): (() => void) => {
     const source = new EventSource(`/api/runs/${runId}/events`);
     const types: RunStreamEvent["type"][] = [
       "status",
