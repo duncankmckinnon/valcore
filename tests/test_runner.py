@@ -12,6 +12,7 @@ import pytest
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.test import TestModel
 
 from valcore import tracing
 from valcore.errors import ContractError
@@ -522,6 +523,29 @@ async def test_derive_run_stages_one_response_per_dataset_row(store: Store) -> N
     assert {response.dataset_row_id for response in responses} == {row.id for row in rows}
     assert all(response.data["response"].startswith("answer") for response in responses)
     assert store.list_results(run.id) == []
+
+
+@pytest.mark.anyio
+async def test_derive_run_persists_normal_agent_result(store: Store) -> None:
+    """A normal agent result uses its response payload rather than the test-double fallback."""
+    dataset = store.create_dataset("inputs", "", ["input"])
+    row = store.add_rows(dataset.id, [{"input": "hello"}])[0]
+    version = make_agent_version(store)
+    derivation = store.create_staged_derivation(
+        dataset_id=dataset.id, agent_version_id=version.id, response_columns=["response"]
+    )
+    run = store.create_run(RunKind.DERIVE, version.id, dataset.id, concurrency=1)
+    store.link_run_derivation(run.id, derivation.id, DerivationRole.FILLS)
+
+    result = await execute_run(store, run.id, agent=Agent(TestModel(), output_type=str))
+
+    responses = store.list_agent_responses(derivation.id)
+    assert result.status is RunStatus.COMPLETED
+    assert len(responses) == 1
+    assert responses[0].dataset_row_id == row.id
+    assert responses[0].data["response"]
+    assert responses[0].usage is not None
+    assert responses[0].error is None
 
 
 @pytest.mark.anyio
