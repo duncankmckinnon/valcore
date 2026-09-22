@@ -3,19 +3,36 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { datasets, evaluators, runs } from "../api/client";
-import type { Dataset, Evaluator, EvaluatorVersion, Run, RunStatus } from "../api/types";
+import { agents, datasets, evaluators, runs } from "../api/client";
+import type {
+  Dataset,
+  Derivation,
+  Evaluator,
+  EvaluatorVersion,
+  Run,
+  RunStatus,
+} from "../api/types";
 import { EmptyState } from "../components/EmptyState";
 import { RunIcon } from "../components/icons";
 import { PageHeader } from "../components/PageHeader";
 import RunLauncher from "../components/RunLauncher";
-import { Badge, Button, ErrorBanner, Modal, Spinner, Table } from "../components/ui";
+import {
+  Badge,
+  Button,
+  ErrorBanner,
+  Modal,
+  Spinner,
+  Table,
+} from "../components/ui";
 import ComparePage from "./ComparePage";
 import RunDetail from "./RunDetail";
 
 type EvaluatorWithVersions = Evaluator & { versions: EvaluatorVersion[] };
 
-const STATUS_TONE: Record<RunStatus, "neutral" | "success" | "warning" | "danger"> = {
+const STATUS_TONE: Record<
+  RunStatus,
+  "neutral" | "success" | "warning" | "danger"
+> = {
   pending: "neutral",
   running: "neutral",
   completed: "success",
@@ -26,8 +43,10 @@ const STATUS_TONE: Record<RunStatus, "neutral" | "success" | "warning" | "danger
 
 function headlineMetric(metrics: Record<string, unknown> | null): string {
   if (!metrics) return "—";
-  if (typeof metrics.accuracy === "number") return `acc ${(metrics.accuracy * 100).toFixed(0)}%`;
+  if (typeof metrics.accuracy === "number")
+    return `acc ${(metrics.accuracy * 100).toFixed(0)}%`;
   if (typeof metrics.mae === "number") return `MAE ${metrics.mae.toFixed(2)}`;
+  if (typeof metrics.scored === "number") return `${metrics.scored} rows`;
   return "—";
 }
 
@@ -47,6 +66,9 @@ function RunsList() {
   const navigate = useNavigate();
   const [runList, setRunList] = useState<Run[] | null>(null);
   const [versionNames, setVersionNames] = useState<Record<string, string>>({});
+  const [derivations, setDerivations] = useState<Record<string, Derivation>>(
+    {},
+  );
   const [datasetNames, setDatasetNames] = useState<Record<string, string>>({});
   const [error, setError] = useState<unknown>(null);
   const [launching, setLaunching] = useState(false);
@@ -55,7 +77,11 @@ function RunsList() {
     runs.list().then(setRunList).catch(setError);
     datasets
       .list()
-      .then((all) => setDatasetNames(Object.fromEntries(all.map((d: Dataset) => [d.id, d.name]))))
+      .then((all) =>
+        setDatasetNames(
+          Object.fromEntries(all.map((d: Dataset) => [d.id, d.name])),
+        ),
+      )
       .catch(setError);
     // Resolve each version id to "<evaluator> / <version>" by loading every evaluator's
     // versions once. Cheap at the single-user scale this tool targets.
@@ -63,7 +89,10 @@ function RunsList() {
       .list()
       .then(async (all) => {
         const details = await Promise.all(
-          all.map((e) => evaluators.get(e.id) as unknown as Promise<EvaluatorWithVersions>),
+          all.map(
+            (e) =>
+              evaluators.get(e.id) as unknown as Promise<EvaluatorWithVersions>,
+          ),
         );
         const names: Record<string, string> = {};
         for (const detail of details) {
@@ -73,6 +102,14 @@ function RunsList() {
         }
         setVersionNames(names);
       })
+      .catch(setError);
+    // Staged derivations are attached to completed derive runs before the user saves
+    // them, so the run index deliberately includes them in its contract lookup.
+    agents
+      .listDerivations({ includeStaged: true })
+      .then((all) =>
+        setDerivations(Object.fromEntries(all.map((item) => [item.id, item]))),
+      )
       .catch(setError);
   }, []);
 
@@ -86,7 +123,10 @@ function RunsList() {
         action={
           <div className="form-actions">
             <Button onClick={() => setLaunching(true)}>New run</Button>
-            <Button variant="secondary" onClick={() => navigate("/runs/compare")}>
+            <Button
+              variant="secondary"
+              onClick={() => navigate("/runs/compare")}
+            >
               Compare
             </Button>
           </div>
@@ -105,21 +145,51 @@ function RunsList() {
             <EmptyState
               icon={<RunIcon />}
               message="A run scores an evaluator version against a dataset. Start one to see it here."
-              action={<Button onClick={() => setLaunching(true)}>New run</Button>}
+              action={
+                <Button onClick={() => setLaunching(true)}>New run</Button>
+              }
             />
           }
           columns={[
             {
               header: "Evaluator / version",
-              cell: (run) => (
-                <Link to={`/runs/${run.id}`}>{versionNames[run.version_id] ?? run.version_id.slice(0, 8)}</Link>
-              ),
+              cell: (run) => {
+                const derivation = run.derivation_id
+                  ? derivations[run.derivation_id]
+                  : undefined;
+                const name =
+                  run.kind === "derive"
+                    ? derivation
+                      ? `${derivation.agent_name} / ${derivation.version_name}`
+                      : run.version_id.slice(0, 8)
+                    : (versionNames[run.version_id] ??
+                      run.version_id.slice(0, 8));
+                return (
+                  <div>
+                    <Link to={`/runs/${run.id}`}>{name}</Link>
+                    {run.kind !== "derive" && derivation && (
+                      <div className="muted">
+                        Contract: {derivation.agent_name} /{" "}
+                        {derivation.version_name} / run {derivation.ordinal}
+                      </div>
+                    )}
+                  </div>
+                );
+              },
             },
-            { header: "Dataset", cell: (run) => datasetNames[run.dataset_id] ?? run.dataset_id.slice(0, 8) },
+            {
+              header: "Dataset",
+              cell: (run) =>
+                datasetNames[run.dataset_id] ?? run.dataset_id.slice(0, 8),
+            },
             { header: "Kind", cell: (run) => run.kind },
             {
               header: "Status",
-              cell: (run) => <Badge tone={STATUS_TONE[run.status]}>{run.status.replace(/_/g, " ")}</Badge>,
+              cell: (run) => (
+                <Badge tone={STATUS_TONE[run.status]}>
+                  {run.status.replace(/_/g, " ")}
+                </Badge>
+              ),
             },
             { header: "Metric", cell: (run) => headlineMetric(run.metrics) },
             { header: "Started", cell: (run) => formatTime(run.started_at) },
@@ -127,7 +197,11 @@ function RunsList() {
         />
       )}
 
-      <Modal open={launching} title="New run" onClose={() => setLaunching(false)}>
+      <Modal
+        open={launching}
+        title="New run"
+        onClose={() => setLaunching(false)}
+      >
         <RunLauncher
           onStarted={(run) => {
             setLaunching(false);
