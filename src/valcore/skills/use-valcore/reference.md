@@ -13,9 +13,8 @@ command here first, then regenerate with `scripts/sync_command_table.py`.
 - [Global](#global) — `--db`, `--version`, database resolution
 - [`valcore version`](#valcore-version)
 - [`valcore serve`](#valcore-serve) — run the web app and API
-- [`valcore list`](#valcore-list-evaluatorsdatasetsruns) — evaluators, datasets, runs
-- [`valcore run`](#valcore-run-evaluator-dataset) — validation and eval runs
-- [`valcore experiment`](#valcore-experiment-evaluator-dataset) — the `pydantic_evals` engine over the same data
+- [`valcore list`](#valcore-list-evaluatorsdatasetsrunsagentsderivations) — stored resources
+- [`valcore run`](#valcore-run-evaluator-evaluator---dataset-dataset) — agent, evaluator, and experiment runs
 - [`valcore export`](#valcore-export-evaluator) — standalone judge script or portable eval package
 - [`valcore import`](#valcore-import-path) — load a portable eval package back in
 - [`valcore config`](#valcore-config) — gateway key and defaults
@@ -31,12 +30,15 @@ command here first, then regenerate with `scripts/sync_command_table.py`.
 | Command | What it does |
 | --- | --- |
 | `valcore serve` | Serve the web UI and API (`--port`, `--host`, `--no-browser`). |
-| `valcore list <evaluators\|datasets\|runs\|agents>` | List resources as a table or, with `--json`, as JSON. |
-| `valcore run <evaluator> <dataset>` | Run an evaluator version over a dataset. |
-| `valcore experiment <evaluator> <dataset>` | Run an evaluator version over a dataset via `pydantic_evals.Dataset.evaluate`. |
+| `valcore list <evaluators\|datasets\|runs\|agents\|derivations>` | List resources as a table or, with `--json`, as JSON. |
+| `valcore run agent <agent>` | Run an agent over a dataset, one row, ad-hoc inputs, or a literal prompt. |
+| `valcore run evaluator <evaluator> --dataset <dataset>` | Run an evaluator version over a dataset. |
+| `valcore run experiment <evaluator> --dataset <dataset>` | Run an evaluator through `pydantic_evals.Dataset.evaluate`. |
 | `valcore export <evaluator>` | Export an evaluator (and, with `--dataset`, a dataset) as a Python script or, with `--format json`, a portable eval package. |
 | `valcore import <file>` | Import a JSON eval package back into the local database. |
-| `valcore agent trial <agent>` | Run one bound agent input (`--dataset`/`--row` or `--input KEY=VALUE`), optionally saving a derivation. |
+| `valcore agent derivation list` | List saved and staged response derivations. |
+| `valcore agent derivation save <ref>` | Accept a staged derivation. |
+| `valcore agent derivation discard <ref>` | Discard a derivation. |
 | `valcore agent import <file>` | Import a YAML or JSON AgentSpec and its valcore binding. |
 | `valcore agent export <agent>` | Export an agent version as a YAML AgentSpec with its valcore binding. |
 | `valcore config set <key> <value>` | Set any config key, including `model`, `local_cli_default`, `port`, `concurrency`, and `db_path`. |
@@ -98,13 +100,13 @@ Serves the web app and API.
 | `--host TEXT` | `127.0.0.1` |
 | `--no-browser` | opens a browser otherwise |
 
-### `valcore list {evaluators|datasets|runs}`
+### `valcore list {evaluators|datasets|runs|agents|derivations}`
 
 | Option | Meaning |
 |---|---|
 | `--json` | Emit JSON instead of a table. |
 
-### `valcore run EVALUATOR DATASET`
+### `valcore run evaluator EVALUATOR --dataset DATASET`
 
 Runs an evaluator version over a dataset.
 
@@ -116,6 +118,7 @@ Runs an evaluator version over a dataset.
 | `--json` | Emit JSON results to stdout. |
 | `--watch` | Print one line per completed row. |
 | `--min-accuracy FLOAT` | Exit 2 below this threshold. |
+| `--derivation REF` | Read saved response columns from a derivation. Cannot be used with validation. |
 
 `EVALUATOR` and `DATASET` resolve by exact name first, then by unique id prefix.
 
@@ -124,7 +127,7 @@ labeled under it: rows without a valid label are skipped, and the run scores wha
 subset has ground truth, failing outright only if none do. `--kind validation
 --min-accuracy 0.9` is the CI pattern.
 
-### `valcore experiment EVALUATOR DATASET`
+### `valcore run experiment EVALUATOR --dataset DATASET`
 
 A second engine over the same data as `run`, driven by `pydantic_evals.Dataset.evaluate`
 instead of valcore's own runner. Interchangeable with `run` at the CLI level, except it
@@ -137,6 +140,19 @@ has no `--watch` and no cancellation, because `Dataset.evaluate` offers neither.
 | `--json` | Emit JSON results to stdout. |
 
 Always runs as `validation` kind; there is no `--kind` here.
+
+### `valcore run agent AGENT`
+
+Use `--dataset DATASET` alone to create a whole-dataset derivation run. It remains staged
+until accepted with `--save` or `valcore agent derivation save REF`. Use `--dataset DATASET
+--row N` for one existing row, or repeat `--input KEY=VALUE` for an ad-hoc trial; those are
+ephemeral unless `--save` is also paired with `--dataset`. `-p/--prompt TEXT` sends literal
+text directly to the agent, bypassing its prompt template, and cannot be saved.
+
+### `valcore agent derivation {list|save|discard}`
+
+`list` includes staged entries and marks their state. Saved derivations can also be listed with
+`valcore list derivations`; references accept an id prefix or `agent/version/ordinal`.
 
 ### `valcore export [EVALUATOR]`
 

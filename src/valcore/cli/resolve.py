@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from typing import TypeVar
 
 from valcore.errors import ContractError, NotFoundError
-from valcore.models import Agent, AgentVersion, Evaluator, EvaluatorVersion
+from valcore.models import Agent, AgentVersion, DatasetDerivation, Evaluator, EvaluatorVersion
 from valcore.store import DatasetSummary, Store
 
 _MIN_PREFIX = 4
@@ -89,6 +89,41 @@ def resolve_dataset(store: Store, ref: str) -> DatasetSummary:
         "dataset",
         id_of=lambda d: d.id,
         name_of=lambda d: d.name,
+    )
+
+
+def resolve_derivation(
+    store: Store, ref: str, *, dataset_id: str | None = None
+) -> DatasetDerivation:
+    """Resolve ``<agent>/<version>/<ordinal>`` or an id prefix to a saved derivation."""
+    derivations = store.list_derivations(dataset_id=dataset_id)
+    if ref.count("/") == 2:
+        agent_name, version_name, ordinal_text = ref.split("/")
+        try:
+            ordinal = int(ordinal_text)
+        except ValueError as exc:
+            raise NotFoundError(f"No derivation matches {ref!r}.") from exc
+        matches = []
+        for derivation in derivations:
+            version = store.get_agent_version(derivation.agent_version_id)
+            agent = store.get_agent(version.agent_id)
+            if (
+                agent.name == agent_name
+                and version.version_name == version_name
+                and derivation.ordinal == ordinal
+            ):
+                matches.append(derivation)
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise ContractError(f"{ref!r} matches multiple derivations.")
+        raise NotFoundError(f"No derivation matches {ref!r}.")
+    return _resolve(
+        derivations,
+        ref,
+        "derivation",
+        id_of=lambda derivation: derivation.id,
+        name_of=lambda derivation: derivation.id,
     )
 
 

@@ -33,6 +33,7 @@ from valcore.cli.resolve import (
     resolve_agent,
     resolve_agent_version,
     resolve_dataset,
+    resolve_derivation,
     resolve_evaluator,
     resolve_version,
 )
@@ -46,7 +47,9 @@ from valcore.models import (
     AgentVersion,
     Annotation,
     Dataset,
+    DatasetDerivation,
     DatasetRow,
+    DerivationRole,
     Evaluator,
     EvaluatorVersion,
     LabelSchema,
@@ -55,6 +58,7 @@ from valcore.models import (
     RunKind,
     RunStatus,
     ScoreKind,
+    check_agent_dataset_compatibility,
     label_set_fields_from_schema,
     validate_agent_version,
     validate_version,
@@ -175,11 +179,13 @@ def serve(port: int | None, host: str, no_browser: bool) -> None:
 
 
 @cli.command(name="list")
-@click.argument("kind", type=click.Choice(["evaluators", "datasets", "runs", "agents"]))
+@click.argument(
+    "kind", type=click.Choice(["evaluators", "datasets", "runs", "agents", "derivations"])
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of a table.")
 @click.pass_context
 def list_(ctx: click.Context, kind: str, as_json: bool) -> None:
-    """List evaluators, datasets, runs, or agents."""
+    """List evaluators, datasets, runs, agents, or saved derivations."""
     store = _store(ctx)
     if kind == "evaluators":
         rows = [e.model_dump() for e in store.list_evaluators()]
@@ -204,6 +210,24 @@ def list_(ctx: click.Context, kind: str, as_json: bool) -> None:
                 }
             )
         emit(rows, as_json, columns=["id", "name", "version_count", "active_version"])
+    elif kind == "derivations":
+        rows = []
+        for derivation in store.list_derivations():
+            version = store.get_agent_version(derivation.agent_version_id)
+            agent = store.get_agent(version.agent_id)
+            rows.append(
+                {
+                    "id": derivation.id[:8],
+                    "agent": agent.name,
+                    "version": version.version_name,
+                    "ordinal": derivation.ordinal,
+                    "rows": len(store.list_agent_responses(derivation.id)),
+                    "response_columns": derivation.response_columns,
+                }
+            )
+        emit(
+            rows, as_json, columns=["id", "agent", "version", "ordinal", "rows", "response_columns"]
+        )
     else:
         rows = []
         for run in store.list_runs():
@@ -461,31 +485,114 @@ def _usage_data(usage: object) -> dict[str, Any]:
 
 @cli.group(name="agent")
 def agent_group() -> None:
-    """Import, export, and trial versioned agents under test."""
+    """Import, export, and manage versioned agents under test."""
 
 
-@agent_group.command("trial")
+@agent_group.group("derivation")
+def agent_derivation_group() -> None:
+    """List, accept, and discard agent-response derivations."""
+
+
+@agent_derivation_group.command("list")
+@click.option("--dataset", "dataset_ref", default=None, help="Limit to one dataset.")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of a table.")
+@click.pass_context
+def agent_derivation_list(ctx: click.Context, dataset_ref: str | None, as_json: bool) -> None:
+    """List saved and staged derivations, marking entries awaiting acceptance."""
+    store = _store(ctx)
+    dataset = resolve_dataset(store, dataset_ref) if dataset_ref is not None else None
+    rows = []
+    for derivation in store.list_derivations(
+        dataset_id=dataset.id if dataset is not None else None, include_staged=True
+    ):
+        version = store.get_agent_version(derivation.agent_version_id)
+        agent = store.get_agent(version.agent_id)
+        rows.append(
+            {
+                "id": derivation.id[:8],
+                "agent": agent.name,
+                "version": version.version_name,
+                "ordinal": derivation.ordinal,
+                "state": store.derivation_state(derivation.id).value,
+                "rows": len(store.list_agent_responses(derivation.id)),
+            }
+        )
+    emit(rows, as_json, columns=["id", "agent", "version", "ordinal", "state", "rows"])
+
+
+@agent_derivation_group.command("save")
+@click.argument("ref")
+@click.pass_context
+def agent_derivation_save(ctx: click.Context, ref: str) -> None:
+    """Accept a staged derivation, assigning its saved ordinal."""
+    store = _store(ctx)
+    derivation = (
+        resolve_derivation(store, ref) if "/" in ref else _resolve_staged_derivation(store, ref)
+    )
+    saved = store.save_staged_derivation(derivation.id)
+    click.echo(f"saved derivation {saved.id[:8]} (ordinal {saved.ordinal})")
+
+
+@agent_derivation_group.command("discard")
+@click.argument("ref")
+@click.pass_context
+def agent_derivation_discard(ctx: click.Context, ref: str) -> None:
+    """Discard a derivation and its staged responses."""
+    store = _store(ctx)
+    derivation = _resolve_staged_derivation(store, ref)
+    store.delete_derivation(derivation.id)
+    click.echo(f"discarded derivation {derivation.id[:8]}")
+
+
+def _resolve_staged_derivation(store: Store, ref: str) -> DatasetDerivation:
+    """Resolve a derivation reference while including staged entries for management commands."""
+    derivations = store.list_derivations(include_staged=True)
+    from valcore.cli.resolve import _resolve
+
+    return _resolve(
+        derivations, ref, "derivation", id_of=lambda item: item.id, name_of=lambda item: item.id
+    )
+
+
+@cli.group(name="run")
+def run_group() -> None:
+    """Run an agent, evaluator, or experiment over a dataset."""
+
+
+@run_group.command("agent")
 @click.argument("agent_ref")
 @click.option("--version", "version_name", default=None, help="Version name (default: active).")
 @click.option("--dataset", "dataset_ref", default=None, help="Dataset containing the input row.")
 @click.option("--row", "row_idx", type=int, default=None, help="Dataset row index to run.")
 @click.option("--input", "inputs", multiple=True, help="Ad-hoc input as KEY=VALUE (repeatable).")
+@click.option("-p", "--prompt", "prompt_text", default=None, help="Send literal text to the agent.")
 @click.option("--save", "save", is_flag=True, help="Save the response as a dataset derivation.")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of a table.")
+@click.option("--concurrency", type=int, default=None, help="Max concurrent rows.")
+@click.option("--watch", is_flag=True, help="Print one line per completed row.")
 @click.pass_context
-def agent_trial(
+def run_agent(
     ctx: click.Context,
     agent_ref: str,
     version_name: str | None,
     dataset_ref: str | None,
     row_idx: int | None,
     inputs: tuple[str, ...],
+    prompt_text: str | None,
     save: bool,
     as_json: bool,
+    concurrency: int | None,
+    watch: bool,
 ) -> None:
-    """Run one agent input locally, saving an immutable response overlay only on request."""
+    """Run an agent over a dataset, row, inputs, or literal liveness prompt."""
     if row_idx is not None and dataset_ref is None:
         raise ContractError("--row requires --dataset.")
+    if prompt_text is not None and dataset_ref is not None:
+        raise ContractError("--prompt cannot be combined with --dataset.")
+    if prompt_text is not None and inputs:
+        raise ContractError("--prompt cannot be combined with --input.")
+    if prompt_text is not None and save:
+        raise ContractError("--save cannot be used with --prompt.")
     if save and dataset_ref is None:
         raise ContractError("--save requires --dataset.")
 
@@ -493,8 +600,31 @@ def agent_trial(
     agent = resolve_agent(store, agent_ref)
     version = resolve_agent_version(store, agent, version_name)
     dataset = resolve_dataset(store, dataset_ref) if dataset_ref is not None else None
+    if dataset is not None and row_idx is None and not inputs:
+        check_agent_dataset_compatibility(version, store.get_dataset(dataset.id))
+        derivation = store.create_staged_derivation(
+            dataset_id=dataset.id,
+            agent_version_id=version.id,
+            response_columns=output_column_names(parse_spec(version.spec)),
+        )
+        workers = concurrency if concurrency is not None else get_settings().default_concurrency
+        created = store.create_run(RunKind.DERIVE, version.id, dataset.id, workers)
+        store.link_run_derivation(created.id, derivation.id, DerivationRole.FILLS)
+        finished = asyncio.run(_drive_run(store, created.id, watch))
+        if finished.status is RunStatus.FAILED:
+            raise ValcoreError(finished.error or "Run failed.")
+        if save:
+            derivation = store.save_staged_derivation(derivation.id)
+        click.echo(
+            f"derivation {derivation.id[:8]} ({store.derivation_state(derivation.id).value})"
+        )
+        _emit_run(store, finished, as_json)
+        return
     source_row: DatasetRow | None = None
-    if row_idx is not None:
+    if prompt_text is not None:
+        row_data = {}
+        prompt = prompt_text
+    elif row_idx is not None:
         assert dataset is not None
         source_row = next((row for row in store.list_rows(dataset.id) if row.idx == row_idx), None)
         if source_row is None:
@@ -505,7 +635,8 @@ def agent_trial(
         if not row_data:
             raise ContractError("Provide --dataset with --row, or at least one --input KEY=VALUE.")
 
-    prompt = render_agent_prompt(version.prompt_template, row_data)
+    if prompt_text is None:
+        prompt = render_agent_prompt(version.prompt_template, row_data)
     deps = build_deps(version.deps_mapping, row_data)
     spec = parse_spec(version.spec)
     started = perf_counter()
@@ -679,9 +810,9 @@ async def _drive_run(store: Store, run_id: str, watch: bool) -> Run:
     return run
 
 
-@cli.command()
+@run_group.command("evaluator")
 @click.argument("evaluator")
-@click.argument("dataset")
+@click.option("--dataset", required=True, help="Dataset to score.")
 @click.option("--version", "version_name", default=None, help="Version name (default: active).")
 @click.option(
     "--kind",
@@ -693,6 +824,9 @@ async def _drive_run(store: Store, run_id: str, watch: bool) -> Run:
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON results to stdout.")
 @click.option("--watch", is_flag=True, help="Print one line per completed row.")
 @click.option("--min-accuracy", type=float, default=None, help="Fail with exit 2 below this.")
+@click.option(
+    "--derivation", "derivation_ref", default=None, help="Saved response derivation to read."
+)
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -704,6 +838,7 @@ def run(
     as_json: bool,
     watch: bool,
     min_accuracy: float | None,
+    derivation_ref: str | None,
 ) -> None:
     """Run an evaluator version over a dataset.
 
@@ -717,9 +852,21 @@ def run(
     if not is_local_cli_model(ver.model):
         config_module.require_gateway_key()
     ds = resolve_dataset(store, dataset)
+    if derivation_ref is not None and kind == RunKind.VALIDATION.value:
+        raise ContractError(
+            "A derivation cannot be used for validation because ground truth is declared "
+            "against a contract and derivation-scoped label sets do not exist yet."
+        )
+    derivation = (
+        resolve_derivation(store, derivation_ref, dataset_id=ds.id)
+        if derivation_ref is not None
+        else None
+    )
 
     workers = concurrency if concurrency is not None else get_settings().default_concurrency
     created = store.create_run(RunKind(kind), ver.id, ds.id, workers)
+    if derivation is not None:
+        store.link_run_derivation(created.id, derivation.id, DerivationRole.READS)
 
     finished = asyncio.run(_drive_run(store, created.id, watch))
     if finished.status is RunStatus.FAILED:
@@ -766,9 +913,9 @@ async def _drive_experiment(store: Store, run_id: str) -> Run:
     return run
 
 
-@cli.command(name="experiment")
+@run_group.command(name="experiment")
 @click.argument("evaluator")
-@click.argument("dataset")
+@click.option("--dataset", required=True, help="Dataset to score.")
 @click.option("--version", "version_name", default=None, help="Version name (default: active).")
 @click.option("--concurrency", type=int, default=None, help="Max concurrent rows.")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON results to stdout.")
