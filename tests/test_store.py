@@ -411,7 +411,7 @@ def _response(row_id: str, text: str = "answer") -> dict:
     return {"row_id": row_id, "data": {"response": text}}
 
 
-def test_save_derivation_allocates_contiguous_ordinals_per_dataset_and_version(
+def test_save_derivation_allocates_contiguous_ordinals_per_dataset(
     store: Store,
 ) -> None:
     dataset_id, version_id, rows = _agent_version_and_dataset(store)
@@ -436,7 +436,7 @@ def test_save_derivation_allocates_contiguous_ordinals_per_dataset_and_version(
     )
 
     assert [derivation.ordinal for derivation in saved] == [0, 1, 2]
-    assert other.ordinal == 0
+    assert other.ordinal == 3
 
 
 def test_save_derivation_empty_responses_raises_without_persisting(store: Store) -> None:
@@ -675,6 +675,33 @@ def test_staged_derivations_do_not_consume_ordinals_when_discarded(store: Store)
     assert first.ordinal == 0
     assert third.ordinal == 1
     assert store.derivation_state(third.id) is DerivationState.SAVED
+
+
+def test_save_derivation_persists_saved_state_and_ignores_a_staged_ordinal(
+    store: Store,
+) -> None:
+    """Trial saves have explicit state and never treat staged ordinal zero as allocated."""
+    dataset_id, version_id, rows = _agent_version_and_dataset(store)
+    staged = store.create_staged_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=version_id,
+        response_columns=["response"],
+    )
+
+    saved = store.save_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=version_id,
+        response_columns=["response"],
+        responses=[_response(rows[0].id)],
+    )
+
+    assert staged.ordinal == 0
+    assert saved.ordinal == 0
+    with session_scope(store.engine) as session:
+        status = session.exec(
+            select(DerivationStatus).where(DerivationStatus.derivation_id == saved.id)
+        ).one()
+    assert status.state is DerivationState.SAVED
 
 
 def test_saving_staged_derivations_in_any_order_allocates_contiguous_ordinals(store: Store) -> None:
