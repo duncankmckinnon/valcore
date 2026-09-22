@@ -10,7 +10,7 @@ from collections.abc import Iterator
 
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
@@ -120,7 +120,11 @@ def make_agent_version(store: Store):
 
 def text_agent(respond) -> Agent:
     """Build an injected subject agent returning plain text responses."""
-    return Agent(FunctionModel(respond), output_type=str)
+
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[TextPart(content=respond(messages, info))])
+
+    return Agent(FunctionModel(model), output_type=str)
 
 
 async def collect_events(events: list[RunEvent], event: RunEvent) -> None:
@@ -455,6 +459,7 @@ async def test_eval_run_reads_merged_derivation_rows_and_preserves_source_ids(st
     assert result.status is RunStatus.COMPLETED
     assert all(f"Judge this draft: draft {index}" in "\n".join(prompts) for index in range(3))
     assert {item.row_id for item in store.list_results(run.id)} == {row.id for row in rows}
+    assert result.metrics == {"scored": 3}
 
 
 @pytest.mark.anyio
@@ -482,6 +487,15 @@ async def test_eval_run_tallies_absent_and_errored_derivation_responses(store: S
     assert result.status is RunStatus.COMPLETED
     assert {item.row_id for item in store.list_results(run.id)} == {rows[0].id, rows[2].id}
     assert result.metrics == {
+        "scored": 2,
+        "skipped": {"no_response": 2, "response_error": 1},
+    }
+
+    retried = await execute_run(
+        store, run.id, agent=constant_agent(version), only_row_ids=[rows[0].id]
+    )
+
+    assert retried.metrics == {
         "scored": 2,
         "skipped": {"no_response": 2, "response_error": 1},
     }
@@ -577,6 +591,71 @@ async def test_derive_run_records_agent_errors_and_continues(store: Store) -> No
     assert errored[0].dataset_row_id == rows[1].id
     assert "subject unavailable" in errored[0].error
     assert len([response for response in responses if response.error is None]) == 2
+
+
+@pytest.mark.anyio
+async def test_derive_run_records_assertion_error_as_failure(store: Store) -> None:
+    """An assertion raised by a real agent is never reinterpreted as text output."""
+    dataset = store.create_dataset("inputs", "", ["input"])
+    row = store.add_rows(dataset.id, [{"input": "hello"}])[0]
+    version = make_agent_version(store)
+    derivation = store.create_staged_derivation(
+        dataset_id=dataset.id, agent_version_id=version.id, response_columns=["response"]
+    )
+    run = store.create_run(RunKind.DERIVE, version.id, dataset.id, concurrency=1)
+    store.link_run_derivation(run.id, derivation.id, DerivationRole.FILLS)
+
+    def assert_agent(messages: list[ModelMessage], info: AgentInfo) -> str:
+        raise AssertionError("agent invariant failed")
+
+    result = await execute_run(store, run.id, agent=text_agent(assert_agent))
+
+    response = store.list_agent_responses(derivation.id)[0]
+    assert result.status is RunStatus.COMPLETED_WITH_ERRORS
+    assert response.dataset_row_id == row.id
+    assert response.data == {}
+    assert response.error == "agent invariant failed"
+
+
+@pytest.mark.anyio
+async def test_derive_run_rejects_derivation_saved_after_linking(store: Store) -> None:
+    """Execution rechecks staged state so a stale fill link cannot leave a run running."""
+    dataset = store.create_dataset("inputs", "", ["input"])
+    store.add_rows(dataset.id, [{"input": "hello"}])
+    version = make_agent_version(store)
+    derivation = store.create_staged_derivation(
+        dataset_id=dataset.id, agent_version_id=version.id, response_columns=["response"]
+    )
+    run = store.create_run(RunKind.DERIVE, version.id, dataset.id, concurrency=1)
+    store.link_run_derivation(run.id, derivation.id, DerivationRole.FILLS)
+    store.save_staged_derivation(derivation.id)
+
+    result = await execute_run(store, run.id, agent=Agent(TestModel(), output_type=str))
+
+    assert result.status is RunStatus.FAILED
+    assert result.error == "A derive run can only fill a staged derivation."
+    assert store.list_agent_responses(derivation.id) == []
+
+
+@pytest.mark.anyio
+async def test_derive_run_rejects_row_subset(store: Store) -> None:
+    """A derive pass cannot acquire retry semantics that violate whole-dataset execution."""
+    dataset = store.create_dataset("inputs", "", ["input"])
+    row = store.add_rows(dataset.id, [{"input": "hello"}])[0]
+    version = make_agent_version(store)
+    derivation = store.create_staged_derivation(
+        dataset_id=dataset.id, agent_version_id=version.id, response_columns=["response"]
+    )
+    run = store.create_run(RunKind.DERIVE, version.id, dataset.id, concurrency=1)
+    store.link_run_derivation(run.id, derivation.id, DerivationRole.FILLS)
+
+    result = await execute_run(
+        store, run.id, agent=Agent(TestModel(), output_type=str), only_row_ids=[row.id]
+    )
+
+    assert result.status is RunStatus.FAILED
+    assert result.error == "A derive run must execute the whole dataset."
+    assert store.list_agent_responses(derivation.id) == []
 
 
 @pytest.mark.anyio

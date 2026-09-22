@@ -5,7 +5,6 @@ ephemeral, while a saved derivation records an overlay on the source dataset.
 """
 
 import re
-import time
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
@@ -17,9 +16,8 @@ from pydantic_ai.agent.spec import AgentSpec
 from valcore import agent_spec, config
 from valcore.api.deps import get_store
 from valcore.errors import ContractError, NotFoundError
-from valcore.factory import agent_response_data, build_agent_from_version
+from valcore.factory import build_agent_from_version, execute_agent_version
 from valcore.models import Agent, AgentVersion, DatasetDerivation
-from valcore.runner import _usage_dict
 from valcore.settings import is_local_cli_model
 from valcore.store import DerivedRow, Store
 
@@ -383,34 +381,9 @@ async def trial_version(vid: str, body: TrialRequest, store: StoreDep) -> TrialR
         row_data = body.inputs
     else:
         raise ContractError("A trial requires either row_id or inputs.")
-    spec = agent_spec.parse_spec(version.spec)
     agent = build_agent_from_version(version)
-    prompt = agent_spec.render_agent_prompt(version.prompt_template, row_data)
-    deps = agent_spec.build_deps(version.deps_mapping, row_data)
-    start = time.perf_counter()
-    try:
-        result = await agent.run(prompt, deps=deps)
-        latency_ms = int((time.perf_counter() - start) * 1000)
-        return TrialResult(
-            prompt=prompt,
-            deps=deps,
-            output=agent_response_data(spec, result.output),
-            response_columns=agent_spec.output_column_names(spec),
-            latency_ms=latency_ms,
-            usage=_usage_dict(result.usage),
-            error=None,
-        )
-    except Exception as exc:  # noqa: BLE001 - model failures are useful trial output.
-        latency_ms = int((time.perf_counter() - start) * 1000)
-        return TrialResult(
-            prompt=prompt,
-            deps=deps,
-            output={},
-            response_columns=agent_spec.output_column_names(spec),
-            latency_ms=latency_ms,
-            usage=None,
-            error=str(exc),
-        )
+    execution = await execute_agent_version(version, agent, row_data)
+    return TrialResult(**execution.__dict__)
 
 
 @router.post("/versions/{vid}/derivations", response_model=DerivationRead)
