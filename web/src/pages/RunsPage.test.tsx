@@ -1,10 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import RunsPage from "./RunsPage";
-import { datasets, evaluators, runs } from "../api/client";
-import type { DatasetSummary, Evaluator, EvaluatorVersion, Run } from "../api/types";
+import { agents, datasets, evaluators, runs } from "../api/client";
+import type {
+  AgentSummary,
+  AgentVersion,
+  DatasetSummary,
+  Derivation,
+  Evaluator,
+  EvaluatorVersion,
+  Run,
+} from "../api/types";
 
 // RunLauncher owns its own API traffic and is exercised by its own suite; stub it
 // so opening the "New run" modal is observable without standing up its fixtures.
@@ -19,6 +33,12 @@ vi.mock("../api/client", async (importOriginal) => {
     runs: { ...actual.runs, list: vi.fn() },
     datasets: { ...actual.datasets, list: vi.fn() },
     evaluators: { ...actual.evaluators, list: vi.fn(), get: vi.fn() },
+    agents: {
+      ...actual.agents,
+      list: vi.fn(),
+      listVersions: vi.fn(),
+      listDerivations: vi.fn(),
+    },
   };
 });
 
@@ -26,6 +46,9 @@ const runsListMock = vi.mocked(runs.list);
 const datasetsListMock = vi.mocked(datasets.list);
 const evaluatorsListMock = vi.mocked(evaluators.list);
 const evaluatorsGetMock = vi.mocked(evaluators.get);
+const agentsListMock = vi.mocked(agents.list);
+const agentVersionsMock = vi.mocked(agents.listVersions);
+const listDerivationsMock = vi.mocked(agents.listDerivations);
 
 function makeRun(overrides: Partial<Run> = {}): Run {
   return {
@@ -69,6 +92,38 @@ const VERSION = {
   version_name: "v1",
 } as EvaluatorVersion;
 
+const AGENT: AgentSummary = {
+  id: "agent-1",
+  created_at: "2026-01-01T00:00:00Z",
+  name: "Support agent",
+  description: "",
+  active_version_id: "agent-ver-1",
+  version_count: 1,
+};
+
+const AGENT_VERSION = {
+  id: "agent-ver-1",
+  agent_id: "agent-1",
+  version_name: "v2",
+} as AgentVersion;
+
+function makeDerivation(overrides: Partial<Derivation> = {}): Derivation {
+  return {
+    id: "der-1",
+    created_at: "2026-01-01T00:00:00Z",
+    dataset_id: "ds-1",
+    dataset_name: "My dataset",
+    agent_version_id: "agent-ver-1",
+    agent_name: "Support agent",
+    version_name: "v2",
+    ordinal: 3,
+    response_columns: ["draft"],
+    response_count: 5,
+    state: "saved",
+    ...overrides,
+  };
+}
+
 // A sentinel route so navigation off the index (to a run or to compare) is
 // observable as text without mounting the real detail/compare views.
 function LocationProbe() {
@@ -93,6 +148,9 @@ beforeEach(() => {
   datasetsListMock.mockResolvedValue([]);
   evaluatorsListMock.mockResolvedValue([]);
   evaluatorsGetMock.mockResolvedValue(EVALUATOR);
+  agentsListMock.mockResolvedValue([]);
+  agentVersionsMock.mockResolvedValue([]);
+  listDerivationsMock.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -111,14 +169,12 @@ describe("RunsPage chrome", () => {
     expect(headings[0]).toHaveTextContent("Runs");
   });
 
-  it("describes what a run does in the header", async () => {
+  it("describes both kinds of run in the header", async () => {
     renderPage();
 
     await waitFor(() => expect(runsListMock).toHaveBeenCalled());
 
-    // The PageHeader description explains that a run applies an evaluator version
-    // to a dataset and records how well it scored.
-    expect(screen.getByText(/how well it scored/i)).toBeTruthy();
+    expect(screen.getByText(/derive agent responses/i)).toBeTruthy();
   });
 });
 
@@ -126,9 +182,9 @@ describe("RunsPage empty state", () => {
   it("explains what a run is when there are no runs", async () => {
     renderPage();
 
-    // The bare "No runs yet." string is replaced by an EmptyState whose message
-    // explains that a run scores an evaluator version against a dataset.
-    expect(await screen.findByText(/evaluator version against a dataset/i)).toBeTruthy();
+    expect(
+      await screen.findByText(/run an agent over a dataset/i),
+    ).toBeTruthy();
   });
 
   it("offers a launch action from the empty state", async () => {
@@ -137,11 +193,74 @@ describe("RunsPage empty state", () => {
     await waitFor(() => expect(runsListMock).toHaveBeenCalled());
 
     // Both the header and the empty state surface the launch action when empty.
-    expect(screen.getAllByRole("button", { name: /new run/i }).length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByRole("button", { name: /new run/i }).length,
+    ).toBeGreaterThan(0);
   });
 });
 
 describe("RunsPage list and navigation", () => {
+  it("labels a derive run with its agent version instead of resolving it as an evaluator", async () => {
+    runsListMock.mockResolvedValue([
+      makeRun({
+        kind: "derive",
+        version_id: "agent-ver-1",
+        derivation_id: "der-1",
+        metrics: { scored: 5 },
+      }),
+    ]);
+    listDerivationsMock.mockResolvedValue([makeDerivation()]);
+    agentsListMock.mockResolvedValue([AGENT]);
+    agentVersionsMock.mockResolvedValue([AGENT_VERSION]);
+
+    renderPage();
+
+    const agentVersion = await screen.findByRole("link", {
+      name: "Support agent / v2",
+    });
+    expect(agentVersion).toBeInTheDocument();
+    expect(
+      within(agentVersion.closest("tr")!).getAllByRole("cell")[4],
+    ).not.toHaveTextContent("—");
+    expect(evaluatorsGetMock).not.toHaveBeenCalledWith("agent-ver-1");
+  });
+
+  it.each([
+    ["pending", null],
+    ["completed", "discarded-derivation"],
+  ] as const)(
+    "labels a %s derive run from the agent catalog when its derivation is unavailable",
+    async (status, derivationId) => {
+      runsListMock.mockResolvedValue([
+        makeRun({
+          kind: "derive",
+          version_id: "agent-ver-1",
+          derivation_id: derivationId,
+          status,
+        }),
+      ]);
+      agentsListMock.mockResolvedValue([AGENT]);
+      agentVersionsMock.mockResolvedValue([AGENT_VERSION]);
+
+      renderPage();
+
+      expect(
+        await screen.findByRole("link", { name: "Support agent / v2" }),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it("shows the derivation contract used by an evaluator run", async () => {
+    runsListMock.mockResolvedValue([makeRun({ derivation_id: "der-1" })]);
+    listDerivationsMock.mockResolvedValue([makeDerivation()]);
+
+    renderPage();
+
+    expect(
+      await screen.findByText(/Support agent.*v2.*derivation 3/i),
+    ).toBeInTheDocument();
+  });
+
   it("lists existing runs with a link to each run detail", async () => {
     runsListMock.mockResolvedValue([makeRun()]);
     datasetsListMock.mockResolvedValue([DATASET]);
@@ -153,7 +272,9 @@ describe("RunsPage list and navigation", () => {
 
     renderPage();
 
-    const link = await screen.findByRole("link", { name: /My evaluator \/ v1/ });
+    const link = await screen.findByRole("link", {
+      name: /My evaluator \/ v1/,
+    });
     expect(link.getAttribute("href")).toBe("/runs/run-abcdef01");
   });
 
@@ -168,7 +289,9 @@ describe("RunsPage list and navigation", () => {
 
     renderPage();
 
-    await userEvent.click(await screen.findByRole("link", { name: /My evaluator \/ v1/ }));
+    await userEvent.click(
+      await screen.findByRole("link", { name: /My evaluator \/ v1/ }),
+    );
 
     expect(await screen.findByText("at /runs/run-abcdef01")).toBeTruthy();
   });
@@ -178,7 +301,9 @@ describe("RunsPage list and navigation", () => {
 
     renderPage();
 
-    await userEvent.click(await screen.findByRole("button", { name: "Compare" }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Compare" }),
+    );
 
     expect(await screen.findByText("at /runs/compare")).toBeTruthy();
   });
@@ -189,7 +314,9 @@ describe("RunsPage list and navigation", () => {
 
     renderPage();
 
-    await userEvent.click(await screen.findByRole("button", { name: /new run/i }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: /new run/i }),
+    );
 
     expect(await screen.findByText("run launcher")).toBeTruthy();
   });
