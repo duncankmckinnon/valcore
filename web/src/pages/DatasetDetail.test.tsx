@@ -155,6 +155,7 @@ function madeDerivation(overrides: Partial<Derivation> = {}): Derivation {
     ordinal: 1,
     response_columns: ["answer_score"],
     response_count: 2,
+    state: "saved",
     ...overrides,
   };
 }

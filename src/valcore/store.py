@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypeVar
 
-from sqlalchemy import event
+from sqlalchemy import event, or_
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, func, select
 from sqlmodel import create_engine as _sqlmodel_create_engine
@@ -30,12 +30,16 @@ from valcore.models import (
     DatasetHostedFetch,
     DatasetLogfirePull,
     DatasetRow,
+    DerivationRole,
+    DerivationState,
+    DerivationStatus,
     Evaluator,
     EvaluatorVersion,
     ExperimentRun,
     LabelSet,
     LabelSource,
     Run,
+    RunDerivation,
     RunKind,
     RunResult,
     RunStatus,
@@ -357,7 +361,7 @@ class Store:
             return agent
 
     def delete_agent(self, id: str) -> None:
-        """Delete an agent and its versions unless a derivation references one."""
+        """Delete an agent and its versions unless persisted work references one."""
         with session_scope(self.engine) as session:
             agent = _require(session, Agent, id)
             version_ids = list(
@@ -374,6 +378,18 @@ class Store:
             )
             if derivations:
                 _raise_referenced_by_derivations(derivations, "agent")
+            runs = (
+                session.exec(
+                    select(Run).where(
+                        Run.kind == RunKind.DERIVE,
+                        Run.version_id.in_(version_ids),
+                    )
+                ).all()
+                if version_ids
+                else []
+            )
+            if runs:
+                _raise_referenced(runs, "agent")
             versions = session.exec(select(AgentVersion).where(AgentVersion.agent_id == id))
             for version in versions:
                 session.delete(version)
@@ -436,6 +452,11 @@ class Store:
             ).all()
             if derivations:
                 _raise_referenced_by_derivations(derivations, "agent version")
+            runs = session.exec(
+                select(Run).where(Run.kind == RunKind.DERIVE, Run.version_id == id)
+            ).all()
+            if runs:
+                _raise_referenced(runs, "agent version")
             agent = session.get(Agent, version.agent_id)
             session.delete(version)
             session.flush()
@@ -527,12 +548,7 @@ class Store:
                     f"{dataset_id!r}: {wrong_dataset_row_ids}."
                 )
 
-            current_max = session.exec(
-                select(func.max(DatasetDerivation.ordinal)).where(
-                    DatasetDerivation.dataset_id == dataset_id,
-                    DatasetDerivation.agent_version_id == agent_version_id,
-                )
-            ).one()
+            current_max = self._saved_derivation_max_ordinal(session, dataset_id)
             derivation = DatasetDerivation(
                 dataset_id=dataset_id,
                 agent_version_id=agent_version_id,
@@ -541,6 +557,7 @@ class Store:
             )
             session.add(derivation)
             session.flush()
+            session.add(DerivationStatus(derivation_id=derivation.id, state=DerivationState.SAVED))
             for response in responses:
                 session.add(
                     AgentResponse(
@@ -554,13 +571,135 @@ class Store:
                 )
             return derivation
 
+    @staticmethod
+    def _saved_derivation_max_ordinal(session: Session, dataset_id: str) -> int | None:
+        """Return the largest ordinal assigned to a saved derivation of a dataset."""
+        return session.exec(
+            select(func.max(DatasetDerivation.ordinal))
+            .outerjoin(
+                DerivationStatus,
+                DerivationStatus.derivation_id == DatasetDerivation.id,
+            )
+            .where(
+                DatasetDerivation.dataset_id == dataset_id,
+                or_(
+                    DerivationStatus.state == DerivationState.SAVED,
+                    DerivationStatus.id.is_(None),
+                ),
+            )
+        ).one()
+
+    def create_staged_derivation(
+        self,
+        *,
+        dataset_id: str,
+        agent_version_id: str,
+        response_columns: list[str],
+    ) -> DatasetDerivation:
+        """Create an empty derivation whose ordinal remains unallocated while staged."""
+        with session_scope(self.engine) as session:
+            _require(session, Dataset, dataset_id)
+            _require(session, AgentVersion, agent_version_id)
+            derivation = DatasetDerivation(
+                dataset_id=dataset_id,
+                agent_version_id=agent_version_id,
+                response_columns=response_columns,
+            )
+            session.add(derivation)
+            session.flush()
+            session.add(DerivationStatus(derivation_id=derivation.id, state=DerivationState.STAGED))
+            return derivation
+
+    def add_agent_response(self, derivation_id: str, response: dict) -> AgentResponse:
+        """Append one completed agent response using an isolated session for each worker."""
+        if "row_id" not in response or not isinstance(response["row_id"], str):
+            raise ContractError("Derivation response key 'row_id' must be a string.")
+        if "data" not in response or not isinstance(response["data"], dict):
+            raise ContractError("Derivation response key 'data' must be a dict.")
+        with session_scope(self.engine) as session:
+            derivation = _require(session, DatasetDerivation, derivation_id)
+            status = session.exec(
+                select(DerivationStatus).where(DerivationStatus.derivation_id == derivation_id)
+            ).first()
+            if status is None or status.state is not DerivationState.STAGED:
+                raise ContractError(
+                    f"Derivation {derivation_id!r} is saved and cannot accept responses."
+                )
+            row = _require(session, DatasetRow, response["row_id"])
+            if row.dataset_id != derivation.dataset_id:
+                raise ContractError(
+                    f"Derivation response row {row.id!r} is outside dataset "
+                    f"{derivation.dataset_id!r}."
+                )
+            agent_response = AgentResponse(
+                derivation_id=derivation_id,
+                dataset_row_id=row.id,
+                data=response["data"],
+                latency_ms=response.get("latency_ms"),
+                usage=response.get("usage"),
+                error=response.get("error"),
+            )
+            session.add(agent_response)
+            return agent_response
+
+    def save_staged_derivation(self, derivation_id: str) -> DatasetDerivation:
+        """Accept a staged derivation and allocate its next saved ordinal."""
+        with session_scope(self.engine) as session:
+            derivation = _require(session, DatasetDerivation, derivation_id)
+            status = session.exec(
+                select(DerivationStatus).where(DerivationStatus.derivation_id == derivation_id)
+            ).first()
+            if status is None or status.state is DerivationState.SAVED:
+                raise ContractError(f"Derivation {derivation_id!r} is already saved.")
+            current_max = self._saved_derivation_max_ordinal(session, derivation.dataset_id)
+            derivation.ordinal = 0 if current_max is None else current_max + 1
+            status.state = DerivationState.SAVED
+            session.add(derivation)
+            session.add(status)
+            return derivation
+
+    def delete_derivation(self, derivation_id: str) -> None:
+        """Delete a discardable derivation and its dependent response and state records."""
+        with session_scope(self.engine) as session:
+            _require(session, DatasetDerivation, derivation_id)
+            links = session.exec(
+                select(RunDerivation).where(RunDerivation.derivation_id == derivation_id)
+            ).all()
+            if any(link.role is DerivationRole.READS for link in links):
+                raise ReferencedError(f"Derivation {derivation_id!r} is referenced by a run.")
+            for link in links:
+                session.delete(link)
+            for response in session.exec(
+                select(AgentResponse).where(AgentResponse.derivation_id == derivation_id)
+            ):
+                session.delete(response)
+            status = session.exec(
+                select(DerivationStatus).where(DerivationStatus.derivation_id == derivation_id)
+            ).first()
+            if status is not None:
+                session.delete(status)
+            session.delete(_require(session, DatasetDerivation, derivation_id))
+
+    def derivation_state(self, derivation_id: str) -> DerivationState:
+        """Return a derivation's persisted state, treating legacy rows as saved."""
+        with session_scope(self.engine) as session:
+            _require(session, DatasetDerivation, derivation_id)
+            status = session.exec(
+                select(DerivationStatus).where(DerivationStatus.derivation_id == derivation_id)
+            ).first()
+            return DerivationState.SAVED if status is None else status.state
+
     def get_derivation(self, id: str) -> DatasetDerivation:
         """Return the derivation with ``id`` or raise NotFoundError."""
         with session_scope(self.engine) as session:
             return _require(session, DatasetDerivation, id)
 
     def list_derivations(
-        self, *, dataset_id: str | None = None, agent_version_id: str | None = None
+        self,
+        *,
+        dataset_id: str | None = None,
+        agent_version_id: str | None = None,
+        include_staged: bool = False,
     ) -> list[DatasetDerivation]:
         """Return derivations filtered by their optional dataset and agent version bindings."""
         with session_scope(self.engine) as session:
@@ -569,6 +708,16 @@ class Store:
                 statement = statement.where(DatasetDerivation.dataset_id == dataset_id)
             if agent_version_id is not None:
                 statement = statement.where(DatasetDerivation.agent_version_id == agent_version_id)
+            if not include_staged:
+                statement = statement.outerjoin(
+                    DerivationStatus,
+                    DerivationStatus.derivation_id == DatasetDerivation.id,
+                ).where(
+                    or_(
+                        DerivationStatus.state == DerivationState.SAVED,
+                        DerivationStatus.id.is_(None),
+                    )
+                )
             return list(session.exec(statement.order_by(DatasetDerivation.created_at)))
 
     def list_agent_responses(self, derivation_id: str) -> list[AgentResponse]:
@@ -581,13 +730,16 @@ class Store:
                 )
             )
 
-    def derived_rows(self, derivation_id: str) -> list[DerivedRow]:
+    def derived_rows(self, derivation_id: str, *, include_errors: bool = True) -> list[DerivedRow]:
         """Return the dataset inputs overlaid with a derivation's responses by row index."""
         with session_scope(self.engine) as session:
             _require(session, DatasetDerivation, derivation_id)
-            responses = session.exec(
-                select(AgentResponse).where(AgentResponse.derivation_id == derivation_id)
-            ).all()
+            response_statement = select(AgentResponse).where(
+                AgentResponse.derivation_id == derivation_id
+            )
+            if not include_errors:
+                response_statement = response_statement.where(AgentResponse.error.is_(None))
+            responses = session.exec(response_statement).all()
             row_ids = [response.dataset_row_id for response in responses]
             rows = (
                 session.exec(select(DatasetRow).where(DatasetRow.id.in_(row_ids))).all()
@@ -1132,7 +1284,8 @@ class Store:
     ) -> Run:
         """Create a run, freezing its version in the same transaction."""
         with session_scope(self.engine) as session:
-            version = _require(session, EvaluatorVersion, version_id)
+            version_type = AgentVersion if kind is RunKind.DERIVE else EvaluatorVersion
+            version = _require(session, version_type, version_id)
             _require(session, Dataset, dataset_id)
             version.frozen = True
             session.add(version)
@@ -1145,6 +1298,65 @@ class Store:
             )
             session.add(run)
             return run
+
+    def link_run_derivation(
+        self, run_id: str, derivation_id: str, role: DerivationRole
+    ) -> RunDerivation:
+        """Link a run to one valid derivation it fills or reads, according to its kind."""
+        with session_scope(self.engine) as session:
+            run = _require(session, Run, run_id)
+            derivation = _require(session, DatasetDerivation, derivation_id)
+            existing = session.exec(
+                select(RunDerivation).where(RunDerivation.run_id == run_id)
+            ).first()
+            if existing is not None:
+                raise ContractError(f"Run {run_id!r} already has a derivation link.")
+            if run.kind is RunKind.VALIDATION:
+                raise ContractError("Validation runs cannot read or fill derivations.")
+            expected_role = (
+                DerivationRole.FILLS if run.kind is RunKind.DERIVE else DerivationRole.READS
+            )
+            if role is not expected_role:
+                raise ContractError(
+                    f"Run kind {run.kind.value!r} requires derivation role "
+                    f"{expected_role.value!r}, not {role.value!r}."
+                )
+            if run.dataset_id != derivation.dataset_id:
+                raise ContractError(
+                    f"Run dataset {run.dataset_id!r} does not match derivation dataset "
+                    f"{derivation.dataset_id!r}."
+                )
+            status = session.exec(
+                select(DerivationStatus).where(DerivationStatus.derivation_id == derivation_id)
+            ).first()
+            state = DerivationState.SAVED if status is None else status.state
+            if role is DerivationRole.FILLS:
+                if run.version_id != derivation.agent_version_id:
+                    raise ContractError(
+                        f"Derive run agent version {run.version_id!r} does not match derivation "
+                        f"agent version {derivation.agent_version_id!r}."
+                    )
+                if state is not DerivationState.STAGED:
+                    raise ContractError("A derive run may only fill a staged derivation.")
+            elif state is not DerivationState.SAVED:
+                raise ContractError("An evaluator run may only read a saved derivation.")
+            link = RunDerivation(run_id=run_id, derivation_id=derivation_id, role=role)
+            session.add(link)
+            # SQLite drops timezone information on round-trip; refresh so callers receive the
+            # same persisted representation returned by ``get_run_derivation``.
+            session.flush()
+            session.refresh(link)
+            return link
+
+    def get_run_derivation(self, run_id: str) -> RunDerivation | None:
+        """Return a run's derivation association, if the run has one."""
+        with session_scope(self.engine) as session:
+            _require(session, Run, run_id)
+            return session.exec(
+                select(RunDerivation)
+                .where(RunDerivation.run_id == run_id)
+                .order_by(RunDerivation.created_at)
+            ).first()
 
     def get_run(self, id: str) -> Run:
         """Return the run with ``id`` or raise NotFoundError."""

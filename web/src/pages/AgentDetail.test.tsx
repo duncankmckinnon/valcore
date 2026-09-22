@@ -11,11 +11,23 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import AgentDetail from "./AgentDetail";
-import { agents, api } from "../api/client";
+import { ApiError, agents, api, datasets, runs } from "../api/client";
 import type {
   AgentDetail as AgentDetailData,
   AgentVersion,
+  DatasetSummary,
+  Run,
 } from "../api/types";
+
+const navigate = vi.fn();
+
+vi.mock("react-router-dom", async () => {
+  const actual =
+    await vi.importActual<typeof import("react-router-dom")>(
+      "react-router-dom",
+    );
+  return { ...actual, useNavigate: () => navigate };
+});
 
 vi.mock("../components/AgentTrialPanel", () => ({
   default: ({ version }: { version: AgentVersion }) => (
@@ -38,9 +50,43 @@ vi.mock("../api/client", async (importOriginal) => {
       exportVersion: vi.fn(),
       importSpec: vi.fn(),
     },
+    datasets: { ...actual.datasets, list: vi.fn() },
+    runs: { ...actual.runs, create: vi.fn() },
     api: vi.fn(),
   };
 });
+
+function makeDataset(overrides: Partial<DatasetSummary> = {}): DatasetSummary {
+  return {
+    id: "dataset-1",
+    created_at: "2026-09-20T00:00:00Z",
+    name: "Support conversations",
+    description: "Customer questions for the support agent.",
+    columns: ["question", "context"],
+    row_count: 10,
+    labeled_count: 0,
+    ...overrides,
+  };
+}
+
+function makeRun(overrides: Partial<Run> = {}): Run {
+  return {
+    id: "run-derive-1",
+    created_at: "2026-09-20T00:00:00Z",
+    kind: "derive",
+    version_id: "av-1",
+    dataset_id: "dataset-1",
+    derivation_id: null,
+    status: "pending",
+    concurrency: 8,
+    started_at: null,
+    finished_at: null,
+    metrics: null,
+    error: null,
+    cancel_requested: false,
+    ...overrides,
+  };
+}
 
 function makeVersion(overrides: Partial<AgentVersion> = {}): AgentVersion {
   return {
@@ -86,6 +132,7 @@ beforeEach(() => {
     tools: [],
     capabilities: [],
   });
+  vi.mocked(datasets.list).mockResolvedValue([makeDataset()]);
 });
 
 afterEach(() => {
@@ -94,6 +141,118 @@ afterEach(() => {
 });
 
 describe("AgentDetail", () => {
+  it("starts a derive run for the selected version and opens its run detail", async () => {
+    vi.mocked(agents.get).mockResolvedValue(makeDetail());
+    vi.mocked(runs.create).mockResolvedValue(makeRun());
+    const user = userEvent.setup();
+    renderDetail();
+
+    await screen.findByRole("heading", { name: "Support agent" });
+    await user.click(
+      screen.getByRole("button", { name: "Run over a dataset" }),
+    );
+    await user.selectOptions(
+      await screen.findByLabelText("Dataset"),
+      "dataset-1",
+    );
+    await user.click(screen.getByRole("button", { name: "Run agent" }));
+
+    await waitFor(() =>
+      expect(runs.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "derive",
+          version_id: "av-1",
+          dataset_id: "dataset-1",
+        }),
+      ),
+    );
+    const payload = vi.mocked(runs.create).mock.calls[0]?.[0];
+    expect(payload).not.toHaveProperty("derivation_id");
+    expect(navigate).toHaveBeenCalledWith("/runs/run-derive-1");
+  });
+
+  it("disables a whole-dataset run when the agent has no selected version", async () => {
+    vi.mocked(agents.get).mockResolvedValue(
+      makeDetail({
+        agent: {
+          ...makeDetail().agent,
+          active_version_id: null,
+          version_count: 0,
+        },
+        versions: [],
+      }),
+    );
+    renderDetail();
+
+    await screen.findByRole("heading", { name: "Support agent" });
+    expect(
+      screen.getByRole("button", { name: "Run over a dataset" }),
+    ).toBeDisabled();
+  });
+
+  it("shows a rejected derive run's API message instead of navigating", async () => {
+    vi.mocked(agents.get).mockResolvedValue(makeDetail());
+    vi.mocked(runs.create).mockRejectedValue(
+      new ApiError(
+        "Dataset is missing required columns: context",
+        "ContractError",
+        422,
+      ),
+    );
+    const user = userEvent.setup();
+    renderDetail();
+
+    await screen.findByRole("heading", { name: "Support agent" });
+    await user.click(
+      screen.getByRole("button", { name: "Run over a dataset" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await user.selectOptions(
+      within(dialog).getByLabelText("Dataset"),
+      "dataset-1",
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Run agent" }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "Dataset is missing required columns: context",
+    );
+    expect(
+      within(dialog).getByRole("button", { name: "Run agent" }),
+    ).not.toBeDisabled();
+    expect(
+      within(dialog).getByRole("button", { name: "Cancel" }),
+    ).not.toBeDisabled();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("allows only one derive run request while submission is pending", async () => {
+    vi.mocked(agents.get).mockResolvedValue(makeDetail());
+    let resolveRun!: (run: Run) => void;
+    vi.mocked(runs.create).mockImplementation(
+      () => new Promise((resolve) => (resolveRun = resolve)),
+    );
+    const user = userEvent.setup();
+    renderDetail();
+
+    await screen.findByRole("heading", { name: "Support agent" });
+    await user.click(
+      screen.getByRole("button", { name: "Run over a dataset" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    const submit = within(dialog).getByRole("button", { name: "Run agent" });
+
+    await user.click(submit);
+    await user.click(submit);
+
+    expect(runs.create).toHaveBeenCalledOnce();
+    expect(submit).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(within(dialog).getByRole("status", { name: "Loading" })).toBeInTheDocument();
+
+    resolveRun(makeRun());
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/runs/run-derive-1"));
+  });
+
   it("loads the active version and renders its bindings, raw spec, and response columns", async () => {
     vi.mocked(agents.get).mockResolvedValue(makeDetail());
     renderDetail();

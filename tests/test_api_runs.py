@@ -17,9 +17,17 @@ from pydantic_ai.models.test import TestModel
 
 from valcore.api.deps import get_store
 from valcore.api.main import create_app
+from valcore.api.routes import runs as runs_route
 from valcore.api.routes.runs import _tasks, get_agent_factory
 from valcore.factory import build_output_model
-from valcore.models import RunKind, RunStatus, ScoreKind
+from valcore.models import (
+    AgentVersion,
+    DerivationRole,
+    DerivationState,
+    RunKind,
+    RunStatus,
+    ScoreKind,
+)
 from valcore.store import Store, create_engine, init_db
 
 CATEGORICAL_SCHEMA = {"kind": "categorical", "labels": ["pass", "fail"]}
@@ -93,6 +101,30 @@ def make_version(store: Store, **overrides):
     return store.create_version(evaluator.id, **{**VERSION_FIELDS, **overrides})
 
 
+def make_agent_version(store: Store, *, required_columns: list[str] | None = None) -> AgentVersion:
+    """Create a subject-agent version whose default text response is ``response``."""
+    required_columns = required_columns or ["input"]
+    agent = store.create_agent("subject")
+    return store.create_agent_version(
+        agent.id,
+        version_name="v1",
+        model="gateway/anthropic:claude-sonnet-5",
+        spec={"instructions": "Answer concisely."},
+        prompt_template=f"Reply to: {{{required_columns[0]}}}",
+        required_columns=required_columns,
+        deps_mapping={},
+    )
+
+
+def prevent_background_execution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep creation-route tests deterministic by preventing asynchronous execution."""
+
+    def do_nothing(*args: object, **kwargs: object) -> None:
+        """Replace the launcher while a test inspects newly persisted state."""
+
+    monkeypatch.setattr(runs_route, "_launch_run", do_nothing)
+
+
 def make_dataset(store: Store, labels: list[str | None], *, inputs: list[str] | None = None):
     """Create a dataset with one row per label entry (None = unlabeled)."""
     dataset = store.create_dataset("ds", "", ["input", "output"])
@@ -157,6 +189,289 @@ async def _start_run(client: httpx.AsyncClient, version_id: str, dataset_id: str
     return resp.json()
 
 
+# -- Derived contracts --------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_derive_run_creates_staged_derivation_and_fills_link(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A whole-dataset agent pass owns a staged overlay until the user saves it."""
+    prevent_background_execution(monkeypatch)
+    agent_version = make_agent_version(store)
+    dataset, _ = make_dataset(store, ["pass"])
+
+    async with _client(store, constant_factory()) as client:
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "derive",
+                "version_id": agent_version.id,
+                "dataset_id": dataset.id,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    derivation = store.get_derivation(body["derivation_id"])
+    link = store.get_run_derivation(body["id"])
+    assert derivation.agent_version_id == agent_version.id
+    assert derivation.response_columns == agent_version.response_columns
+    assert store.derivation_state(derivation.id) is DerivationState.STAGED
+    assert link is not None
+    assert link.derivation_id == derivation.id
+    assert link.role is DerivationRole.FILLS
+    assert store.get_agent_version(agent_version.id).frozen is True
+
+
+@pytest.mark.anyio
+async def test_derive_run_rejects_missing_agent_columns_without_persisting_run(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Agent compatibility must be checked before creating its run or staging an overlay."""
+    prevent_background_execution(monkeypatch)
+    agent_version = make_agent_version(store, required_columns=["missing"])
+    dataset, _ = make_dataset(store, ["pass"])
+    before = store.list_runs(dataset_id=dataset.id)
+
+    async with _client(store, constant_factory()) as client:
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "derive",
+                "version_id": agent_version.id,
+                "dataset_id": dataset.id,
+            },
+        )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["type"] == "ContractError"
+    assert store.list_runs(dataset_id=dataset.id) == before
+    assert store.list_derivations(dataset_id=dataset.id, include_staged=True) == []
+
+
+@pytest.mark.anyio
+async def test_derive_run_rejects_caller_supplied_derivation(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A derive run always creates its own output overlay rather than filling a supplied one."""
+    prevent_background_execution(monkeypatch)
+    agent_version = make_agent_version(store)
+    dataset, rows = make_dataset(store, ["pass"])
+    existing = store.save_derivation(
+        dataset_id=dataset.id,
+        agent_version_id=agent_version.id,
+        response_columns=["response"],
+        responses=[{"row_id": rows[0].id, "data": {"response": "existing"}}],
+    )
+
+    async with _client(store, constant_factory()) as client:
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "derive",
+                "version_id": agent_version.id,
+                "dataset_id": dataset.id,
+                "derivation_id": existing.id,
+            },
+        )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["type"] == "ContractError"
+    assert store.list_runs(dataset_id=dataset.id) == []
+
+
+@pytest.mark.anyio
+async def test_eval_run_reads_derivation_and_uses_its_response_columns(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An evaluator can read the union of base and saved-derivation response columns."""
+    prevent_background_execution(monkeypatch)
+    agent_version = make_agent_version(store)
+    dataset, rows = make_dataset(store, ["pass"])
+    derivation = store.save_derivation(
+        dataset_id=dataset.id,
+        agent_version_id=agent_version.id,
+        response_columns=["response"],
+        responses=[{"row_id": rows[0].id, "data": {"response": "answer"}}],
+    )
+    evaluator_version = make_version(
+        store,
+        prompt_template="Input: {input} Response: {response}",
+        required_columns=["input", "response"],
+    )
+
+    async with _client(store, constant_factory()) as client:
+        without_derivation = await client.post(
+            "/api/runs",
+            json={
+                "kind": "eval",
+                "version_id": evaluator_version.id,
+                "dataset_id": dataset.id,
+            },
+        )
+        with_derivation = await client.post(
+            "/api/runs",
+            json={
+                "kind": "eval",
+                "version_id": evaluator_version.id,
+                "dataset_id": dataset.id,
+                "derivation_id": derivation.id,
+            },
+        )
+
+    assert without_derivation.status_code == 422, without_derivation.text
+    assert without_derivation.json()["error"]["type"] == "ContractError"
+    assert with_derivation.status_code == 200, with_derivation.text
+    body = with_derivation.json()
+    link = store.get_run_derivation(body["id"])
+    assert body["derivation_id"] == derivation.id
+    assert link is not None
+    assert link.derivation_id == derivation.id
+    assert link.role is DerivationRole.READS
+
+
+@pytest.mark.anyio
+async def test_eval_run_rejects_derivation_from_another_dataset_without_persisting_run(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A foreign overlay is rejected before the evaluator is frozen or its run exists."""
+    prevent_background_execution(monkeypatch)
+    agent_version = make_agent_version(store)
+    requested_dataset, _ = make_dataset(store, ["pass"])
+    other_dataset = store.create_dataset("other", "", ["input"])
+    other_row = store.add_rows(other_dataset.id, [{"input": "other"}])[0]
+    derivation = store.save_derivation(
+        dataset_id=other_dataset.id,
+        agent_version_id=agent_version.id,
+        response_columns=["response"],
+        responses=[{"row_id": other_row.id, "data": {"response": "answer"}}],
+    )
+    evaluator_version = make_version(store)
+
+    async with _client(store, constant_factory()) as client:
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "eval",
+                "version_id": evaluator_version.id,
+                "dataset_id": requested_dataset.id,
+                "derivation_id": derivation.id,
+            },
+        )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["type"] == "ContractError"
+    assert store.list_runs(dataset_id=requested_dataset.id) == []
+    assert store.get_version(evaluator_version.id).frozen is False
+
+
+@pytest.mark.anyio
+async def test_eval_run_rejects_staged_derivation_without_persisting_run(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Staged responses remain invisible and cannot leave an orphan evaluator run."""
+    prevent_background_execution(monkeypatch)
+    agent_version = make_agent_version(store)
+    dataset, _ = make_dataset(store, ["pass"])
+    derivation = store.create_staged_derivation(
+        dataset_id=dataset.id,
+        agent_version_id=agent_version.id,
+        response_columns=["response"],
+    )
+    evaluator_version = make_version(store)
+
+    async with _client(store, constant_factory()) as client:
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "eval",
+                "version_id": evaluator_version.id,
+                "dataset_id": dataset.id,
+                "derivation_id": derivation.id,
+            },
+        )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["type"] == "ContractError"
+    assert store.list_runs(dataset_id=dataset.id) == []
+    assert store.get_version(evaluator_version.id).frozen is False
+
+
+@pytest.mark.anyio
+async def test_derive_run_rejects_experiment_without_persisting_run(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Experiment mode evaluates judges and cannot execute a subject-agent pass."""
+    prevent_background_execution(monkeypatch)
+    agent_version = make_agent_version(store)
+    dataset, _ = make_dataset(store, ["pass"])
+
+    async with _client(store, constant_factory()) as client:
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "derive",
+                "version_id": agent_version.id,
+                "dataset_id": dataset.id,
+                "experiment": True,
+            },
+        )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["type"] == "ContractError"
+    assert store.list_runs(dataset_id=dataset.id) == []
+    assert store.list_derivations(dataset_id=dataset.id, include_staged=True) == []
+    assert store.get_agent_version(agent_version.id).frozen is False
+
+
+@pytest.mark.anyio
+async def test_validation_run_rejects_derivation(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Validation remains grounded in the base dataset until scoped labels exist."""
+    prevent_background_execution(monkeypatch)
+    agent_version = make_agent_version(store)
+    dataset, rows = make_dataset(store, ["pass"])
+    derivation = store.save_derivation(
+        dataset_id=dataset.id,
+        agent_version_id=agent_version.id,
+        response_columns=["response"],
+        responses=[{"row_id": rows[0].id, "data": {"response": "answer"}}],
+    )
+    evaluator_version = make_version(store)
+
+    async with _client(store, constant_factory()) as client:
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "validation",
+                "version_id": evaluator_version.id,
+                "dataset_id": dataset.id,
+                "derivation_id": derivation.id,
+            },
+        )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["type"] == "ContractError"
+    assert store.list_runs(dataset_id=dataset.id) == []
+
+
+@pytest.mark.anyio
+async def test_ordinary_run_returns_null_derivation_id(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Existing evaluator runs expose no derivation contract in their response shape."""
+    prevent_background_execution(monkeypatch)
+    version = make_version(store)
+    dataset, _ = make_dataset(store, ["pass"])
+
+    async with _client(store, constant_factory()) as client:
+        body = await _start_run(client, version.id, dataset.id)
+
+    assert body["derivation_id"] is None
+
+
 # -- Start & completion -------------------------------------------------------
 
 
@@ -201,6 +516,47 @@ async def test_experiment_flag_selects_the_experiment_engine(store: Store) -> No
 
 
 @pytest.mark.anyio
+async def test_eval_experiment_runs_against_linked_derivation(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The API's experiment path scores response columns from its linked overlay."""
+    agent_version = make_agent_version(store)
+    dataset, rows = make_dataset(store, ["pass", "pass"])
+    derivation = store.save_derivation(
+        dataset_id=dataset.id,
+        agent_version_id=agent_version.id,
+        response_columns=["response"],
+        responses=[{"row_id": rows[0].id, "data": {"response": "answer"}}],
+    )
+    evaluator_version = make_version(
+        store,
+        prompt_template="Input: {input} Response: {response}",
+        required_columns=["input", "response"],
+    )
+    factory = constant_factory()
+    monkeypatch.setattr("valcore.experiment.build_agent", factory)
+
+    async with _client(store, constant_factory()) as client:
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "eval",
+                "version_id": evaluator_version.id,
+                "dataset_id": dataset.id,
+                "derivation_id": derivation.id,
+                "experiment": True,
+            },
+        )
+        assert response.status_code == 200, response.text
+        final = await _poll_until_terminal(client, response.json()["id"])
+
+    assert final["status"] == RunStatus.COMPLETED.value
+    assert final["metrics"] == {"scored": 1, "skipped": {"no_response": 1}}
+    results = store.list_results(final["id"])
+    assert [result.row_id for result in results] == [rows[0].id]
+
+
+@pytest.mark.anyio
 async def test_list_runs_filters_by_dataset(store: Store) -> None:
     version = make_version(store)
     ds_a, _ = make_dataset(store, ["pass"])
@@ -217,6 +573,22 @@ async def test_list_runs_filters_by_dataset(store: Store) -> None:
 
 
 # -- Results filtering --------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_derive_results_are_rejected_without_resolving_an_evaluator_version(
+    store: Store,
+) -> None:
+    """Derive runs persist agent responses, not evaluator result rows."""
+    agent_version = make_agent_version(store)
+    dataset, _ = make_dataset(store, ["pass"])
+    run = store.create_run(RunKind.DERIVE, agent_version.id, dataset.id, concurrency=1)
+
+    async with _client(store, constant_factory()) as client:
+        response = await client.get(f"/api/runs/{run.id}/results")
+
+    assert response.status_code == 422
+    assert "derive runs do not have evaluator results" in response.text.lower()
 
 
 @pytest.mark.anyio
@@ -339,6 +711,45 @@ async def test_sse_late_subscriber_gets_replayed_status(store: Store) -> None:
     assert first_event["completed"] == 3
 
 
+@pytest.mark.anyio
+async def test_sse_derive_replay_counts_staged_responses(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reconnect reports completed subject-agent responses rather than evaluator results."""
+    prevent_background_execution(monkeypatch)
+    agent_version = make_agent_version(store)
+    dataset, rows = make_dataset(store, ["pass", "pass"])
+
+    async with _client(store, constant_factory()) as client:
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "derive",
+                "version_id": agent_version.id,
+                "dataset_id": dataset.id,
+            },
+        )
+        body = response.json()
+        store.add_agent_response(
+            body["derivation_id"], {"row_id": rows[0].id, "data": {"response": "done"}}
+        )
+        store.update_run_status(body["id"], RunStatus.COMPLETED)
+
+        first_event: dict = {}
+        async with asyncio.timeout(10.0):
+            async with client.stream("GET", f"/api/runs/{body['id']}/events") as stream:
+                event_name = None
+                async for line in stream.aiter_lines():
+                    line = line.strip()
+                    if line.startswith("event:"):
+                        event_name = line[len("event:") :].strip()
+                    elif line.startswith("data:") and event_name == "status":
+                        first_event = json.loads(line[len("data:") :].strip())
+                        break
+
+    assert first_event["completed"] == 1
+
+
 # -- Cancel -------------------------------------------------------------------
 
 
@@ -370,6 +781,21 @@ async def test_cancel_transitions_to_cancelled(store: Store) -> None:
 
 
 # -- Retry failed -------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_retry_failed_rejects_derive_runs(store: Store) -> None:
+    """Agent passes can only be rerun as whole-dataset derive runs."""
+    agent_version = make_agent_version(store)
+    dataset, _ = make_dataset(store, ["pass"])
+    run = store.create_run(RunKind.DERIVE, agent_version.id, dataset.id, concurrency=1)
+
+    async with _client(store, constant_factory()) as client:
+        response = await client.post(f"/api/runs/{run.id}/retry-failed")
+
+    assert response.status_code == 422
+    assert "whole-dataset" in response.text
+    assert store.get_run(run.id).status is RunStatus.PENDING
 
 
 @pytest.mark.anyio
@@ -434,6 +860,28 @@ async def test_compare_rejects_mismatched_datasets(store: Store) -> None:
         resp = await client.get("/api/runs/compare", params={"a": run_a.id, "b": run_b.id})
 
     assert resp.status_code == 422
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("derive_side", ["a", "b"])
+async def test_compare_rejects_derive_runs(store: Store, derive_side: str) -> None:
+    """Evaluator comparisons cannot interpret an agent version as an evaluator version."""
+    version = make_version(store)
+    agent_version = make_agent_version(store)
+    dataset, rows = make_dataset(store, ["pass"])
+    evaluator_run = _seed_run_with_scores(store, dataset.id, version.id, {rows[0].id: "pass"})
+    derive_run = store.create_run(RunKind.DERIVE, agent_version.id, dataset.id, concurrency=1)
+    params = (
+        {"a": derive_run.id, "b": evaluator_run.id}
+        if derive_side == "a"
+        else {"a": evaluator_run.id, "b": derive_run.id}
+    )
+
+    async with _client(store, constant_factory()) as client:
+        response = await client.get("/api/runs/compare", params=params)
+
+    assert response.status_code == 422
+    assert "derive runs cannot be compared" in response.text.lower()
 
 
 @pytest.mark.anyio

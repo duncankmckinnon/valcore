@@ -77,7 +77,9 @@ export default function ComparePage() {
 
   const options = [
     { value: "", label: "Select a run…" },
-    ...runList.map((run) => ({ value: run.id, label: runLabel(run) })),
+    ...runList
+      .filter((run) => run.kind !== "derive")
+      .map((run) => ({ value: run.id, label: runLabel(run) })),
   ];
 
   return (

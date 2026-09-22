@@ -4,16 +4,19 @@ Both builders belong here because this module is the shared boundary between val
 persisted version specifications and the executable agents reconstructed from them.
 """
 
+import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, create_model
 from pydantic_ai import Agent as PydanticAgent
-from pydantic_ai.agent.spec import AgentSpec
 from pydantic_ai.exceptions import UserError
+from pydantic_ai.usage import RunUsage
 
 from valcore import agent_spec
+from valcore.agent_spec import AgentSpec
 from valcore.capabilities import CAPABILITY_REGISTRY, spec_capability_types
 from valcore.errors import ConfigError, ContractError
 from valcore.local_cli import resolve_model
@@ -32,6 +35,29 @@ from valcore.settings import is_local_cli_model
 from valcore.tools import get_tools
 
 _NUMERIC_FIELD_TYPES: frozenset[FieldType] = frozenset({FieldType.INT, FieldType.FLOAT})
+
+
+@dataclass(frozen=True)
+class AgentExecution:
+    """The complete inspectable outcome of running one stored subject-agent version."""
+
+    prompt: str
+    deps: dict[str, Any]
+    output: dict[str, object]
+    response_columns: list[str]
+    latency_ms: int
+    usage: dict[str, int] | None
+    error: str | None
+
+
+def usage_dict(usage: RunUsage) -> dict[str, int]:
+    """Serialize pydantic-ai usage into a plain persistence-safe dictionary."""
+    return {
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "total_tokens": usage.total_tokens,
+        "requests": usage.requests,
+    }
 
 
 def _model_name(version: EvaluatorVersion) -> str:
@@ -127,10 +153,13 @@ def build_agent_from_version(version: AgentVersion) -> PydanticAgent:
     """
     validate_agent_version(version)
     spec = agent_spec.parse_spec(version.spec)
+    instructions = agent_spec.runtime_instructions(spec)
+    spec_without_instructions = spec.model_copy(update={"instructions": None})
     try:
         return PydanticAgent.from_spec(
-            spec,
+            spec_without_instructions,
             model=resolve_model(version.model),
+            instructions=instructions,
             custom_capability_types=spec_capability_types(),
             defer_model_check=True,
         )
@@ -150,6 +179,38 @@ def agent_response_data(
         name: output.get(name)
         for name in agent_spec.output_column_names(spec, text_column=text_column)
     }
+
+
+async def execute_agent_version(
+    version: AgentVersion, agent: PydanticAgent, row_data: dict[str, Any]
+) -> AgentExecution:
+    """Run one subject-agent binding and return success or failure as inspectable data."""
+    spec = agent_spec.parse_spec(version.spec)
+    prompt = agent_spec.render_agent_prompt(version.prompt_template, row_data)
+    deps = agent_spec.build_deps(version.deps_mapping, row_data)
+    response_columns = agent_spec.output_column_names(spec)
+    start = time.perf_counter()
+    try:
+        result = await agent.run(prompt, deps=deps)
+        return AgentExecution(
+            prompt=prompt,
+            deps=deps,
+            output=agent_response_data(spec, result.output),
+            response_columns=response_columns,
+            latency_ms=int((time.perf_counter() - start) * 1000),
+            usage=usage_dict(result.usage),
+            error=None,
+        )
+    except Exception as exc:  # noqa: BLE001 - model failures are returned for inspection.
+        return AgentExecution(
+            prompt=prompt,
+            deps=deps,
+            output={},
+            response_columns=response_columns,
+            latency_ms=int((time.perf_counter() - start) * 1000),
+            usage=None,
+            error=str(exc),
+        )
 
 
 def render_prompt(version: EvaluatorVersion, row_data: dict) -> str:

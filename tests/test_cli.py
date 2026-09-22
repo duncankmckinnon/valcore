@@ -29,13 +29,18 @@ from pydantic_ai.models.test import TestModel
 from sqlalchemy.engine import Engine
 
 from valcore.cli.main import cli
-from valcore.cli.resolve import resolve_dataset, resolve_evaluator, resolve_version
+from valcore.cli.resolve import (
+    resolve_dataset,
+    resolve_derivation,
+    resolve_evaluator,
+    resolve_version,
+)
 from valcore.config import load_config
 from valcore.config_io import EvalPackage
 from valcore.errors import ContractError, NotFoundError
 from valcore.export import render_script
 from valcore.factory import build_output_model
-from valcore.models import LabelSource, OutputField, ScoreKind, parse_output_fields
+from valcore.models import DerivationRole, LabelSource, OutputField, ScoreKind, parse_output_fields
 from valcore.store import Store, create_engine, init_db
 
 CATEGORICAL_SCHEMA = {"kind": "categorical", "labels": ["pass", "fail"]}
@@ -230,6 +235,34 @@ def test_list_runs_json(runner, store, db_path):
     assert json.loads(result.output) == []
 
 
+def test_list_derivations_renders_saved_overlay_fields(runner, store, db_path):
+    """The generic listing exposes the identity and shape of accepted derivations."""
+    dataset = resolve_dataset(store, "cases")
+    agent = store.create_agent("writer")
+    version = store.create_agent_version(
+        agent.id,
+        version_name="v1",
+        model="local/codex",
+        spec={"model": "test"},
+        prompt_template="{input}",
+        required_columns=["input"],
+        deps_mapping={},
+    )
+    row = store.list_rows(dataset.id)[0]
+    store.save_derivation(
+        dataset_id=dataset.id,
+        agent_version_id=version.id,
+        response_columns=["draft"],
+        responses=[{"row_id": row.id, "data": {"draft": "answer"}}],
+    )
+
+    result = _invoke(runner, db_path, "list", "derivations")
+
+    assert result.exit_code == 0, result.stderr
+    for column in ("agent", "version", "ordinal", "rows", "response_columns"):
+        assert column in result.output
+
+
 # -- resolve ------------------------------------------------------------------
 
 
@@ -278,6 +311,69 @@ def test_resolve_short_prefix_rejected(store):
         resolve_evaluator(store, "ab")
 
 
+def test_resolve_derivation_accepts_a_saved_derivation_reference(store):
+    """Derivation references combine agent, version, and save-time ordinal."""
+    dataset = resolve_dataset(store, "cases")
+    agent = store.create_agent("writer")
+    version = store.create_agent_version(
+        agent.id,
+        version_name="v1",
+        model="local/codex",
+        spec={"model": "test"},
+        prompt_template="{input}",
+        required_columns=["input"],
+        deps_mapping={},
+    )
+    row = store.list_rows(dataset.id)[0]
+    derivation = store.save_derivation(
+        dataset_id=dataset.id,
+        agent_version_id=version.id,
+        response_columns=["draft"],
+        responses=[{"row_id": row.id, "data": {"draft": "answer"}}],
+    )
+
+    assert resolve_derivation(store, "writer/v1/0", dataset_id=dataset.id).id == derivation.id
+    assert resolve_derivation(store, derivation.id[:8], dataset_id=dataset.id).id == derivation.id
+
+
+def test_resolve_derivation_canonical_ambiguity_lists_candidate_ids(store):
+    """Canonical ordinals can collide across datasets, so ambiguity names every overlay."""
+    agent = store.create_agent("writer")
+    version = store.create_agent_version(
+        agent.id,
+        version_name="v1",
+        model="local/codex",
+        spec={"model": "test"},
+        prompt_template="{input}",
+        required_columns=["input"],
+        deps_mapping={},
+    )
+    derivations = []
+    for name in ("first", "second"):
+        dataset = store.create_dataset(name, "", ["input"])
+        row = store.add_rows(dataset.id, [{"input": name}])[0]
+        derivations.append(
+            store.save_derivation(
+                dataset_id=dataset.id,
+                agent_version_id=version.id,
+                response_columns=["draft"],
+                responses=[{"row_id": row.id, "data": {"draft": name}}],
+            )
+        )
+
+    with pytest.raises(ContractError) as exc_info:
+        resolve_derivation(store, "writer/v1/0")
+
+    message = str(exc_info.value)
+    assert all(derivation.id[:8] in message for derivation in derivations)
+
+
+def test_resolve_derivation_missing_canonical_ref_names_it(store):
+    """A missing canonical derivation reports the complete requested reference."""
+    with pytest.raises(NotFoundError, match="missing/v1/0"):
+        resolve_derivation(store, "missing/v1/0")
+
+
 def test_resolve_version_none_returns_active(store):
     evaluator = resolve_evaluator(store, "judge")
     version = resolve_version(store, evaluator, None)
@@ -295,7 +391,7 @@ def test_resolve_version_none_errors_without_active(store):
 
 def test_run_happy_path_writes_results(runner, store, db_path, monkeypatch):
     monkeypatch.setattr("valcore.runner.build_agent", _constant_agent_builder("pass"))
-    result = _invoke(runner, db_path, "run", "judge", "cases")
+    result = _invoke(runner, db_path, "run", "evaluator", "judge", "--dataset", "cases")
     assert result.exit_code == 0
     runs = store.list_runs()
     assert len(runs) == 1
@@ -304,7 +400,7 @@ def test_run_happy_path_writes_results(runner, store, db_path, monkeypatch):
 
 def test_run_json_stdout_is_pure_json(runner, store, db_path, monkeypatch):
     monkeypatch.setattr("valcore.runner.build_agent", _constant_agent_builder("pass"))
-    result = _invoke(runner, db_path, "run", "judge", "cases", "--json")
+    result = _invoke(runner, db_path, "run", "evaluator", "judge", "--dataset", "cases", "--json")
     assert result.exit_code == 0
     # Progress went to stderr; stdout alone must parse as JSON and carry metrics.
     payload = json.loads(result.stdout)
@@ -314,7 +410,7 @@ def test_run_json_stdout_is_pure_json(runner, store, db_path, monkeypatch):
 
 def test_run_progress_goes_to_stderr(runner, store, db_path, monkeypatch):
     monkeypatch.setattr("valcore.runner.build_agent", _constant_agent_builder("pass"))
-    result = _invoke(runner, db_path, "run", "judge", "cases", "--json")
+    result = _invoke(runner, db_path, "run", "evaluator", "judge", "--dataset", "cases", "--json")
     assert result.exit_code == 0
     assert "4/4" in result.stderr
     # stdout is clean JSON with no progress noise.
@@ -324,21 +420,174 @@ def test_run_progress_goes_to_stderr(runner, store, db_path, monkeypatch):
 def test_run_min_accuracy_above_exits_2(runner, store, db_path, monkeypatch):
     # Two "pass" labels of four rows: always-pass agent achieves accuracy 0.5.
     monkeypatch.setattr("valcore.runner.build_agent", _constant_agent_builder("pass"))
-    result = _invoke(runner, db_path, "run", "judge", "cases", "--min-accuracy", "0.9")
+    result = _invoke(
+        runner, db_path, "run", "evaluator", "judge", "--dataset", "cases", "--min-accuracy", "0.9"
+    )
     assert result.exit_code == 2
     assert "below" in result.stderr
 
 
 def test_run_min_accuracy_below_exits_0(runner, store, db_path, monkeypatch):
     monkeypatch.setattr("valcore.runner.build_agent", _constant_agent_builder("pass"))
-    result = _invoke(runner, db_path, "run", "judge", "cases", "--min-accuracy", "0.1")
+    result = _invoke(
+        runner, db_path, "run", "evaluator", "judge", "--dataset", "cases", "--min-accuracy", "0.1"
+    )
     assert result.exit_code == 0
 
 
 def test_run_unresolvable_evaluator_exits_1(runner, store, db_path):
-    result = _invoke(runner, db_path, "run", "no-such-evaluator", "cases")
+    result = _invoke(runner, db_path, "run", "evaluator", "no-such-evaluator", "--dataset", "cases")
     assert result.exit_code == 1
     assert "error:" in result.stderr
+
+
+def test_run_evaluator_derivation_scores_its_usable_response_union(
+    runner, store, db_path, monkeypatch
+):
+    """An evaluator reads the base row plus a saved response overlay through ``--derivation``."""
+    monkeypatch.setattr("valcore.runner.build_agent", _constant_agent_builder("pass"))
+    dataset = resolve_dataset(store, "cases")
+    agent = store.create_agent("writer")
+    agent_version = store.create_agent_version(
+        agent.id,
+        version_name="v1",
+        model="local/codex",
+        spec={"model": "test"},
+        prompt_template="{input}",
+        required_columns=["input"],
+        deps_mapping={},
+    )
+    rows = store.list_rows(dataset.id)
+    derivation = store.save_derivation(
+        dataset_id=dataset.id,
+        agent_version_id=agent_version.id,
+        response_columns=["draft"],
+        responses=[{"row_id": row.id, "data": {"draft": f"draft-{row.idx}"}} for row in rows],
+    )
+    evaluator = resolve_evaluator(store, "judge")
+    store.create_version(
+        evaluator.id,
+        **{
+            **VERSION_FIELDS,
+            "version_name": "reads-draft",
+            "prompt_template": "Draft: {draft}",
+            "required_columns": ["draft"],
+        },
+    )
+
+    result = _invoke(
+        runner,
+        db_path,
+        "run",
+        "evaluator",
+        "judge",
+        "--dataset",
+        "cases",
+        "--version",
+        "reads-draft",
+        "--kind",
+        "eval",
+        "--derivation",
+        derivation.id[:8],
+    )
+
+    assert result.exit_code == 0, result.output + result.stderr
+    run = store.list_runs()[0]
+    assert store.get_run_derivation(run.id).role is DerivationRole.READS
+    assert len(store.list_results(run.id)) == len(rows)
+
+
+def test_run_evaluator_rejects_derivation_validation_without_label_sets(runner, store, db_path):
+    """Validation labels apply to the base contract, not a derivation-only response schema."""
+    dataset = resolve_dataset(store, "cases")
+    agent = store.create_agent("writer")
+    version = store.create_agent_version(
+        agent.id,
+        version_name="v1",
+        model="local/codex",
+        spec={"model": "test"},
+        prompt_template="{input}",
+        required_columns=["input"],
+        deps_mapping={},
+    )
+    row = store.list_rows(dataset.id)[0]
+    derivation = store.save_derivation(
+        dataset_id=dataset.id,
+        agent_version_id=version.id,
+        response_columns=["draft"],
+        responses=[{"row_id": row.id, "data": {"draft": "answer"}}],
+    )
+
+    result = _invoke(
+        runner,
+        db_path,
+        "run",
+        "evaluator",
+        "judge",
+        "--dataset",
+        "cases",
+        "--derivation",
+        derivation.id[:8],
+        "--kind",
+        "validation",
+    )
+
+    assert result.exit_code == 1
+    assert "label set" in result.stderr.lower()
+
+
+def test_run_evaluator_rejects_derivation_validation_before_gateway_key_check(
+    runner, store, db_path, monkeypatch
+):
+    """An invalid command contract is diagnosed even on a keyless installation."""
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+
+    result = _invoke(
+        runner,
+        db_path,
+        "run",
+        "evaluator",
+        "judge",
+        "--dataset",
+        "cases",
+        "--derivation",
+        "missing",
+        "--kind",
+        "validation",
+    )
+
+    assert result.exit_code == 1
+    assert "label set" in result.stderr.lower()
+    assert "gateway" not in result.stderr.lower()
+
+
+def test_run_evaluator_rejects_derive_kind_as_a_click_choice(runner, store, db_path):
+    """Derive runs belong to agent versions and are not an evaluator mode."""
+    result = _invoke(
+        runner,
+        db_path,
+        "run",
+        "evaluator",
+        "judge",
+        "--dataset",
+        "cases",
+        "--kind",
+        "derive",
+    )
+
+    assert result.exit_code == 2
+    assert "invalid value for '--kind'" in result.stderr.lower()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [("run", "judge", "cases"), ("experiment", "judge", "cases")],
+)
+def test_removed_run_spellings_exit_nonzero(runner, store, db_path, args):
+    """The old command spellings are deliberately a hard break."""
+    result = _invoke(runner, db_path, *args)
+
+    assert result.exit_code != 0
 
 
 # -- gateway guard --------------------------------------------------------------
@@ -350,7 +599,7 @@ def test_run_unresolvable_evaluator_exits_1(runner, store, db_path):
 
 def test_run_no_gateway_key_exits_nonzero_naming_set_key(runner, store, db_path, monkeypatch):
     monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
-    result = _invoke(runner, db_path, "run", "judge", "cases")
+    result = _invoke(runner, db_path, "run", "evaluator", "judge", "--dataset", "cases")
     assert result.exit_code != 0
     assert "valcore config set-key" in result.stderr
     for run in store.list_runs():
@@ -361,7 +610,7 @@ def test_experiment_no_gateway_key_exits_nonzero_naming_set_key(
     runner, store, db_path, monkeypatch
 ):
     monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
-    result = _invoke(runner, db_path, "experiment", "judge", "cases")
+    result = _invoke(runner, db_path, "run", "experiment", "judge", "--dataset", "cases")
     assert result.exit_code != 0
     assert "valcore config set-key" in result.stderr
     for run in store.list_runs():
@@ -391,7 +640,9 @@ def test_run_with_local_model_succeeds_without_gateway_key(runner, store, db_pat
     monkeypatch.setattr("valcore.runner.build_agent", _constant_agent_builder("pass"))
     _local_model_version(store)
 
-    result = _invoke(runner, db_path, "run", "judge", "cases", "--version", "v2")
+    result = _invoke(
+        runner, db_path, "run", "evaluator", "judge", "--dataset", "cases", "--version", "v2"
+    )
 
     assert result.exit_code == 0, result.output + result.stderr
     runs = store.list_runs()
@@ -407,7 +658,9 @@ def test_experiment_with_local_model_succeeds_without_gateway_key(
     )
     _local_model_version(store)
 
-    result = _invoke(runner, db_path, "experiment", "judge", "cases", "--version", "v2")
+    result = _invoke(
+        runner, db_path, "run", "experiment", "judge", "--dataset", "cases", "--version", "v2"
+    )
 
     assert result.exit_code == 0, result.output + result.stderr
 
@@ -444,7 +697,7 @@ def test_experiment_happy_path_writes_results(runner, store, db_path, monkeypatc
     monkeypatch.setattr(
         "valcore.experiment.build_agent", _constant_test_model_agent_builder("pass")
     )
-    result = _invoke(runner, db_path, "experiment", "judge", "cases")
+    result = _invoke(runner, db_path, "run", "experiment", "judge", "--dataset", "cases")
     assert result.exit_code == 0
     runs = store.list_runs()
     assert len(runs) == 1
@@ -455,7 +708,7 @@ def test_experiment_json_stdout_is_pure_json(runner, store, db_path, monkeypatch
     monkeypatch.setattr(
         "valcore.experiment.build_agent", _constant_test_model_agent_builder("pass")
     )
-    result = _invoke(runner, db_path, "experiment", "judge", "cases", "--json")
+    result = _invoke(runner, db_path, "run", "experiment", "judge", "--dataset", "cases", "--json")
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["metrics"]["n"] == 4
@@ -466,13 +719,17 @@ def test_experiment_concurrency_option_sets_run_concurrency(runner, store, db_pa
     monkeypatch.setattr(
         "valcore.experiment.build_agent", _constant_test_model_agent_builder("pass")
     )
-    result = _invoke(runner, db_path, "experiment", "judge", "cases", "--concurrency", "7")
+    result = _invoke(
+        runner, db_path, "run", "experiment", "judge", "--dataset", "cases", "--concurrency", "7"
+    )
     assert result.exit_code == 0
     assert store.list_runs()[0].concurrency == 7
 
 
 def test_experiment_unresolvable_evaluator_exits_1(runner, store, db_path):
-    result = _invoke(runner, db_path, "experiment", "no-such-evaluator", "cases")
+    result = _invoke(
+        runner, db_path, "run", "experiment", "no-such-evaluator", "--dataset", "cases"
+    )
     assert result.exit_code == 1
     assert "error:" in result.stderr
 
@@ -482,7 +739,7 @@ def test_experiment_has_no_watch_option(runner, store, db_path, monkeypatch):
     monkeypatch.setattr(
         "valcore.experiment.build_agent", _constant_test_model_agent_builder("pass")
     )
-    result = _invoke(runner, db_path, "experiment", "judge", "cases", "--watch")
+    result = _invoke(runner, db_path, "run", "experiment", "judge", "--dataset", "cases", "--watch")
     assert result.exit_code != 0
 
 
@@ -493,11 +750,15 @@ def test_experiment_and_run_agree(runner, store, db_path, monkeypatch):
         "valcore.experiment.build_agent", _constant_test_model_agent_builder("pass")
     )
 
-    run_result = _invoke(runner, db_path, "run", "judge", "cases", "--json")
+    run_result = _invoke(
+        runner, db_path, "run", "evaluator", "judge", "--dataset", "cases", "--json"
+    )
     assert run_result.exit_code == 0
     run_payload = json.loads(run_result.stdout)
 
-    experiment_result = _invoke(runner, db_path, "experiment", "judge", "cases", "--json")
+    experiment_result = _invoke(
+        runner, db_path, "run", "experiment", "judge", "--dataset", "cases", "--json"
+    )
     assert experiment_result.exit_code == 0
     experiment_payload = json.loads(experiment_result.stdout)
 
@@ -511,9 +772,13 @@ def test_experiment_json_payload_shape_matches_run(runner, store, db_path, monke
         "valcore.experiment.build_agent", _constant_test_model_agent_builder("pass")
     )
 
-    run_payload = json.loads(_invoke(runner, db_path, "run", "judge", "cases", "--json").stdout)
+    run_payload = json.loads(
+        _invoke(runner, db_path, "run", "evaluator", "judge", "--dataset", "cases", "--json").stdout
+    )
     experiment_payload = json.loads(
-        _invoke(runner, db_path, "experiment", "judge", "cases", "--json").stdout
+        _invoke(
+            runner, db_path, "run", "experiment", "judge", "--dataset", "cases", "--json"
+        ).stdout
     )
 
     assert set(experiment_payload.keys()) == set(run_payload.keys())

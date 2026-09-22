@@ -45,7 +45,7 @@ from valcore.models import (
     annotation_ground_truth,
     check_dataset_compatibility,
 )
-from valcore.runner import RunEvent, _agreement
+from valcore.runner import RunEvent, _agreement, _source_rows
 from valcore.spec import dataset_to_evals
 from valcore.store import Store
 
@@ -198,10 +198,19 @@ async def execute_experiment(
         version = await asyncio.to_thread(store.get_version, run.version_id)
         dataset = await asyncio.to_thread(store.get_dataset, run.dataset_id)
         label_sets = await asyncio.to_thread(store.list_label_sets, dataset.id)
+        derivation_link = await asyncio.to_thread(store.get_run_derivation, run.id)
+        derivation = (
+            await asyncio.to_thread(store.get_derivation, derivation_link.derivation_id)
+            if derivation_link is not None
+            else None
+        )
         # Mirrors the runner: only a VALIDATION experiment compares against ground truth, so
         # only it requires a label set matching the evaluator's score contract.
-        matched_label_set = check_dataset_compatibility(version, dataset, label_sets, kind=run.kind)
-        rows = await asyncio.to_thread(store.list_rows, dataset.id)
+        matched_label_set = check_dataset_compatibility(
+            version, dataset, label_sets, kind=run.kind, derivation=derivation
+        )
+        rows, skipped = await asyncio.to_thread(_source_rows, store, run, dataset)
+        sourced_row_count = len(rows)
         agent = build_agent(version)
     except Exception as exc:  # noqa: BLE001 — any setup failure becomes a FAILED run
         failed = await asyncio.to_thread(
@@ -312,6 +321,10 @@ async def execute_experiment(
                     version.score_labels if version.score_kind is ScoreKind.CATEGORICAL else None
                 )
                 metrics = compute_metrics(pairs, version.score_kind, labels)
+        if derivation_link is not None:
+            metrics = {**(metrics or {}), "scored": sourced_row_count}
+            if skipped:
+                metrics["skipped"] = {reason.value: count for reason, count in skipped.items()}
 
         finished = await asyncio.to_thread(
             store.update_run_status,
