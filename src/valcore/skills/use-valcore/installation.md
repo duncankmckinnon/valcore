@@ -31,8 +31,8 @@ kinds of key gate specific capabilities:
 
 | Capability | Needs |
 |---|---|
-| `run` / `experiment` / seeded generation, on a `gateway/...` model | gateway API key |
-| `run` / `experiment`, on a `local/<cli>` model | the named CLI installed and already logged in on this machine — no gateway key |
+| `run agent`, `run evaluator`, `run experiment` / seeded generation, on a `gateway/...` model | gateway API key |
+| `run agent`, `run evaluator`, `run experiment`, on a `local/<cli>` model | the named CLI installed and already logged in on this machine — no gateway key |
 | `logfire pull` / `list` / `fetch` | Logfire read key (or the legacy combined key) |
 | `logfire push` | Logfire write key (or the legacy combined key) |
 | Tracing valcore's own runs | Logfire token — optional; silently does nothing without it |
@@ -79,6 +79,6 @@ see `src/valcore/local_cli/*_adapter.py` for the exact invocation if you need it
    above for which binary backs which route name).
 4. `valcore list evaluators --json` and `valcore list datasets --json` — confirms the
    database is reachable and has the expected content.
-5. `valcore run <evaluator> <dataset> --kind validation --min-accuracy 0` — a cheap
+5. `valcore run evaluator <evaluator> --dataset <dataset> --kind validation --min-accuracy 0` — a cheap
    dry run that exercises the whole path (model resolution, the gateway or local CLI
    call, scoring) without asserting a real threshold.

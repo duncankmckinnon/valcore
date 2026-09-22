@@ -202,12 +202,15 @@ source of truth (`scripts/sync_command_table.py --check` fails CI if the two dri
 | Command | What it does |
 | --- | --- |
 | `valcore serve` | Serve the web UI and API (`--port`, `--host`, `--no-browser`). |
-| `valcore list <evaluators\|datasets\|runs\|agents>` | List resources as a table or, with `--json`, as JSON. |
-| `valcore run <evaluator> <dataset>` | Run an evaluator version over a dataset. |
-| `valcore experiment <evaluator> <dataset>` | Run an evaluator version over a dataset via `pydantic_evals.Dataset.evaluate`. |
+| `valcore list <evaluators\|datasets\|runs\|agents\|derivations>` | List resources as a table or, with `--json`, as JSON. |
+| `valcore run agent <agent>` | Run an agent over a dataset, one row, ad-hoc inputs, or a literal prompt. |
+| `valcore run evaluator <evaluator> --dataset <dataset>` | Run an evaluator version over a dataset. |
+| `valcore run experiment <evaluator> --dataset <dataset>` | Run an evaluator through `pydantic_evals.Dataset.evaluate`. |
 | `valcore export <evaluator>` | Export an evaluator (and, with `--dataset`, a dataset) as a Python script or, with `--format json`, a portable eval package. |
 | `valcore import <file>` | Import a JSON eval package back into the local database. |
-| `valcore agent trial <agent>` | Run one bound agent input (`--dataset`/`--row` or `--input KEY=VALUE`), optionally saving a derivation. |
+| `valcore agent derivation list` | List saved and staged response derivations. |
+| `valcore agent derivation save <ref>` | Accept a staged derivation. |
+| `valcore agent derivation discard <ref>` | Discard a derivation. |
 | `valcore agent import <file>` | Import a YAML or JSON AgentSpec and its valcore binding. |
 | `valcore agent export <agent>` | Export an agent version as a YAML AgentSpec with its valcore binding. |
 | `valcore config set <key> <value>` | Set any config key, including `model`, `local_cli_default`, `port`, `concurrency`, and `db_path`. |
@@ -334,11 +337,11 @@ Run `valcore skills list` to see what is bundled and where each copy currently l
 
 ## Using valcore in CI
 
-`run --json` emits a single object with run metadata, metrics, and per-row scores, and
+`run evaluator --json` emits a single object with run metadata, metrics, and per-row scores, and
 `--min-accuracy` turns a validation run into a pass/fail gate:
 
 ```bash
-valcore run my-evaluator my-dataset \
+valcore run evaluator my-evaluator --dataset my-dataset \
   --kind validation \
   --min-accuracy 0.9 \
   --json > run.json
@@ -364,9 +367,9 @@ uv tool install 'valcore[logfire]'
 ```
 
 With a Logfire token configured (see [Setup](#setup)), each `valcore run` opens a
-`valcore.run` span carrying the run's evaluator version, dataset, and concurrency, with a
-`valcore.score_row` child span per row; on close, the run span records its status and each
-agreement metric as attributes, so a Logfire query can filter runs by accuracy directly.
+`valcore.run` span carrying the run's agent or evaluator version, dataset, and concurrency,
+with a child span per row; on close, the run span records its status and available metrics as
+attributes, so a Logfire query can filter evaluation runs by accuracy directly.
 The [Pydantic AI Gateway](https://ai.pydantic.dev/gateway/) already reports the LLM calls
 themselves — valcore adds only the surrounding run and row context around them, and
 deliberately does not re-report the calls, which would double-count tokens and cost.
@@ -380,11 +383,11 @@ disables console capture. See Logfire's
 [frontend observability guide](https://pydantic.dev/logfire/observe/frontend/) for the
 Logfire-side setup.
 
-`valcore experiment <evaluator> <dataset>` runs the same evaluation through
-`pydantic_evals.Dataset.evaluate` instead of `run`'s own engine, so it also appears in
+`valcore run experiment <evaluator> --dataset <dataset>` runs the same evaluation through
+`pydantic_evals.Dataset.evaluate` instead of the evaluator runner, so it also appears in
 Logfire's experiments view on the valcore tracing project. It persists a run the same way
-`run` does, so it shows up on the Runs page too. Unlike `run`, it cannot be cancelled,
-because `Dataset.evaluate` has no cancellation.
+`run evaluator` does, so it shows up on the Runs page too. Unlike that runner, it cannot be
+cancelled, because `Dataset.evaluate` has no cancellation.
 
 `valcore logfire pull --sql '…' --name traces --count 20` runs that SQL against Logfire,
 nests child spans that the query actually returned, samples top-level entries, and stores
