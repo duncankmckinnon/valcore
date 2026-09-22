@@ -116,7 +116,15 @@ def resolve_derivation(
         if len(matches) == 1:
             return matches[0]
         if len(matches) > 1:
-            raise ContractError(f"{ref!r} matches multiple derivations.")
+            candidates = "\n".join(
+                _candidate_line(
+                    derivation,
+                    lambda item: item.id,
+                    lambda item: ref,
+                )
+                for derivation in matches
+            )
+            raise ContractError(f"{ref!r} matches multiple derivations:\n{candidates}")
         raise NotFoundError(f"No derivation matches {ref!r}.")
     return _resolve(
         derivations,

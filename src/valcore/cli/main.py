@@ -50,6 +50,7 @@ from valcore.models import (
     DatasetDerivation,
     DatasetRow,
     DerivationRole,
+    DerivationState,
     Evaluator,
     EvaluatorVersion,
     LabelSchema,
@@ -545,8 +546,12 @@ def agent_derivation_discard(ctx: click.Context, ref: str) -> None:
 
 
 def _resolve_staged_derivation(store: Store, ref: str) -> DatasetDerivation:
-    """Resolve a derivation reference while including staged entries for management commands."""
-    derivations = store.list_derivations(include_staged=True)
+    """Resolve a staged derivation reference for acceptance or discard."""
+    derivations = [
+        derivation
+        for derivation in store.list_derivations(include_staged=True)
+        if store.derivation_state(derivation.id) is DerivationState.STAGED
+    ]
     from valcore.cli.resolve import _resolve
 
     return _resolve(
@@ -617,10 +622,14 @@ def run_agent(
             raise ValcoreError(finished.error or "Run failed.")
         if save:
             derivation = store.save_staged_derivation(derivation.id)
-        click.echo(
-            f"derivation {derivation.id[:8]} ({store.derivation_state(derivation.id).value})"
-        )
-        _emit_run(store, finished, as_json)
+        derivation_data = {
+            "id": derivation.id,
+            "ref": derivation.id[:8],
+            "state": store.derivation_state(derivation.id).value,
+        }
+        if not as_json:
+            click.echo(f"derivation {derivation_data['ref']} ({derivation_data['state']})")
+        _emit_run(store, finished, as_json, derivation=derivation_data)
         return
     source_row: DatasetRow | None = None
     if prompt_text is not None:
@@ -639,7 +648,9 @@ def run_agent(
 
     if prompt_text is None:
         prompt = render_agent_prompt(version.prompt_template, row_data)
-    deps = build_deps(version.deps_mapping, row_data)
+    # A literal liveness prompt has no dataset contract from which dependency values can be
+    # mapped. The configured agent still runs normally, but receives an empty dependency object.
+    deps = {} if prompt_text is not None else build_deps(version.deps_mapping, row_data)
     spec = parse_spec(version.spec)
     started = perf_counter()
     try:
@@ -768,7 +779,9 @@ def agent_export(
 # -- run ----------------------------------------------------------------------
 
 
-def _emit_run(store: Store, run: Run, as_json: bool) -> None:
+def _emit_run(
+    store: Store, run: Run, as_json: bool, *, derivation: dict[str, Any] | None = None
+) -> None:
     """Write a finished run's outcome to stdout, as JSON or a summary table."""
     results = store.list_results(run.id)
     if as_json:
@@ -779,6 +792,8 @@ def _emit_run(store: Store, run: Run, as_json: bool) -> None:
             "metrics": run.metrics,
             "results": [r.model_dump() for r in results],
         }
+        if derivation is not None:
+            payload["derivation"] = derivation
         emit(payload, as_json=True)
         return
 
@@ -818,7 +833,7 @@ async def _drive_run(store: Store, run_id: str, watch: bool) -> Run:
 @click.option("--version", "version_name", default=None, help="Version name (default: active).")
 @click.option(
     "--kind",
-    type=click.Choice([k.value for k in RunKind]),
+    type=click.Choice([RunKind.VALIDATION.value, RunKind.EVAL.value]),
     default=RunKind.VALIDATION.value,
     help="Whether to validate against labels or score a dataset.",
 )
@@ -851,8 +866,6 @@ def run(
     store = _store(ctx)
     ev = resolve_evaluator(store, evaluator)
     ver = resolve_version(store, ev, version_name)
-    if not is_local_cli_model(ver.model):
-        config_module.require_gateway_key()
     ds = resolve_dataset(store, dataset)
     if derivation_ref is not None and kind == RunKind.VALIDATION.value:
         raise ContractError(
@@ -864,6 +877,8 @@ def run(
         if derivation_ref is not None
         else None
     )
+    if not is_local_cli_model(ver.model):
+        config_module.require_gateway_key()
 
     workers = concurrency if concurrency is not None else get_settings().default_concurrency
     created = store.create_run(RunKind(kind), ver.id, ds.id, workers)

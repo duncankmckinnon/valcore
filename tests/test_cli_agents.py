@@ -364,6 +364,23 @@ def test_run_agent_dataset_save_accepts_the_completed_derivation(
     assert store.list_runs()[0].concurrency == 3
 
 
+def test_run_agent_dataset_json_is_one_document_with_derivation_metadata(
+    runner: CliRunner, store: Store, db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Machine-readable dataset passes include the overlay without preceding prose."""
+    _seed_agent(store)
+    store.create_dataset("cases", "", ["input"])
+    monkeypatch.setattr("valcore.runner.build_agent_from_version", _test_agent_builder)
+
+    result = _invoke(runner, db_path, "run", "agent", "writer", "--dataset", "cases", "--json")
+
+    assert result.exit_code == 0, result.output + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "derive"
+    assert payload["derivation"]["state"] == "staged"
+    assert payload["derivation"]["ref"] == payload["derivation"]["id"][:8]
+
+
 def test_run_agent_prompt_bypasses_the_version_prompt_template(
     runner: CliRunner, store: Store, db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -387,6 +404,54 @@ def test_run_agent_prompt_bypasses_the_version_prompt_template(
     assert result.exit_code == 0, result.output + result.stderr
     assert prompts == ["raw probe"]
     assert store.list_runs() == []
+
+
+def test_run_agent_prompt_does_not_map_row_dependencies(
+    runner: CliRunner, store: Store, db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Literal prompt mode runs without row data even when the stored binding maps dependencies."""
+    agent, _ = _seed_agent(store)
+    spec = _spec()
+    spec["deps_schema"] = {
+        "type": "object",
+        "properties": {"context": {"type": "string"}},
+    }
+    store.create_agent_version(
+        agent.id,
+        version_name="with-deps",
+        model="local/codex",
+        spec=spec,
+        prompt_template="Reply to: {input}",
+        required_columns=["input"],
+        deps_mapping={"context": "input"},
+    )
+    prompts: list[str] = []
+
+    def capture(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        """Capture the literal prompt without consulting dependencies."""
+        prompts.append(str(messages[-1].parts[0].content))
+        return ModelResponse(parts=[TextPart(content="alive")])
+
+    monkeypatch.setattr(
+        _cli_main_module(),
+        "build_agent_from_version",
+        lambda version: PydanticAgent(FunctionModel(capture)),
+    )
+
+    result = _invoke(
+        runner,
+        db_path,
+        "run",
+        "agent",
+        "writer",
+        "--version",
+        "with-deps",
+        "-p",
+        "raw probe",
+    )
+
+    assert result.exit_code == 0, result.output + result.stderr
+    assert prompts == ["raw probe"]
 
 
 @pytest.mark.parametrize(
@@ -461,6 +526,26 @@ def test_agent_derivation_commands_list_mark_save_and_discard_staged_entries(
     assert store.derivation_state(first.id) is DerivationState.SAVED
     assert discarded.exit_code == 0, discarded.output + discarded.stderr
     assert [d.id for d in store.list_derivations(include_staged=True)] == [first.id]
+
+
+def test_agent_derivation_discard_rejects_a_saved_derivation(
+    runner: CliRunner, store: Store, db_path: Path
+) -> None:
+    """Discard is limited to staged passes and cannot delete an accepted overlay."""
+    _, version = _seed_agent(store)
+    dataset = store.create_dataset("cases", "", ["input"])
+    row = store.add_rows(dataset.id, [{"input": "stored"}])[0]
+    saved = store.save_derivation(
+        dataset_id=dataset.id,
+        agent_version_id=version.id,
+        response_columns=["response"],
+        responses=[{"row_id": row.id, "data": {"response": "answer"}}],
+    )
+
+    result = _invoke(runner, db_path, "agent", "derivation", "discard", saved.id[:8])
+
+    assert result.exit_code == 1
+    assert store.list_derivations()[0].id == saved.id
 
 
 def test_agent_trial_is_removed(runner: CliRunner, store: Store, db_path: Path) -> None:

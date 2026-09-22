@@ -336,6 +336,44 @@ def test_resolve_derivation_accepts_a_saved_derivation_reference(store):
     assert resolve_derivation(store, derivation.id[:8], dataset_id=dataset.id).id == derivation.id
 
 
+def test_resolve_derivation_canonical_ambiguity_lists_candidate_ids(store):
+    """Canonical ordinals can collide across datasets, so ambiguity names every overlay."""
+    agent = store.create_agent("writer")
+    version = store.create_agent_version(
+        agent.id,
+        version_name="v1",
+        model="local/codex",
+        spec={"model": "test"},
+        prompt_template="{input}",
+        required_columns=["input"],
+        deps_mapping={},
+    )
+    derivations = []
+    for name in ("first", "second"):
+        dataset = store.create_dataset(name, "", ["input"])
+        row = store.add_rows(dataset.id, [{"input": name}])[0]
+        derivations.append(
+            store.save_derivation(
+                dataset_id=dataset.id,
+                agent_version_id=version.id,
+                response_columns=["draft"],
+                responses=[{"row_id": row.id, "data": {"draft": name}}],
+            )
+        )
+
+    with pytest.raises(ContractError) as exc_info:
+        resolve_derivation(store, "writer/v1/0")
+
+    message = str(exc_info.value)
+    assert all(derivation.id[:8] in message for derivation in derivations)
+
+
+def test_resolve_derivation_missing_canonical_ref_names_it(store):
+    """A missing canonical derivation reports the complete requested reference."""
+    with pytest.raises(NotFoundError, match="missing/v1/0"):
+        resolve_derivation(store, "missing/v1/0")
+
+
 def test_resolve_version_none_returns_active(store):
     evaluator = resolve_evaluator(store, "judge")
     version = resolve_version(store, evaluator, None)
@@ -496,6 +534,49 @@ def test_run_evaluator_rejects_derivation_validation_without_label_sets(runner, 
 
     assert result.exit_code == 1
     assert "label set" in result.stderr.lower()
+
+
+def test_run_evaluator_rejects_derivation_validation_before_gateway_key_check(
+    runner, store, db_path, monkeypatch
+):
+    """An invalid command contract is diagnosed even on a keyless installation."""
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+
+    result = _invoke(
+        runner,
+        db_path,
+        "run",
+        "evaluator",
+        "judge",
+        "--dataset",
+        "cases",
+        "--derivation",
+        "missing",
+        "--kind",
+        "validation",
+    )
+
+    assert result.exit_code == 1
+    assert "label set" in result.stderr.lower()
+    assert "gateway" not in result.stderr.lower()
+
+
+def test_run_evaluator_rejects_derive_kind_as_a_click_choice(runner, store, db_path):
+    """Derive runs belong to agent versions and are not an evaluator mode."""
+    result = _invoke(
+        runner,
+        db_path,
+        "run",
+        "evaluator",
+        "judge",
+        "--dataset",
+        "cases",
+        "--kind",
+        "derive",
+    )
+
+    assert result.exit_code == 2
+    assert "invalid value for '--kind'" in result.stderr.lower()
 
 
 @pytest.mark.parametrize(
