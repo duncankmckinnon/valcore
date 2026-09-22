@@ -315,7 +315,18 @@ describe("AgentTrialPanel", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
-      expect(saveDerivationMock).toHaveBeenCalledWith("av-1"),
+      expect(saveDerivationMock).toHaveBeenCalledWith(
+        "av-1",
+        expect.objectContaining({
+          dataset_id: "ds-1",
+          entries: [
+            expect.objectContaining({
+              inputs: { question: "What is 2+2?" },
+              data: { answer: "4" },
+            }),
+          ],
+        }),
+      ),
     );
     expect(
       await screen.findByText("Saved as derivation 7."),

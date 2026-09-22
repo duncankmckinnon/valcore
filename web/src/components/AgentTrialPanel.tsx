@@ -125,7 +125,10 @@ export default function AgentTrialPanel({ version }: AgentTrialPanelProps) {
     setSaving(true);
     setError(null);
     try {
-      const derivation = await agents.saveDerivation(trialVersionId);
+      const derivation = await agents.saveDerivation(trialVersionId, {
+        dataset_id: datasetId,
+        entries: [{ inputs: trial.inputs, data: trial.result.output }],
+      });
       if (versionIdRef.current !== trialVersionId) return;
       setUnsaved(false);
       setSavedOrdinal(derivation.ordinal);
