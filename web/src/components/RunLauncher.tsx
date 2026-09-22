@@ -92,12 +92,16 @@ export default function RunLauncher({ onStarted }: Props) {
   const datasetId = selectedContract?.datasetId ?? "";
   const selectedVersion = versions.find((version) => version.id === versionId);
 
-  function isCompatible(contract: DataContract): boolean {
+  function missingRequiredColumns(contract: DataContract): string[] {
     return (
-      selectedVersion?.required_columns.every((column) =>
-        contract.columns.includes(column),
-      ) ?? true
+      selectedVersion?.required_columns.filter(
+        (column) => !contract.columns.includes(column),
+      ) ?? []
     );
+  }
+
+  function isCompatible(contract: DataContract): boolean {
+    return missingRequiredColumns(contract).length === 0;
   }
 
   useEffect(() => {
@@ -231,7 +235,8 @@ export default function RunLauncher({ onStarted }: Props) {
         >
           <option value="">Select data…</option>
           {contracts.map((contract) => {
-            const incompatible = !isCompatible(contract);
+            const missingColumns = missingRequiredColumns(contract);
+            const incompatible = missingColumns.length > 0;
             const validationOnlyBase =
               kind === "validation" && contract.derivationId !== undefined;
             return (
@@ -241,7 +246,9 @@ export default function RunLauncher({ onStarted }: Props) {
                 disabled={incompatible || validationOnlyBase}
               >
                 {contract.label}
-                {incompatible ? " (incompatible)" : ""}
+                {incompatible
+                  ? ` (incompatible: missing ${missingColumns.join(", ")})`
+                  : ""}
               </option>
             );
           })}

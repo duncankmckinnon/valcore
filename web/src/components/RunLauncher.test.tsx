@@ -346,7 +346,9 @@ describe("RunLauncher", () => {
     ).toBe(true);
 
     expect(
-      await screen.findByRole("option", { name: /cases.*question.*answer/i }),
+      await screen.findByRole("option", {
+        name: /^cases — question, answer$/i,
+      }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("option", {
@@ -429,10 +431,14 @@ describe("RunLauncher", () => {
     ]);
     evaluatorsGetMock.mockResolvedValue({
       ...makeEvaluator(),
-      versions: [makeVersion({ required_columns: ["question", "draft"] })],
+      versions: [
+        makeVersion({
+          required_columns: ["question", "draft", "rationale"],
+        }),
+      ],
     } as unknown as Evaluator);
     listDerivationsMock.mockResolvedValue([
-      makeDerivation({ response_columns: ["draft"] }),
+      makeDerivation({ response_columns: ["draft", "rationale"] }),
     ]);
     const user = userEvent.setup();
     renderLauncher();
@@ -440,7 +446,9 @@ describe("RunLauncher", () => {
     await user.selectOptions(await screen.findByLabelText("Evaluator"), "ev-1");
 
     expect(
-      await screen.findByRole("option", { name: /my dataset.*incompatible/i }),
+      await screen.findByRole("option", {
+        name: /^my dataset — question, answer \(incompatible: missing draft, rationale\)$/i,
+      }),
     ).toBeDisabled();
     expect(
       screen.queryByRole("option", { name: /writer v3.*incompatible/i }),
@@ -463,7 +471,7 @@ describe("RunLauncher", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /writer v3/i })).toBeDisabled();
     expect(
-      screen.getByRole("option", { name: /my dataset/i }),
+      screen.getByRole("option", { name: /^my dataset — answer$/i }),
     ).not.toBeDisabled();
   });
 
