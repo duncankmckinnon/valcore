@@ -22,7 +22,7 @@ from pydantic_ai.models.test import TestModel
 from valcore.cli.main import cli
 from valcore.cli.resolve import resolve_agent, resolve_agent_version
 from valcore.errors import ContractError, NotFoundError
-from valcore.models import Agent, AgentVersion, DerivationState, RunKind
+from valcore.models import Agent, AgentVersion, DerivationRole, DerivationState, RunKind
 from valcore.store import Store, create_engine, init_db
 
 
@@ -217,6 +217,7 @@ def test_run_agent_dataset_row_save_allocates_successive_ordinals(
         store.list_agent_responses(derivation.id)[0].dataset_row_id == source_row.id
         for derivation in derivations
     )
+    assert store.list_runs() == []
 
 
 def test_run_agent_ad_hoc_input_with_dataset_save_appends_the_source_row(
@@ -245,6 +246,7 @@ def test_run_agent_ad_hoc_input_with_dataset_save_appends_the_source_row(
     assert [row.data for row in rows] == [{"input": "ad hoc"}]
     derivation = store.list_derivations(dataset_id=dataset.id, agent_version_id=version.id)[0]
     assert store.list_agent_responses(derivation.id)[0].dataset_row_id == rows[0].id
+    assert store.list_runs() == []
 
 
 def test_run_agent_input_save_requires_a_dataset(
@@ -323,8 +325,14 @@ def test_run_agent_dataset_creates_a_staged_derive_run_and_prints_its_ref(
     assert runs[0].kind is RunKind.DERIVE
     derivations = store.list_derivations(dataset_id=dataset.id, include_staged=True)
     assert len(derivations) == 1
+    assert store.get_run_derivation(runs[0].id).role is DerivationRole.FILLS
     assert store.derivation_state(derivations[0].id) is DerivationState.STAGED
     assert derivations[0].id[:8] in result.output
+
+    accepted = _invoke(runner, db_path, "agent", "derivation", "save", derivations[0].id[:8])
+
+    assert accepted.exit_code == 0, accepted.output + accepted.stderr
+    assert store.derivation_state(derivations[0].id) is DerivationState.SAVED
 
 
 def test_run_agent_dataset_save_accepts_the_completed_derivation(
@@ -388,6 +396,34 @@ def test_run_agent_rejects_incompatible_mode_options(
 
     assert result.exit_code == 1
     assert expected in result.stderr
+
+
+def test_run_agent_rejects_row_and_ad_hoc_inputs_together(
+    runner: CliRunner, store: Store, db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row trial and an ad-hoc-input trial are distinct command modes."""
+    _seed_agent(store)
+    dataset = store.create_dataset("cases", "", ["input"])
+    store.add_rows(dataset.id, [{"input": "stored"}])
+    monkeypatch.setattr(_cli_main_module(), "build_agent_from_version", _test_agent_builder)
+
+    result = _invoke(
+        runner,
+        db_path,
+        "run",
+        "agent",
+        "writer",
+        "--dataset",
+        "cases",
+        "--row",
+        "0",
+        "--input",
+        "input=ignored",
+    )
+
+    assert result.exit_code == 1
+    assert "--row" in result.stderr
+    assert "--input" in result.stderr
 
 
 def test_agent_derivation_commands_list_mark_save_and_discard_staged_entries(
