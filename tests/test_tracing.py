@@ -1,7 +1,11 @@
 """Tests for the Logfire tracing module: configuration, span shape, and warnings."""
 
+import gc
 import importlib.util
+import sqlite3
 import warnings
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -11,6 +15,22 @@ from valcore.config import FileConfig
 from valcore.models import Dataset, DatasetRow, EvaluatorVersion, Run, RunKind, RunStatus, ScoreKind
 
 _LOGFIRE_PRESENT = importlib.util.find_spec("logfire") is not None
+
+
+@contextmanager
+def recorded_user_warnings() -> Iterator[list[warnings.WarningMessage]]:
+    """Record the UserWarnings valcore raises, and nothing else.
+
+    Recording every category instead would make these assertions depend on whatever
+    the rest of the process happens to do inside the window. pytest-cov re-enables
+    ``ResourceWarning: unclosed database ...`` for the whole session, and Python 3.13
+    raises it for any sqlite connection the garbage collector finalises -- so a stray
+    collection during ``logfire.configure`` would otherwise read as a valcore warning.
+    """
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("ignore")
+        warnings.simplefilter("always", UserWarning)
+        yield caught
 
 
 @pytest.fixture(autouse=True)
@@ -81,10 +101,28 @@ class TestConfigureTracingSilentWithoutToken:
 
     def test_emits_no_warning(self) -> None:
         cfg = FileConfig()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always", UserWarning)
+        with recorded_user_warnings() as caught:
             tracing.configure_tracing(cfg)
-        assert len(caught) == 0
+        assert [str(w.message) for w in caught] == []
+
+    def test_an_unrelated_resource_warning_is_not_counted(self) -> None:
+        """pytest-cov re-enables sqlite's unclosed-database ResourceWarning for the
+        whole session, so a connection finalized by the garbage collector inside the
+        recording window must not be mistaken for a warning valcore emitted."""
+        cfg = FileConfig()
+        leaked = [sqlite3.connect(":memory:")]
+        with warnings.catch_warnings():
+            # Install pytest-cov's own filter so this holds with or without --cov.
+            warnings.filterwarnings(
+                "default",
+                "unclosed database in <sqlite3.Connection object at",
+                ResourceWarning,
+            )
+            with recorded_user_warnings() as caught:
+                leaked.clear()
+                gc.collect()
+                tracing.configure_tracing(cfg)
+        assert [str(w.message) for w in caught] == []
 
     def test_run_span_yields_without_raising(self) -> None:
         cfg = FileConfig()
@@ -131,12 +169,13 @@ class TestConfigureTracingSilentWithoutToken:
         version = make_version()
         dataset = make_dataset()
         run = make_run(version.id, dataset.id)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            with tracing.run_span(run, version, dataset, row_count=1):
-                pass
+        with (
+            recorded_user_warnings() as caught,
+            tracing.run_span(run, version, dataset, row_count=1),
+        ):
+            pass
         assert calls == []
-        assert len(caught) == 0
+        assert [str(w.message) for w in caught] == []
 
     def test_row_span_does_not_call_logfire_span_when_unconfigured(
         self, monkeypatch: pytest.MonkeyPatch
@@ -145,12 +184,10 @@ class TestConfigureTracingSilentWithoutToken:
         monkeypatch.setattr(tracing.logfire, "span", lambda *a, **k: calls.append((a, k)))
         dataset = make_dataset()
         row = make_row(dataset.id)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            with tracing.row_span(row):
-                pass
+        with recorded_user_warnings() as caught, tracing.row_span(row):
+            pass
         assert calls == []
-        assert len(caught) == 0
+        assert [str(w.message) for w in caught] == []
 
 
 class TestConfigureTracingTokenWithoutLogfire:
@@ -170,23 +207,19 @@ class TestConfigureTracingTokenWithoutLogfire:
         self._simulate_logfire_absent(monkeypatch)
         monkeypatch.setattr(tracing.logfire, "configure", lambda **kwargs: None)
         cfg = FileConfig(logfire_token="lf-write-token")
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
+        with recorded_user_warnings() as caught:
             tracing.configure_tracing(cfg)
-        user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
-        assert len(user_warnings) == 1
-        assert "valcore[logfire]" in str(user_warnings[0].message)
+        assert len(caught) == 1
+        assert "valcore[logfire]" in str(caught[0].message)
 
     def test_does_not_warn_again_on_second_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._simulate_logfire_absent(monkeypatch)
         monkeypatch.setattr(tracing.logfire, "configure", lambda **kwargs: None)
         cfg = FileConfig(logfire_token="lf-write-token")
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
+        with recorded_user_warnings() as caught:
             tracing.configure_tracing(cfg)
             tracing.configure_tracing(cfg)
-        user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
-        assert len(user_warnings) == 1
+        assert len(caught) == 1
 
 
 @pytest.mark.skipif(not _LOGFIRE_PRESENT, reason="logfire extra not installed")
@@ -196,11 +229,9 @@ class TestConfigureTracingTokenWithLogfirePresent:
     def test_no_warning_when_logfire_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(tracing.logfire, "configure", lambda **kwargs: None)
         cfg = FileConfig(logfire_token="lf-write-token")
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
+        with recorded_user_warnings() as caught:
             tracing.configure_tracing(cfg)
-        user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
-        assert len(user_warnings) == 0
+        assert [str(w.message) for w in caught] == []
 
 
 class TestConfigureTracingIdempotent:
@@ -408,11 +439,9 @@ class TestNoTokenStaysSilentRegardlessOfLogfirePresence:
 
         monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
         cfg = FileConfig()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
+        with recorded_user_warnings() as caught:
             tracing.configure_tracing(cfg)
-        user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
-        assert len(user_warnings) == 0
+        assert [str(w.message) for w in caught] == []
 
 
 class TestReconfigureLogfireToken:

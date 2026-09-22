@@ -133,6 +133,127 @@ export interface DatasetCreated {
   row_count: number;
 }
 
+// Agents are versioned separately from evaluators. A summary carries the active
+// version and total version count needed by the agent list without another request.
+export type AgentSummary = {
+  id: string;
+  created_at: string;
+  name: string;
+  description: string;
+  active_version_id: string | null;
+  version_count: number;
+};
+
+// `spec` is the verbatim pydantic-ai AgentSpec blob. The model route and prompt/data
+// bindings are valcore-owned fields outside that blob; any model inside `spec` is
+// preserved for round-tripping but ignored when the live agent is built.
+export type AgentVersion = {
+  id: string;
+  created_at: string;
+  agent_id: string;
+  version_name: string;
+  notes: string;
+  frozen: boolean;
+  model: string;
+  spec: Record<string, unknown>;
+  prompt_template: string;
+  required_columns: string[];
+  deps_mapping: Record<string, string>;
+  // Read-only: the server derives these columns from the spec's output schema.
+  response_columns: string[];
+};
+
+// A single-agent response bundles list metadata with all stored versions.
+export type AgentDetail = { agent: AgentSummary; versions: AgentVersion[] };
+
+export type AgentCreate = { name: string; description?: string };
+export type AgentUpdate = { name?: string; description?: string };
+
+// Creation sends the AgentSpec and valcore binding together. `response_columns` is
+// intentionally absent because it is derived by the server rather than caller-owned.
+export type AgentVersionCreate = {
+  version_name: string;
+  notes?: string;
+  model: string;
+  spec: Record<string, unknown>;
+  prompt_template: string;
+  required_columns: string[];
+  deps_mapping?: Record<string, string>;
+};
+export type AgentVersionUpdate = Partial<AgentVersionCreate>;
+
+// A trial uses either a persisted row (`dataset_id` plus `row_id`) or ad hoc `inputs`,
+// never both. Nullable fields mirror the API schema, though callers should omit the
+// unused side of that choice.
+export type TrialRequest = {
+  dataset_id?: string | null;
+  row_id?: string | null;
+  inputs?: Record<string, unknown> | null;
+};
+
+// Agent execution errors are returned in-band with HTTP 200 so the UI can retain the
+// trial context. Transport/API failures still reject with `ApiError`.
+export type TrialResult = {
+  prompt: string;
+  deps: Record<string, unknown>;
+  output: Record<string, unknown>;
+  response_columns: string[];
+  latency_ms: number;
+  usage: Record<string, number> | null;
+  error: string | null;
+};
+
+// An entry records an ephemeral trial result at save time and refers to the original
+// dataset row when one was used; it does not copy that source row into a new dataset.
+export type TrialEntry = {
+  row_id?: string | null;
+  inputs?: Record<string, unknown> | null;
+  data: Record<string, unknown>;
+  latency_ms?: number | null;
+  usage?: Record<string, number> | null;
+  error?: string | null;
+};
+
+export type DerivationSave = { dataset_id: string; entries: TrialEntry[] };
+
+// `ordinal` is allocated only when the trial entries are saved, so discarded trials
+// do not consume ordinals and an existing derivation is never overwritten.
+export type Derivation = {
+  id: string;
+  created_at: string;
+  dataset_id: string;
+  dataset_name: string;
+  agent_version_id: string;
+  agent_name: string;
+  version_name: string;
+  ordinal: number;
+  response_columns: string[];
+  response_count: number;
+};
+
+// A saved response joined to its original dataset row for display.
+export type DerivedRow = {
+  row_id: string;
+  idx: number;
+  data: Record<string, unknown>;
+  latency_ms: number | null;
+  error: string | null;
+};
+
+export type DerivedRowsPage = { columns: string[]; rows: DerivedRow[] };
+
+export type AgentSpecExport = { filename: string; content: string };
+
+// Nullable bindings were absent from the imported file and must be supplied by the
+// UI before creation; null is therefore distinct from an explicitly empty string.
+export type AgentSpecImport = {
+  spec: Record<string, unknown>;
+  model: string | null;
+  prompt_template: string | null;
+  required_columns: string[];
+  deps_mapping: Record<string, string>;
+};
+
 // One label within a label set: its name and the criteria description shown as
 // reference text next to it in the annotation UI.
 export interface AnnotationLabel {

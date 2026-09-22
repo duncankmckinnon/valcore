@@ -4,8 +4,8 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import DatasetDetail from "./DatasetDetail";
 import EvaluatorsPage from "./EvaluatorsPage";
-import { api, ApiError, datasets, evaluators, setup } from "../api/client";
-import type { Dataset, GeneratedConfig, SetupStatus } from "../api/types";
+import { agents, api, ApiError, datasets, evaluators, setup } from "../api/client";
+import type { Dataset, Derivation, DerivedRowsPage, GeneratedConfig, SetupStatus } from "../api/types";
 
 // The settings modal is owned by another task; stub it to report a shape change
 // (a new column list) back through `onSaved` when the user saves.
@@ -76,6 +76,13 @@ vi.mock("../api/client", async (importOriginal) => {
       createVersion: vi.fn(),
     },
     setup: { ...actual.setup, get: vi.fn() },
+    // Agent derivations are read-only from this page's perspective: it only lists and
+    // reads rows, never creates or mutates a derivation.
+    agents: {
+      ...actual.agents,
+      listDerivations: vi.fn(),
+      derivedRows: vi.fn(),
+    },
   };
 });
 
@@ -93,6 +100,8 @@ const apiMock = vi.mocked(api);
 const listMock = vi.mocked(evaluators.list);
 const exportFilesMock = vi.mocked(datasets.exportFiles);
 const setupGet = vi.mocked(setup.get);
+const listDerivationsMock = vi.mocked(agents.listDerivations);
+const derivedRowsMock = vi.mocked(agents.derivedRows);
 
 const EMPTY_SETUP: SetupStatus = {
   keys: [],
@@ -134,6 +143,44 @@ function madeDataset(): Dataset {
   };
 }
 
+function madeDerivation(overrides: Partial<Derivation> = {}): Derivation {
+  return {
+    id: "dv1",
+    created_at: "2026-01-02T00:00:00Z",
+    dataset_id: "d1",
+    dataset_name: "My set",
+    agent_version_id: "av1",
+    agent_name: "Support bot",
+    version_name: "v1",
+    ordinal: 1,
+    response_columns: ["answer_score"],
+    response_count: 2,
+    ...overrides,
+  };
+}
+
+function madeDerivedRowsPage(): DerivedRowsPage {
+  return {
+    columns: ["question", "answer", "answer_score"],
+    rows: [
+      {
+        row_id: "r1",
+        idx: 0,
+        data: { question: "Q1", answer: "A1", answer_score: "good" },
+        latency_ms: 120,
+        error: null,
+      },
+      {
+        row_id: "r2",
+        idx: 1,
+        data: { question: "Q2", answer: "A2", answer_score: "bad" },
+        latency_ms: null,
+        error: "Model timed out",
+      },
+    ],
+  };
+}
+
 function renderDetail() {
   render(
     <MemoryRouter initialEntries={["/datasets/d1"]}>
@@ -165,6 +212,7 @@ beforeEach(() => {
   logfirePullMock.mockResolvedValue(null);
   hostedFetchMock.mockResolvedValue(null);
   setupGet.mockResolvedValue(EMPTY_SETUP);
+  listDerivationsMock.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -467,5 +515,216 @@ describe("DatasetDetail", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Sync from Logfire" }));
 
     expect(await screen.findByText(/already up to date/i)).toBeTruthy();
+  });
+});
+
+describe("DatasetDetail derived views", () => {
+  it("loads derivations for this dataset alongside the page's other data on mount", async () => {
+    renderDetail();
+    await ready();
+
+    await waitFor(() => expect(listDerivationsMock).toHaveBeenCalledWith({ datasetId: "d1" }));
+  });
+
+  it("renders no view selector and behaves as before when the dataset has no derivations", async () => {
+    renderDetail();
+    await ready();
+    await waitFor(() => expect(listDerivationsMock).toHaveBeenCalledTimes(1));
+
+    expect(screen.queryByRole("combobox", { name: "View" })).toBeNull();
+    expect(screen.getByTestId("dataset-rows-grid")).toBeTruthy();
+    expect(derivedRowsMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Original view when loading derivations fails", async () => {
+    listDerivationsMock.mockRejectedValue(new Error("Could not list derivations"));
+    renderDetail();
+    await ready();
+    await waitFor(() => expect(listDerivationsMock).toHaveBeenCalledTimes(1));
+
+    expect(screen.queryByRole("combobox", { name: "View" })).toBeNull();
+    expect(screen.getByTestId("dataset-rows-grid")).toBeTruthy();
+  });
+
+  it("offers a view selector listing Original plus a labelled option per derivation", async () => {
+    listDerivationsMock.mockResolvedValue([
+      madeDerivation({ id: "dv1", agent_name: "Support bot", version_name: "v1", ordinal: 1 }),
+      madeDerivation({ id: "dv2", agent_name: "Support bot", version_name: "v2", ordinal: 3 }),
+    ]);
+    renderDetail();
+    await ready();
+
+    const viewSelect = await screen.findByRole("combobox", { name: "View" });
+    const optionLabels = within(viewSelect)
+      .getAllByRole("option")
+      .map((option) => option.textContent);
+    expect(optionLabels).toEqual([
+      "Original",
+      "Support bot · v1 · run 1",
+      "Support bot · v2 · run 3",
+    ]);
+    expect(viewSelect.classList.contains("select")).toBe(true);
+    expect(screen.getByText("View").classList.contains("field-label")).toBe(true);
+  });
+
+  it("defaults to Original, showing the existing rows grid without fetching derived rows", async () => {
+    listDerivationsMock.mockResolvedValue([madeDerivation()]);
+    renderDetail();
+    await ready();
+    await screen.findByRole("combobox", { name: "View" });
+
+    expect(screen.getByTestId("dataset-rows-grid")).toBeTruthy();
+    expect(derivedRowsMock).not.toHaveBeenCalled();
+  });
+
+  it("fetches and renders a derivation's rows, joined columns in API order, on selection", async () => {
+    listDerivationsMock.mockResolvedValue([madeDerivation()]);
+    derivedRowsMock.mockResolvedValue(madeDerivedRowsPage());
+    renderDetail();
+    await ready();
+
+    const viewSelect = await screen.findByRole("combobox", { name: "View" });
+    await userEvent.selectOptions(viewSelect, "Support bot · v1 · run 1");
+
+    await waitFor(() => expect(derivedRowsMock).toHaveBeenCalledWith("dv1"));
+
+    // The rows grid is an Original-only affordance; a derived view is a read-only overlay.
+    expect(screen.queryByTestId("dataset-rows-grid")).toBeNull();
+
+    const headerRow = screen.getAllByRole("row")[0];
+    const headers = within(headerRow)
+      .getAllByRole("columnheader")
+      .map((cell) => cell.textContent);
+    expect(headers).toEqual(["question", "answer", "answer_score", "latency"]);
+
+    const firstRow = screen.getByText("Q1").closest("tr")!;
+    expect(within(firstRow).getByText("A1")).toBeTruthy();
+    expect(within(firstRow).getByText("good")).toBeTruthy();
+    expect(within(firstRow).getByText("120 ms")).toBeTruthy();
+  });
+
+  it("shows a row's error in place of its response values, leaving dataset columns intact", async () => {
+    listDerivationsMock.mockResolvedValue([madeDerivation()]);
+    derivedRowsMock.mockResolvedValue(madeDerivedRowsPage());
+    renderDetail();
+    await ready();
+
+    await userEvent.selectOptions(
+      await screen.findByRole("combobox", { name: "View" }),
+      "Support bot · v1 · run 1",
+    );
+    await screen.findByText("Q1");
+
+    const erroredRow = screen.getByText("Q2").closest("tr")!;
+    expect(within(erroredRow).getByText("Model timed out")).toBeTruthy();
+    // The dataset-sourced column still renders normally...
+    expect(within(erroredRow).getByText("A2")).toBeTruthy();
+    // ...but the response value is suppressed in favor of the error.
+    expect(within(erroredRow).queryByText("bad")).toBeNull();
+  });
+
+  it("renders an error once across multiple response columns", async () => {
+    listDerivationsMock.mockResolvedValue([
+      madeDerivation({ response_columns: ["answer_score", "reason"] }),
+    ]);
+    derivedRowsMock.mockResolvedValue({
+      columns: ["question", "answer", "answer_score", "reason"],
+      rows: [
+        {
+          row_id: "r2",
+          idx: 1,
+          data: {
+            question: "Q2",
+            answer: "A2",
+            answer_score: "bad",
+            reason: "Incomplete",
+          },
+          latency_ms: 120,
+          error: "Model timed out",
+        },
+      ],
+    });
+    renderDetail();
+    await ready();
+
+    await userEvent.selectOptions(
+      await screen.findByRole("combobox", { name: "View" }),
+      "Support bot · v1 · run 1",
+    );
+
+    const erroredRow = (await screen.findByText("Q2")).closest("tr")!;
+    const errors = within(erroredRow).getAllByText("Model timed out");
+    expect(errors).toHaveLength(1);
+    expect(errors[0].closest("td")).toHaveAttribute("colspan", "2");
+    expect(within(erroredRow).queryByText("bad")).toBeNull();
+    expect(within(erroredRow).queryByText("Incomplete")).toBeNull();
+    expect(within(erroredRow).getByText("120 ms")).toBeTruthy();
+  });
+
+  it("shows a loading indicator while derived rows are pending", async () => {
+    listDerivationsMock.mockResolvedValue([madeDerivation()]);
+    derivedRowsMock.mockReturnValue(new Promise<DerivedRowsPage>(() => undefined));
+    renderDetail();
+    await ready();
+
+    await userEvent.selectOptions(
+      await screen.findByRole("combobox", { name: "View" }),
+      "Support bot · v1 · run 1",
+    );
+
+    expect(await screen.findByRole("status", { name: "Loading" })).toBeTruthy();
+    expect(screen.queryByTestId("dataset-rows-grid")).toBeNull();
+  });
+
+  it("shows a derived-row error without replacing the dataset page", async () => {
+    listDerivationsMock.mockResolvedValue([madeDerivation()]);
+    derivedRowsMock.mockRejectedValue(new Error("Could not load derived rows"));
+    renderDetail();
+    await ready();
+
+    await userEvent.selectOptions(
+      await screen.findByRole("combobox", { name: "View" }),
+      "Support bot · v1 · run 1",
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load derived rows");
+    expect(screen.getByRole("heading", { name: "My set" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "View" })).toBeTruthy();
+  });
+
+  it("does not offer editing controls on a derived view", async () => {
+    listDerivationsMock.mockResolvedValue([madeDerivation()]);
+    derivedRowsMock.mockResolvedValue(madeDerivedRowsPage());
+    renderDetail();
+    await ready();
+
+    await userEvent.selectOptions(
+      await screen.findByRole("combobox", { name: "View" }),
+      "Support bot · v1 · run 1",
+    );
+    await screen.findByText("Q1");
+
+    expect(screen.queryByRole("button", { name: "Add row" })).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("button", { name: /delete row/i })).toBeNull();
+  });
+
+  it("switches back to Original and restores the page's existing rows grid untouched", async () => {
+    listDerivationsMock.mockResolvedValue([madeDerivation()]);
+    derivedRowsMock.mockResolvedValue(madeDerivedRowsPage());
+    renderDetail();
+    await ready();
+
+    const viewSelect = await screen.findByRole("combobox", { name: "View" });
+    await userEvent.selectOptions(viewSelect, "Support bot · v1 · run 1");
+    await screen.findByText("Q1");
+    expect(screen.queryByTestId("dataset-rows-grid")).toBeNull();
+
+    await userEvent.selectOptions(viewSelect, "Original");
+
+    expect(await screen.findByTestId("dataset-rows-grid")).toBeTruthy();
+    expect(screen.queryByText("Q1")).toBeNull();
+    // Re-selecting Original must not re-trigger a derived-rows fetch.
+    expect(derivedRowsMock).toHaveBeenCalledTimes(1);
   });
 });

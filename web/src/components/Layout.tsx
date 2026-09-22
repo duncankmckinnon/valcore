@@ -26,6 +26,7 @@ const SECTIONS: NavSection[] = [
     label: "Author",
     items: [
       { to: "/evaluators", label: "Evaluators", Icon: EvaluatorIcon },
+      { to: "/agents", label: "Agents", Icon: EvaluatorIcon },
       { to: "/datasets", label: "Datasets", Icon: DatasetIcon },
       { to: "/annotations", label: "Annotations", Icon: AnnotationIcon },
     ],

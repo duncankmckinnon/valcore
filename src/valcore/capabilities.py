@@ -7,10 +7,14 @@ Keeping them in step was manual and they drifted (``factory`` and ``export`` dis
 ``CodeMode``'s module). This module collapses all three into one table so a capability is
 added, removed, or repointed in exactly one place.
 
-It imports nothing from valcore, so ``models`` can depend on it without a cycle.
+It imports only the domain configuration error from valcore, so ``models`` can depend on it
+without a cycle.
 """
 
 from dataclasses import dataclass
+from importlib import import_module
+
+from valcore.errors import ConfigError
 
 
 @dataclass(frozen=True)
@@ -57,3 +61,39 @@ CAPABILITY_REGISTRY: dict[str, CapabilityEntry] = {
 }
 
 VALID_CAPABILITIES: frozenset[str] = frozenset(CAPABILITY_REGISTRY)
+
+
+def load_capability_class(entry: CapabilityEntry) -> type:
+    """Import and return the class an entry names, as ConfigError on failure."""
+    try:
+        module = import_module(entry.module)
+        return getattr(module, entry.class_name)
+    except (ImportError, AttributeError) as exc:
+        raise ConfigError(f"Capability {entry.class_name!r} could not be imported: {exc}") from exc
+
+
+def spec_capability_types() -> list[type]:
+    """Return harness capability classes that can be reconstructed from an agent spec.
+
+    Capabilities without a serialization name are excluded because their JSON spec cannot
+    identify a class that ``Agent.from_spec`` can reconstruct. Missing optional harness
+    extras are skipped so partially installed environments retain their available features.
+    """
+    capability_types: list[type] = []
+    for entry in CAPABILITY_REGISTRY.values():
+        try:
+            capability_type = load_capability_class(entry)
+        except ConfigError:
+            continue
+        if capability_type.get_serialization_name() is not None:
+            capability_types.append(capability_type)
+    return capability_types
+
+
+def spec_capability_names() -> frozenset[str]:
+    """Return serialization names for harness capabilities usable in stored agent specs."""
+    return frozenset(
+        name
+        for capability_type in spec_capability_types()
+        if (name := capability_type.get_serialization_name()) is not None
+    )

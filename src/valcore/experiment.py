@@ -25,7 +25,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent as PydanticAgent
 from pydantic_evals import Case, CaseLifecycle, increment_eval_metric, set_eval_attribute
 from pydantic_evals.evaluators import Evaluator, EvaluatorContext
 from pydantic_evals.evaluators.common import EqualsExpected
@@ -74,7 +74,9 @@ def _usage_from_metrics(metrics: dict[str, float | int]) -> dict | None:
     return {key: metrics[key] for key in _USAGE_KEYS}
 
 
-def _make_task(version: EvaluatorVersion, agent: Agent) -> Callable[[dict], Awaitable[str | float]]:
+def _make_task(
+    version: EvaluatorVersion, agent: PydanticAgent
+) -> Callable[[dict], Awaitable[str | float]]:
     """Build the ``pydantic_evals`` task: the same three calls ``runner._score_row`` makes.
 
     Returns the score alone -- not the full structured output -- because the agreement

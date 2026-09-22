@@ -129,7 +129,15 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
 def _include_routers(app: FastAPI) -> None:
     """Discover and mount resource routers, tolerating ones that do not exist yet."""
-    for module_name in ("evaluators", "datasets", "runs", "overview", "setup", "annotations"):
+    for module_name in (
+        "evaluators",
+        "datasets",
+        "runs",
+        "overview",
+        "setup",
+        "annotations",
+        "agents",
+    ):
         try:
             module = importlib.import_module(f"valcore.api.routes.{module_name}")
         except ImportError:

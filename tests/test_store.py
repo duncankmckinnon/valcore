@@ -8,6 +8,7 @@ import pytest
 from sqlmodel import select
 
 from valcore.errors import (
+    ConfigError,
     ContractError,
     FrozenVersionError,
     NotFoundError,
@@ -62,6 +63,15 @@ VERSION_FIELDS: dict[str, object] = {
     "tools": [],
 }
 
+AGENT_VERSION_FIELDS: dict[str, object] = {
+    "version_name": "v1",
+    "model": "gateway/anthropic:claude-sonnet-5",
+    "spec": {"instructions": "You are a helpful assistant."},
+    "prompt_template": "Answer {question}.",
+    "required_columns": ["question"],
+    "deps_mapping": {},
+}
+
 LABEL_SCHEMA: dict[str, object] = {"kind": "categorical", "labels": ["pass", "fail"]}
 
 
@@ -73,11 +83,19 @@ def version_fields(**overrides: object) -> dict[str, object]:
     return fields
 
 
+def agent_version_fields(**overrides: object) -> dict[str, object]:
+    """Return a copy of valid agent-version fields with overrides applied."""
+    fields = dict(AGENT_VERSION_FIELDS)
+    fields["spec"] = dict(AGENT_VERSION_FIELDS["spec"])  # type: ignore[arg-type]
+    fields.update(overrides)
+    return fields
+
+
 # -- Engine / schema ---------------------------------------------------------
 
 
-def test_create_engine_enables_pragmas(tmp_path: Path) -> None:
-    engine = create_engine(tmp_path / "pragma.db")
+def test_create_engine_enables_pragmas(tmp_path: Path, make_engine) -> None:
+    engine = make_engine(tmp_path / "pragma.db")
     init_db(engine)
     with engine.connect() as conn:
         assert conn.exec_driver_sql("PRAGMA foreign_keys").scalar() == 1
@@ -85,13 +103,13 @@ def test_create_engine_enables_pragmas(tmp_path: Path) -> None:
 
 
 def test_create_engine_uses_settings_db_path_when_none(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_engine
 ) -> None:
     monkeypatch.setenv("VALCORE_HOME", str(tmp_path / "home"))
     from valcore import settings
 
     settings.get_settings.cache_clear()
-    engine = create_engine(None)
+    engine = make_engine(None)
     assert "valcore.db" in str(engine.url)
 
 
@@ -209,6 +227,403 @@ def test_freeze_version_sets_flag(store: Store) -> None:
 def test_freeze_version_missing_raises(store: Store) -> None:
     with pytest.raises(NotFoundError):
         store.freeze_version("nope")
+
+
+# -- Agents ------------------------------------------------------------------
+
+
+def test_agent_create_get_list_and_update_round_trip(store: Store) -> None:
+    first = store.create_agent("first", "first description")
+    second = store.create_agent("second")
+
+    assert store.get_agent(first.id).name == "first"
+    assert [agent.id for agent in store.list_agents()] == [first.id, second.id]
+
+    updated = store.update_agent(first.id, name="renamed", description="new description")
+    assert updated.name == "renamed"
+    assert updated.description == "new description"
+    assert store.get_agent(first.id).description == "new description"
+
+
+def test_get_agent_missing_raises(store: Store) -> None:
+    with pytest.raises(NotFoundError):
+        store.get_agent("nope")
+
+
+def test_create_agent_version_advances_active_pointer(store: Store) -> None:
+    agent = store.create_agent("subject")
+    first = store.create_agent_version(agent.id, **agent_version_fields(version_name="v1"))
+    second = store.create_agent_version(agent.id, **agent_version_fields(version_name="v2"))
+
+    assert store.get_agent(agent.id).active_version_id == second.id
+    assert [version.id for version in store.list_agent_versions(agent.id)] == [first.id, second.id]
+
+
+def test_create_agent_version_invalid_binding_rolls_back(store: Store) -> None:
+    agent = store.create_agent("subject")
+
+    with pytest.raises(ConfigError):
+        store.create_agent_version(
+            agent.id,
+            **agent_version_fields(
+                prompt_template="Answer {missing}.", required_columns=["question"]
+            ),
+        )
+
+    assert store.list_agent_versions(agent.id) == []
+    assert store.get_agent(agent.id).active_version_id is None
+
+
+def test_update_agent_version_frozen_raises(store: Store) -> None:
+    agent = store.create_agent("subject")
+    version = store.create_agent_version(agent.id, **agent_version_fields())
+    store.freeze_agent_version(version.id)
+
+    with pytest.raises(FrozenVersionError):
+        store.update_agent_version(version.id, notes="cannot edit")
+
+    assert store.get_agent_version(version.id).notes == ""
+
+
+def test_update_agent_version_invalid_binding_rolls_back(store: Store) -> None:
+    agent = store.create_agent("subject")
+    version = store.create_agent_version(agent.id, **agent_version_fields())
+
+    with pytest.raises(ConfigError):
+        store.update_agent_version(version.id, prompt_template="Answer {unknown}.")
+
+    assert store.get_agent_version(version.id).prompt_template == "Answer {question}."
+
+
+def test_copy_agent_version_copies_binding_unfrozen_and_makes_copy_active(store: Store) -> None:
+    agent = store.create_agent("subject")
+    original = store.create_agent_version(
+        agent.id,
+        **agent_version_fields(notes="source notes", spec={"instructions": "specific"}),
+    )
+    store.freeze_agent_version(original.id)
+
+    copied = store.copy_agent_version(original.id, "v2")
+
+    assert copied.id != original.id
+    assert copied.agent_id == original.agent_id
+    assert copied.version_name == "v2"
+    assert copied.frozen is False
+    assert copied.notes == original.notes
+    assert copied.spec == original.spec
+    assert copied.prompt_template == original.prompt_template
+    assert copied.required_columns == original.required_columns
+    assert copied.deps_mapping == original.deps_mapping
+    assert store.get_agent(agent.id).active_version_id == copied.id
+
+
+def test_delete_agent_version_repoints_active_pointer(store: Store) -> None:
+    agent = store.create_agent("subject")
+    first = store.create_agent_version(agent.id, **agent_version_fields(version_name="v1"))
+    second = store.create_agent_version(agent.id, **agent_version_fields(version_name="v2"))
+
+    store.delete_agent_version(second.id)
+
+    assert store.get_agent(agent.id).active_version_id == first.id
+    with pytest.raises(NotFoundError):
+        store.get_agent_version(second.id)
+
+
+def test_delete_agent_version_referenced_by_derivation_raises(store: Store) -> None:
+    dataset = store.create_dataset("inputs", "", ["question"])
+    row = store.add_rows(dataset.id, [{"question": "q"}])[0]
+    agent = store.create_agent("subject")
+    version = store.create_agent_version(agent.id, **agent_version_fields())
+    derivation = store.save_derivation(
+        dataset_id=dataset.id,
+        agent_version_id=version.id,
+        response_columns=["response"],
+        responses=[{"row_id": row.id, "data": {"response": "a"}}],
+    )
+
+    with pytest.raises(ReferencedError) as exc:
+        store.delete_agent_version(version.id)
+
+    assert exc.value.detail == {"derivation_count": 1, "derivation_ids": [derivation.id]}
+    assert store.get_agent_version(version.id).id == version.id
+
+
+def test_delete_agent_referenced_by_derivation_is_blocked(store: Store) -> None:
+    dataset = store.create_dataset("inputs", "", ["question"])
+    row = store.add_rows(dataset.id, [{"question": "q"}])[0]
+    agent = store.create_agent("subject")
+    version = store.create_agent_version(agent.id, **agent_version_fields())
+    derivation = store.save_derivation(
+        dataset_id=dataset.id,
+        agent_version_id=version.id,
+        response_columns=["response"],
+        responses=[{"row_id": row.id, "data": {"response": "a"}}],
+    )
+
+    with pytest.raises(ReferencedError) as exc:
+        store.delete_agent(agent.id)
+
+    assert exc.value.detail == {"derivation_count": 1, "derivation_ids": [derivation.id]}
+    assert store.get_agent(agent.id).id == agent.id
+    assert store.get_agent_version(version.id).id == version.id
+
+
+def test_delete_agent_cascades_unreferenced_versions(store: Store) -> None:
+    agent = store.create_agent("subject")
+    first = store.create_agent_version(agent.id, **agent_version_fields(version_name="v1"))
+    second = store.create_agent_version(agent.id, **agent_version_fields(version_name="v2"))
+
+    store.delete_agent(agent.id)
+
+    with pytest.raises(NotFoundError):
+        store.get_agent(agent.id)
+    with pytest.raises(NotFoundError):
+        store.get_agent_version(first.id)
+    with pytest.raises(NotFoundError):
+        store.get_agent_version(second.id)
+
+
+# -- Derivations -------------------------------------------------------------
+
+
+def _agent_version_and_dataset(store: Store) -> tuple[str, str, list[DatasetRow]]:
+    """Create one agent version and a two-row dataset for derivation tests."""
+    dataset = store.create_dataset("inputs", "", ["question", "shared"])
+    rows = store.add_rows(
+        dataset.id,
+        [{"question": "first", "shared": "input-1"}, {"question": "second", "shared": "input-2"}],
+    )
+    agent = store.create_agent("subject")
+    version = store.create_agent_version(
+        agent.id,
+        **agent_version_fields(required_columns=["question", "shared"]),
+    )
+    return dataset.id, version.id, rows
+
+
+def _response(row_id: str, text: str = "answer") -> dict:
+    """Build the minimal saved response payload for one source row."""
+    return {"row_id": row_id, "data": {"response": text}}
+
+
+def test_save_derivation_allocates_contiguous_ordinals_per_dataset_and_version(
+    store: Store,
+) -> None:
+    dataset_id, version_id, rows = _agent_version_and_dataset(store)
+
+    saved = [
+        store.save_derivation(
+            dataset_id=dataset_id,
+            agent_version_id=version_id,
+            response_columns=["response"],
+            responses=[_response(rows[0].id, str(ordinal))],
+        )
+        for ordinal in range(3)
+    ]
+
+    agent = store.get_agent_version(version_id).agent_id
+    other_version = store.create_agent_version(agent, **agent_version_fields(version_name="v2"))
+    other = store.save_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=other_version.id,
+        response_columns=["response"],
+        responses=[_response(rows[0].id)],
+    )
+
+    assert [derivation.ordinal for derivation in saved] == [0, 1, 2]
+    assert other.ordinal == 0
+
+
+def test_save_derivation_empty_responses_raises_without_persisting(store: Store) -> None:
+    dataset_id, version_id, _ = _agent_version_and_dataset(store)
+
+    with pytest.raises(ContractError):
+        store.save_derivation(
+            dataset_id=dataset_id,
+            agent_version_id=version_id,
+            response_columns=["response"],
+            responses=[],
+        )
+
+    assert store.list_derivations(dataset_id=dataset_id) == []
+
+
+@pytest.mark.parametrize(
+    ("response", "missing_key"),
+    [({"data": {}}, "row_id"), ({"row_id": "row"}, "data")],
+)
+def test_save_derivation_requires_row_id_and_data(
+    store: Store, response: dict, missing_key: str
+) -> None:
+    dataset_id, version_id, _ = _agent_version_and_dataset(store)
+
+    with pytest.raises(ContractError, match=missing_key):
+        store.save_derivation(
+            dataset_id=dataset_id,
+            agent_version_id=version_id,
+            response_columns=["response"],
+            responses=[response],
+        )
+
+    assert store.list_derivations(dataset_id=dataset_id) == []
+
+
+@pytest.mark.parametrize(
+    ("response", "invalid_value"),
+    [({"row_id": 1, "data": {}}, "row_id"), ({"row_id": "row", "data": "answer"}, "data")],
+)
+def test_save_derivation_requires_typed_response_values(
+    store: Store, response: dict, invalid_value: str
+) -> None:
+    """Reject payload values that cannot represent the persisted response contract."""
+    dataset_id, version_id, _ = _agent_version_and_dataset(store)
+
+    with pytest.raises(ContractError, match=invalid_value):
+        store.save_derivation(
+            dataset_id=dataset_id,
+            agent_version_id=version_id,
+            response_columns=["response"],
+            responses=[response],
+        )
+
+    assert store.list_derivations(dataset_id=dataset_id) == []
+
+
+def test_save_derivation_rolls_back_when_a_later_response_is_invalid(store: Store) -> None:
+    """Keep the derivation and earlier responses atomic when later payload validation fails."""
+    dataset_id, version_id, rows = _agent_version_and_dataset(store)
+
+    with pytest.raises(ContractError, match="data"):
+        store.save_derivation(
+            dataset_id=dataset_id,
+            agent_version_id=version_id,
+            response_columns=["response"],
+            responses=[_response(rows[0].id), {"row_id": rows[1].id}],
+        )
+
+    assert store.list_derivations(dataset_id=dataset_id) == []
+
+
+def test_save_derivation_rejects_missing_dataset_row(store: Store) -> None:
+    """Prevent responses from pointing at rows that cannot participate in the joined view."""
+    dataset_id, version_id, _ = _agent_version_and_dataset(store)
+
+    with pytest.raises(ContractError, match="missing-row"):
+        store.save_derivation(
+            dataset_id=dataset_id,
+            agent_version_id=version_id,
+            response_columns=["response"],
+            responses=[_response("missing-row")],
+        )
+
+    assert store.list_derivations(dataset_id=dataset_id) == []
+
+
+def test_save_derivation_rejects_row_from_another_dataset(store: Store) -> None:
+    """Keep each response overlay bound to rows from its declared source dataset."""
+    dataset_id, version_id, _ = _agent_version_and_dataset(store)
+    other_dataset = store.create_dataset("other", "", ["question"])
+    other_row = store.add_rows(other_dataset.id, [{"question": "other"}])[0]
+
+    with pytest.raises(ContractError, match=other_row.id):
+        store.save_derivation(
+            dataset_id=dataset_id,
+            agent_version_id=version_id,
+            response_columns=["response"],
+            responses=[_response(other_row.id)],
+        )
+
+    assert store.list_derivations(dataset_id=dataset_id) == []
+
+
+def test_save_derivation_rejects_duplicate_row_ids(store: Store) -> None:
+    """Report duplicate responses as a domain error before the unique constraint is reached."""
+    dataset_id, version_id, rows = _agent_version_and_dataset(store)
+
+    with pytest.raises(ContractError, match=rows[0].id):
+        store.save_derivation(
+            dataset_id=dataset_id,
+            agent_version_id=version_id,
+            response_columns=["response"],
+            responses=[_response(rows[0].id, "first"), _response(rows[0].id, "second")],
+        )
+
+    assert store.list_derivations(dataset_id=dataset_id) == []
+
+
+def test_derived_rows_joins_response_overlay_in_dataset_order(store: Store) -> None:
+    dataset_id, version_id, rows = _agent_version_and_dataset(store)
+    derivation = store.save_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=version_id,
+        response_columns=["response", "shared"],
+        responses=[
+            {
+                "row_id": rows[1].id,
+                "data": {"response": "second response", "shared": "response-2"},
+                "latency_ms": 42,
+                "usage": {"input_tokens": 12, "output_tokens": 4},
+                "error": "partial failure",
+            },
+            {"row_id": rows[0].id, "data": {"response": "first response"}},
+        ],
+    )
+
+    derived = store.derived_rows(derivation.id)
+
+    assert [row.row_id for row in derived] == [rows[0].id, rows[1].id]
+    assert derived[0].data == {
+        "question": "first",
+        "shared": "input-1",
+        "response": "first response",
+    }
+    assert derived[1].data == {
+        "question": "second",
+        "shared": "response-2",
+        "response": "second response",
+    }
+    assert derived[1].latency_ms == 42
+    assert derived[1].error == "partial failure"
+    assert derived[1].model_dump()["row_id"] == rows[1].id
+
+    assert store.get_derivation(derivation.id).id == derivation.id
+    assert store.get_derivation(derivation.id).response_columns == ["response", "shared"]
+    responses = store.list_agent_responses(derivation.id)
+    assert {response.dataset_row_id for response in responses} == {rows[0].id, rows[1].id}
+    assert next(
+        response for response in responses if response.dataset_row_id == rows[1].id
+    ).usage == {
+        "input_tokens": 12,
+        "output_tokens": 4,
+    }
+
+
+def test_list_derivations_filters_by_dataset_and_agent_version(store: Store) -> None:
+    first_dataset_id, version_id, first_rows = _agent_version_and_dataset(store)
+    second_dataset = store.create_dataset("other", "", ["question"])
+    second_row = store.add_rows(second_dataset.id, [{"question": "other"}])[0]
+    first = store.save_derivation(
+        dataset_id=first_dataset_id,
+        agent_version_id=version_id,
+        response_columns=["response"],
+        responses=[_response(first_rows[0].id)],
+    )
+    second = store.save_derivation(
+        dataset_id=second_dataset.id,
+        agent_version_id=version_id,
+        response_columns=["response"],
+        responses=[_response(second_row.id)],
+    )
+
+    assert [
+        derivation.id for derivation in store.list_derivations(dataset_id=first_dataset_id)
+    ] == [first.id]
+    assert [
+        derivation.id for derivation in store.list_derivations(agent_version_id=version_id)
+    ] == [
+        first.id,
+        second.id,
+    ]
 
 
 # -- Datasets ----------------------------------------------------------------
@@ -1076,14 +1491,14 @@ def test_deleting_a_dataset_removes_its_generation_record(store: Store) -> None:
         store.get_generation(dataset.id)
 
 
-def test_init_db_adds_the_generation_table_to_an_existing_database(tmp_path) -> None:
+def test_init_db_adds_the_generation_table_to_an_existing_database(tmp_path, make_engine) -> None:
     """A database written before ``DatasetGeneration`` existed gains it on the next start.
 
     This is why the settings live in their own table: ``init_db`` is a bare ``create_all``,
     which creates missing tables but never missing columns. Extra fields on ``Dataset``
     would leave an existing database raising ``no such column`` on every dataset query.
     """
-    engine = create_engine(tmp_path / "existing.db")
+    engine = make_engine(tmp_path / "existing.db")
     init_db(engine)
     store = Store(engine)
     dataset = store.create_dataset(name="from-before", description="d", columns=["a"])
@@ -1105,14 +1520,16 @@ def test_init_db_adds_the_generation_table_to_an_existing_database(tmp_path) -> 
 # -- Experiment runs -----------------------------------------------------------
 
 
-def test_init_db_adds_the_experiment_run_table_to_an_existing_database(tmp_path) -> None:
+def test_init_db_adds_the_experiment_run_table_to_an_existing_database(
+    tmp_path, make_engine
+) -> None:
     """A database written before ``ExperimentRun`` existed gains it on the next start.
 
     ``ExperimentRun`` is a separate table rather than a ``Run`` column precisely because
     ``init_db`` is a bare ``create_all``: it adds missing tables but never missing columns,
     so a new table reaches an existing database while a new ``Run`` field would not.
     """
-    engine = create_engine(tmp_path / "existing.db")
+    engine = make_engine(tmp_path / "existing.db")
     init_db(engine)
     store = Store(engine)
     version_id, dataset_id = _make_run_prereqs(store)
@@ -1221,8 +1638,8 @@ def test_logfire_pull_round_trips_and_is_removed_with_dataset(store: Store) -> N
         store.get_logfire_pull(dataset.id)
 
 
-def test_init_db_adds_the_logfire_pull_table_to_an_existing_database(tmp_path) -> None:
-    engine = create_engine(tmp_path / "existing.db")
+def test_init_db_adds_the_logfire_pull_table_to_an_existing_database(tmp_path, make_engine) -> None:
+    engine = make_engine(tmp_path / "existing.db")
     init_db(engine)
     store = Store(engine)
     dataset = store.create_dataset(name="from-before", description="", columns=["a"])
