@@ -17,7 +17,7 @@ from valcore import agent_spec, config
 from valcore.api.deps import get_store
 from valcore.errors import ContractError, NotFoundError
 from valcore.factory import build_agent_from_version, execute_agent_version
-from valcore.models import Agent, AgentVersion, DatasetDerivation
+from valcore.models import Agent, AgentVersion, DatasetDerivation, DerivationState
 from valcore.settings import is_local_cli_model
 from valcore.store import DerivedRow, Store
 
@@ -151,7 +151,7 @@ class AgentDetail(BaseModel):
 
 
 class DerivationRead(BaseModel):
-    """A saved response overlay plus resolved source and agent labels."""
+    """A response overlay plus resolved source and agent labels."""
 
     id: str
     created_at: datetime
@@ -161,6 +161,7 @@ class DerivationRead(BaseModel):
     agent_name: str
     version_name: str
     ordinal: int
+    state: DerivationState
     response_columns: list[str]
     response_count: int
 
@@ -245,7 +246,7 @@ def _version_read(version: AgentVersion) -> AgentVersionRead:
 
 
 def _derivation_read(derivation: DatasetDerivation, store: Store) -> DerivationRead:
-    """Resolve the presentation fields belonging to a saved derivation."""
+    """Resolve the presentation fields belonging to a derivation."""
     dataset = store.get_dataset(derivation.dataset_id)
     version = store.get_agent_version(derivation.agent_version_id)
     agent = store.get_agent(version.agent_id)
@@ -258,6 +259,7 @@ def _derivation_read(derivation: DatasetDerivation, store: Store) -> DerivationR
         agent_name=agent.name,
         version_name=version.version_name,
         ordinal=derivation.ordinal,
+        state=store.derivation_state(derivation.id),
         response_columns=derivation.response_columns,
         response_count=len(store.list_agent_responses(derivation.id)),
     )
@@ -278,15 +280,32 @@ def _utc(value: datetime) -> datetime:
 
 @router.get("/derivations", response_model=list[DerivationRead])
 async def list_derivations(
-    store: StoreDep, dataset_id: str | None = None, agent_version_id: str | None = None
+    store: StoreDep,
+    dataset_id: str | None = None,
+    agent_version_id: str | None = None,
+    include_staged: bool = False,
 ) -> list[DerivationRead]:
-    """List saved derivations, optionally constrained to one dataset or version."""
+    """List derivations, optionally constrained to one dataset or version."""
     return [
         _derivation_read(derivation, store)
         for derivation in store.list_derivations(
-            dataset_id=dataset_id, agent_version_id=agent_version_id
+            dataset_id=dataset_id,
+            agent_version_id=agent_version_id,
+            include_staged=include_staged,
         )
     ]
+
+
+@router.post("/derivations/{id}/save", response_model=DerivationRead)
+async def save_staged_derivation(id: str, store: StoreDep) -> DerivationRead:
+    """Accept a staged response overlay and assign its saved ordinal."""
+    return _derivation_read(store.save_staged_derivation(id), store)
+
+
+@router.delete("/derivations/{id}", status_code=204)
+async def delete_derivation(id: str, store: StoreDep) -> None:
+    """Discard an unreferenced response overlay."""
+    store.delete_derivation(id)
 
 
 @router.get("/derivations/{id}/rows", response_model=DerivedRowsPage)
