@@ -19,6 +19,7 @@ import type {
   AgentVersion,
   DatasetSummary,
   Derivation,
+  DerivationSave,
   DerivedRowsPage,
   Overview,
   Run,
@@ -1438,15 +1439,41 @@ describe("agents client helpers", () => {
     ordinal: 1,
     response_columns: ["label"],
     response_count: 2,
-    state: "staged",
+    state: "saved",
   };
 
-  it("agents.saveDerivation POSTs to the derivation save endpoint and returns it", async () => {
+  it("agents.saveDerivation POSTs single-row trial data to /api/agents/versions/{vid}/derivations", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse(derivation));
 
-    const result = await agents.saveDerivation("d1");
+    const body: DerivationSave = {
+      dataset_id: "ds1",
+      entries: [
+        {
+          row_id: "r1",
+          data: { label: "billing" },
+          latency_ms: 100,
+          usage: null,
+          error: null,
+        },
+      ],
+    };
+    const result = await agents.saveDerivation("av1", body);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents/versions/av1/derivations");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe(JSON.stringify(body));
+    expect(result).toEqual(derivation);
+  });
+
+  it("agents.acceptDerivation POSTs the staged derivation save endpoint with no body", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(derivation));
+
+    const result = await agents.acceptDerivation("d1");
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/agents/derivations/d1/save");
