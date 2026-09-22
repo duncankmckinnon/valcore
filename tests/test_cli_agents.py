@@ -344,12 +344,24 @@ def test_run_agent_dataset_save_accepts_the_completed_derivation(
     store.add_rows(dataset.id, [{"input": "first"}])
     monkeypatch.setattr("valcore.runner.build_agent_from_version", _test_agent_builder)
 
-    result = _invoke(runner, db_path, "run", "agent", "writer", "--dataset", "cases", "--save")
+    result = _invoke(
+        runner,
+        db_path,
+        "run",
+        "agent",
+        "writer",
+        "--dataset",
+        "cases",
+        "--save",
+        "--concurrency",
+        "3",
+    )
 
     assert result.exit_code == 0, result.output + result.stderr
     derivation = store.list_derivations(dataset_id=dataset.id, agent_version_id=version.id)[0]
     assert store.derivation_state(derivation.id) is DerivationState.SAVED
     assert derivation.ordinal == 0
+    assert store.list_runs()[0].concurrency == 3
 
 
 def test_run_agent_prompt_bypasses_the_version_prompt_template(
