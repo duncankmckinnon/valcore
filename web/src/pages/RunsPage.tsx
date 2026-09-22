@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { agents, datasets, evaluators, runs } from "../api/client";
 import type {
+  AgentSummary,
   Dataset,
   Derivation,
   Evaluator,
@@ -66,6 +67,9 @@ function RunsList() {
   const navigate = useNavigate();
   const [runList, setRunList] = useState<Run[] | null>(null);
   const [versionNames, setVersionNames] = useState<Record<string, string>>({});
+  const [agentVersionNames, setAgentVersionNames] = useState<
+    Record<string, string>
+  >({});
   const [derivations, setDerivations] = useState<Record<string, Derivation>>(
     {},
   );
@@ -103,6 +107,26 @@ function RunsList() {
         setVersionNames(names);
       })
       .catch(setError);
+    // Agent identity cannot depend on a derivation: pending runs do not have one yet,
+    // and discarded staged derivations are intentionally removed.
+    agents
+      .list()
+      .then(async (all) => {
+        const versionsByAgent = await Promise.all(
+          all.map(async (agent: AgentSummary) => ({
+            agent,
+            versions: await agents.listVersions(agent.id),
+          })),
+        );
+        const names: Record<string, string> = {};
+        for (const { agent, versions } of versionsByAgent) {
+          for (const version of versions) {
+            names[version.id] = `${agent.name} / ${version.version_name}`;
+          }
+        }
+        setAgentVersionNames(names);
+      })
+      .catch(setError);
     // Staged derivations are attached to completed derive runs before the user saves
     // them, so the run index deliberately includes them in its contract lookup.
     agents
@@ -119,7 +143,7 @@ function RunsList() {
     <section>
       <PageHeader
         title="Runs"
-        description="A run applies an evaluator version to a dataset and records how well it scored."
+        description="Runs derive agent responses from datasets or score dataset contracts with evaluators."
         action={
           <div className="form-actions">
             <Button onClick={() => setLaunching(true)}>New run</Button>
@@ -144,7 +168,7 @@ function RunsList() {
           empty={
             <EmptyState
               icon={<RunIcon />}
-              message="A run scores an evaluator version against a dataset. Start one to see it here."
+              message="Run an agent over a dataset or score a dataset contract with an evaluator."
               action={
                 <Button onClick={() => setLaunching(true)}>New run</Button>
               }
@@ -152,16 +176,15 @@ function RunsList() {
           }
           columns={[
             {
-              header: "Evaluator / version",
+              header: "Agent or evaluator / version",
               cell: (run) => {
                 const derivation = run.derivation_id
                   ? derivations[run.derivation_id]
                   : undefined;
                 const name =
                   run.kind === "derive"
-                    ? derivation
-                      ? `${derivation.agent_name} / ${derivation.version_name}`
-                      : run.version_id.slice(0, 8)
+                    ? (agentVersionNames[run.version_id] ??
+                      run.version_id.slice(0, 8))
                     : (versionNames[run.version_id] ??
                       run.version_id.slice(0, 8));
                 return (
@@ -170,7 +193,8 @@ function RunsList() {
                     {run.kind !== "derive" && derivation && (
                       <div className="muted">
                         Contract: {derivation.agent_name} /{" "}
-                        {derivation.version_name} / run {derivation.ordinal}
+                        {derivation.version_name} / derivation{" "}
+                        {derivation.ordinal}
                       </div>
                     )}
                   </div>

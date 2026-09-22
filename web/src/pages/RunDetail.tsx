@@ -92,9 +92,12 @@ function DerivationRows({ page }: { page: DerivedRowsPage }) {
         ...page.columns.map((column) => ({
           header: column,
           cell: (row: DerivedRowsPage["rows"][number]) =>
-            row.error ??
-            (row.data[column] === undefined ? "—" : String(row.data[column])),
+            row.data[column] === undefined ? "—" : String(row.data[column]),
         })),
+        {
+          header: "Error",
+          cell: (row) => row.error ?? "—",
+        },
         {
           header: "Latency",
           cell: (row) =>
@@ -153,8 +156,8 @@ export default function RunDetail({ runId }: Props) {
   }, [runId, onlyDisagreements, onlyErrors]);
 
   useEffect(() => {
-    if (isTerminal) loadResults();
-  }, [isTerminal, loadResults]);
+    if (isTerminal && run?.kind !== "derive") loadResults();
+  }, [isTerminal, loadResults, run?.kind]);
 
   useEffect(() => {
     if (!run || run.kind !== "derive" || !run.derivation_id) return;
@@ -257,11 +260,15 @@ export default function RunDetail({ runId }: Props) {
                 <div className="form-actions">
                   <Button
                     onClick={() => void saveDerivation()}
-                    disabled={savingDerivation}
+                    disabled={savingDerivation || discardingDerivation}
                   >
                     {savingDerivation ? <Spinner /> : "Save"}
                   </Button>
-                  <Button variant="danger" onClick={() => setDiscardOpen(true)}>
+                  <Button
+                    variant="danger"
+                    onClick={() => setDiscardOpen(true)}
+                    disabled={savingDerivation || discardingDerivation}
+                  >
                     Discard
                   </Button>
                 </div>

@@ -11,6 +11,8 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import RunsPage from "./RunsPage";
 import { agents, datasets, evaluators, runs } from "../api/client";
 import type {
+  AgentSummary,
+  AgentVersion,
   DatasetSummary,
   Derivation,
   Evaluator,
@@ -31,7 +33,12 @@ vi.mock("../api/client", async (importOriginal) => {
     runs: { ...actual.runs, list: vi.fn() },
     datasets: { ...actual.datasets, list: vi.fn() },
     evaluators: { ...actual.evaluators, list: vi.fn(), get: vi.fn() },
-    agents: { ...actual.agents, listDerivations: vi.fn() },
+    agents: {
+      ...actual.agents,
+      list: vi.fn(),
+      listVersions: vi.fn(),
+      listDerivations: vi.fn(),
+    },
   };
 });
 
@@ -39,6 +46,8 @@ const runsListMock = vi.mocked(runs.list);
 const datasetsListMock = vi.mocked(datasets.list);
 const evaluatorsListMock = vi.mocked(evaluators.list);
 const evaluatorsGetMock = vi.mocked(evaluators.get);
+const agentsListMock = vi.mocked(agents.list);
+const agentVersionsMock = vi.mocked(agents.listVersions);
 const listDerivationsMock = vi.mocked(agents.listDerivations);
 
 function makeRun(overrides: Partial<Run> = {}): Run {
@@ -83,6 +92,21 @@ const VERSION = {
   version_name: "v1",
 } as EvaluatorVersion;
 
+const AGENT: AgentSummary = {
+  id: "agent-1",
+  created_at: "2026-01-01T00:00:00Z",
+  name: "Support agent",
+  description: "",
+  active_version_id: "agent-ver-1",
+  version_count: 1,
+};
+
+const AGENT_VERSION = {
+  id: "agent-ver-1",
+  agent_id: "agent-1",
+  version_name: "v2",
+} as AgentVersion;
+
 function makeDerivation(overrides: Partial<Derivation> = {}): Derivation {
   return {
     id: "der-1",
@@ -124,6 +148,8 @@ beforeEach(() => {
   datasetsListMock.mockResolvedValue([]);
   evaluatorsListMock.mockResolvedValue([]);
   evaluatorsGetMock.mockResolvedValue(EVALUATOR);
+  agentsListMock.mockResolvedValue([]);
+  agentVersionsMock.mockResolvedValue([]);
   listDerivationsMock.mockResolvedValue([]);
 });
 
@@ -143,14 +169,12 @@ describe("RunsPage chrome", () => {
     expect(headings[0]).toHaveTextContent("Runs");
   });
 
-  it("describes what a run does in the header", async () => {
+  it("describes both kinds of run in the header", async () => {
     renderPage();
 
     await waitFor(() => expect(runsListMock).toHaveBeenCalled());
 
-    // The PageHeader description explains that a run applies an evaluator version
-    // to a dataset and records how well it scored.
-    expect(screen.getByText(/how well it scored/i)).toBeTruthy();
+    expect(screen.getByText(/derive agent responses/i)).toBeTruthy();
   });
 });
 
@@ -158,10 +182,8 @@ describe("RunsPage empty state", () => {
   it("explains what a run is when there are no runs", async () => {
     renderPage();
 
-    // The bare "No runs yet." string is replaced by an EmptyState whose message
-    // explains that a run scores an evaluator version against a dataset.
     expect(
-      await screen.findByText(/evaluator version against a dataset/i),
+      await screen.findByText(/run an agent over a dataset/i),
     ).toBeTruthy();
   });
 
@@ -188,6 +210,8 @@ describe("RunsPage list and navigation", () => {
       }),
     ]);
     listDerivationsMock.mockResolvedValue([makeDerivation()]);
+    agentsListMock.mockResolvedValue([AGENT]);
+    agentVersionsMock.mockResolvedValue([AGENT_VERSION]);
 
     renderPage();
 
@@ -201,6 +225,31 @@ describe("RunsPage list and navigation", () => {
     expect(evaluatorsGetMock).not.toHaveBeenCalledWith("agent-ver-1");
   });
 
+  it.each([
+    ["pending", null],
+    ["completed", "discarded-derivation"],
+  ] as const)(
+    "labels a %s derive run from the agent catalog when its derivation is unavailable",
+    async (status, derivationId) => {
+      runsListMock.mockResolvedValue([
+        makeRun({
+          kind: "derive",
+          version_id: "agent-ver-1",
+          derivation_id: derivationId,
+          status,
+        }),
+      ]);
+      agentsListMock.mockResolvedValue([AGENT]);
+      agentVersionsMock.mockResolvedValue([AGENT_VERSION]);
+
+      renderPage();
+
+      expect(
+        await screen.findByRole("link", { name: "Support agent / v2" }),
+      ).toBeInTheDocument();
+    },
+  );
+
   it("shows the derivation contract used by an evaluator run", async () => {
     runsListMock.mockResolvedValue([makeRun({ derivation_id: "der-1" })]);
     listDerivationsMock.mockResolvedValue([makeDerivation()]);
@@ -208,7 +257,7 @@ describe("RunsPage list and navigation", () => {
     renderPage();
 
     expect(
-      await screen.findByText(/Support agent.*v2.*run 3/i),
+      await screen.findByText(/Support agent.*v2.*derivation 3/i),
     ).toBeInTheDocument();
   });
 

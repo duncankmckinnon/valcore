@@ -3,6 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
   render,
   screen,
@@ -124,6 +125,13 @@ afterEach(() => {
 });
 
 describe("RunDetail derive runs", () => {
+  it("does not request evaluator results for a derive run", async () => {
+    renderDetail();
+
+    await screen.findByText("A helpful reply");
+    expect(resultsMock).not.toHaveBeenCalled();
+  });
+
   it("shows a completed staged derivation's rows with Save and Discard actions", async () => {
     renderDetail();
 
@@ -148,6 +156,25 @@ describe("RunDetail derive runs", () => {
     expect(
       screen.queryByRole("button", { name: "Discard" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("disables Discard while Save is in progress", async () => {
+    let resolveSave!: (value: Derivation) => void;
+    acceptDerivationMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSave = resolve;
+      }),
+    );
+    const user = userEvent.setup();
+    renderDetail();
+
+    await user.click(await screen.findByRole("button", { name: "Save" }));
+
+    expect(screen.getByRole("button", { name: "Discard" })).toBeDisabled();
+    await act(async () => {
+      resolveSave(makeDerivation({ state: "saved", ordinal: 4 }));
+    });
+    expect(await screen.findByText(/derivation 4/i)).toBeInTheDocument();
   });
 
   it("shows a saved derivation's ordinal without staging actions", async () => {
@@ -183,6 +210,58 @@ describe("RunDetail derive runs", () => {
     expect(
       screen.queryByRole("button", { name: "Discard" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("disables Save while Discard is in progress", async () => {
+    let resolveDiscard!: () => void;
+    deleteDerivationMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveDiscard = resolve;
+      }),
+    );
+    const user = userEvent.setup();
+    renderDetail();
+
+    await user.click(await screen.findByRole("button", { name: "Discard" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Discard" }));
+
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    await act(async () => {
+      resolveDiscard();
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "Save" }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("keeps dataset values visible and presents response errors separately", async () => {
+    derivedRowsMock.mockResolvedValue({
+      columns: ["prompt", "draft"],
+      rows: [
+        {
+          row_id: "row-error",
+          idx: 0,
+          data: { prompt: "Keep this input" },
+          latency_ms: 25,
+          error: "Agent timed out",
+        },
+      ],
+    });
+    renderDetail();
+
+    const inputCell = await screen.findByRole("cell", {
+      name: "Keep this input",
+    });
+    expect(inputCell).toBeInTheDocument();
+    expect(
+      screen.getByRole("columnheader", { name: "Error" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("cell", { name: "Agent timed out" }),
+    ).toBeInTheDocument();
   });
 
   it("displays skipped-row reasons when metrics report an incomplete scoring pass", async () => {
