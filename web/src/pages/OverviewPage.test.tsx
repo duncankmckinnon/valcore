@@ -9,8 +9,8 @@ import {
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import OverviewPage from "./OverviewPage";
-import { overview, setup } from "../api/client";
-import type { Overview, SetupKey, SetupStatus } from "../api/types";
+import { agents, overview, setup } from "../api/client";
+import type { AgentSummary, Overview, SetupKey, SetupStatus } from "../api/types";
 
 // The overview and setup endpoints are exercised here; the page makes one request to each on
 // mount. Keep every other client member intact so the module loads.
@@ -18,12 +18,14 @@ vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
   return {
     ...actual,
+    agents: { ...actual.agents, list: vi.fn() },
     overview: { ...actual.overview, get: vi.fn() },
     setup: { ...actual.setup, get: vi.fn() },
   };
 });
 
 const getMock = vi.mocked(overview.get);
+const agentsList = vi.mocked(agents.list);
 const setupGet = vi.mocked(setup.get);
 
 function makeOverview(overrides: Partial<Overview> = {}): Overview {
@@ -41,6 +43,18 @@ function makeOverview(overrides: Partial<Overview> = {}): Overview {
       accuracy: 0.87,
       finished_at: "2026-08-06T12:00:00Z",
     },
+    ...overrides,
+  };
+}
+
+function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
+  return {
+    id: "agent-1",
+    created_at: "2026-09-20T00:00:00Z",
+    name: "Support agent",
+    description: "Answers customer questions.",
+    active_version_id: "av-1",
+    version_count: 1,
     ...overrides,
   };
 }
@@ -131,6 +145,7 @@ beforeEach(() => {
   // A harmless default (all keys set, card collapsed) so every pre-existing test that doesn't
   // care about setup state still gets a resolved promise instead of an unhandled rejection.
   setupGet.mockResolvedValue(makeSetupStatus());
+  agentsList.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -169,17 +184,19 @@ describe("OverviewPage", () => {
     expect(screen.getByText("91%")).toBeTruthy();
   });
 
-  it("shows the agent count and links agents to their workspace", async () => {
-    // agent_count is added with the agent surface; Object.assign keeps this test focused on
-    // page behavior until the shared API DTO is updated alongside the implementation.
-    getMock.mockResolvedValue(
-      Object.assign(makeOverview(), { agent_count: 3 }),
-    );
+  it("shows the listed-agent count and links agents to their workspace", async () => {
+    getMock.mockResolvedValue(makeOverview());
+    agentsList.mockResolvedValue([
+      makeAgent(),
+      makeAgent({ id: "agent-2", name: "Sales agent" }),
+      makeAgent({ id: "agent-3", name: "Triage agent" }),
+    ]);
 
     renderPage();
 
     expect(await screen.findByText("Agents")).toBeTruthy();
     expect(screen.getByText("3")).toBeTruthy();
+    expect(agentsList).toHaveBeenCalledOnce();
     expect(screen.getByRole("link", { name: /agents/i })).toHaveAttribute(
       "href",
       "/agents",
