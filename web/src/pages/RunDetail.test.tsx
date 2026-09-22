@@ -177,6 +177,12 @@ describe("RunDetail derive runs", () => {
     await waitFor(() =>
       expect(deleteDerivationMock).toHaveBeenCalledWith("der-1"),
     );
+    expect(
+      screen.queryByRole("button", { name: "Save" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Discard" }),
+    ).not.toBeInTheDocument();
   });
 
   it("displays skipped-row reasons when metrics report an incomplete scoring pass", async () => {
