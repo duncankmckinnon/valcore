@@ -13,10 +13,12 @@ from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai.agent.spec import AgentSpec
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
+from sqlmodel import select
 
 from valcore.api.deps import get_store
 from valcore.api.main import create_app
-from valcore.store import Store, create_engine, init_db
+from valcore.models import DerivationRole, DerivationState, DerivationStatus, RunKind, ScoreKind
+from valcore.store import Store, create_engine, init_db, session_scope
 
 MODEL = "gateway/anthropic:claude-sonnet-5"
 SPEC = {"instructions": "Give a concise answer."}
@@ -404,3 +406,127 @@ async def test_failed_derivation_save_does_not_append_adhoc_rows(store: Store) -
     assert failed.status_code == 422, failed.text
     assert store.list_rows(dataset.id) == rows_before
     assert store.list_derivations(dataset_id=dataset.id) == derivations_before
+
+
+@pytest.mark.anyio
+async def test_save_staged_derivation_allocates_ordinal_and_cannot_be_repeated(
+    store: Store,
+) -> None:
+    """Accepting a staged pass makes it visible once with its allocated history position."""
+    dataset = store.create_dataset("questions", "", ["question"])
+    async with _client(store) as client:
+        _, version = await _create_agent_and_version(client)
+        staged = store.create_staged_derivation(
+            dataset_id=dataset.id,
+            agent_version_id=version["id"],
+            response_columns=["response"],
+        )
+
+        saved = await client.post(f"/api/agents/derivations/{staged.id}/save")
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["id"] == staged.id
+        assert saved.json()["ordinal"] == 0
+        assert saved.json()["state"] == "saved"
+        assert store.derivation_state(staged.id) is DerivationState.SAVED
+
+        repeated = await client.post(f"/api/agents/derivations/{staged.id}/save")
+
+    assert repeated.status_code == 422, repeated.text
+    assert repeated.json()["error"]["type"] == "ContractError"
+
+
+@pytest.mark.anyio
+async def test_delete_derivation_discards_staged_but_preserves_evaluator_input(
+    store: Store,
+) -> None:
+    """Discard removes unaccepted work, while an evaluator's saved input remains immutable."""
+    dataset = store.create_dataset("questions", "", ["question"])
+    row = store.add_rows(dataset.id, [{"question": "What is valcore?"}])[0]
+    async with _client(store) as client:
+        _, agent_version = await _create_agent_and_version(client)
+        staged = store.create_staged_derivation(
+            dataset_id=dataset.id,
+            agent_version_id=agent_version["id"],
+            response_columns=["response"],
+        )
+
+        discarded = await client.delete(f"/api/agents/derivations/{staged.id}")
+        assert discarded.status_code == 204, discarded.text
+        assert store.list_derivations(dataset_id=dataset.id, include_staged=True) == []
+
+        saved = store.save_derivation(
+            dataset_id=dataset.id,
+            agent_version_id=agent_version["id"],
+            response_columns=["response"],
+            responses=[{"row_id": row.id, "data": {"response": "An answer."}}],
+        )
+        evaluator = store.create_evaluator("Response judge")
+        evaluator_version = store.create_version(
+            evaluator.id,
+            version_name="v1",
+            model=MODEL,
+            instructions="Judge the response.",
+            prompt_template="{question} {response}",
+            required_columns=["question", "response"],
+            output_fields=[
+                {
+                    "name": "verdict",
+                    "type": "enum",
+                    "description": "A verdict.",
+                    "enum_values": ["pass", "fail"],
+                }
+            ],
+            score_field="verdict",
+            score_kind=ScoreKind.CATEGORICAL,
+            score_labels=["pass", "fail"],
+        )
+        run = store.create_run(RunKind.EVAL, evaluator_version.id, dataset.id, concurrency=1)
+        store.link_run_derivation(run.id, saved.id, DerivationRole.READS)
+
+        referenced = await client.delete(f"/api/agents/derivations/{saved.id}")
+
+    assert referenced.status_code == 409, referenced.text
+    assert referenced.json()["error"]["type"] == "ReferencedError"
+    assert store.get_derivation(saved.id).id == saved.id
+
+
+@pytest.mark.anyio
+async def test_list_derivations_filters_staged_and_reports_legacy_saved_state(store: Store) -> None:
+    """Listing hides staged overlays by default and treats pre-status rows as saved."""
+    dataset = store.create_dataset("questions", "", ["question"])
+    row = store.add_rows(dataset.id, [{"question": "What is valcore?"}])[0]
+    async with _client(store) as client:
+        _, version = await _create_agent_and_version(client)
+        saved = store.save_derivation(
+            dataset_id=dataset.id,
+            agent_version_id=version["id"],
+            response_columns=["response"],
+            responses=[{"row_id": row.id, "data": {"response": "An answer."}}],
+        )
+        staged = store.create_staged_derivation(
+            dataset_id=dataset.id,
+            agent_version_id=version["id"],
+            response_columns=["response"],
+        )
+        with session_scope(store.engine) as session:
+            status = session.exec(
+                select(DerivationStatus).where(DerivationStatus.derivation_id == saved.id)
+            ).one()
+            session.delete(status)
+
+        ordinary = await client.get("/api/agents/derivations", params={"dataset_id": dataset.id})
+        inclusive = await client.get(
+            "/api/agents/derivations",
+            params={"dataset_id": dataset.id, "include_staged": "true"},
+        )
+
+    assert ordinary.status_code == 200, ordinary.text
+    assert len(ordinary.json()) == 1
+    assert ordinary.json()[0]["id"] == saved.id
+    assert ordinary.json()[0]["state"] == "saved"
+    assert inclusive.status_code == 200, inclusive.text
+    assert {item["id"] for item in inclusive.json()} == {saved.id, staged.id}
+    assert {item["id"]: item["state"] for item in inclusive.json()} == {
+        saved.id: "saved",
+        staged.id: "staged",
+    }
