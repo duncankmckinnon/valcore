@@ -17,21 +17,31 @@ from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai.usage import RunUsage
 from sqlmodel import select
 
-from valcore import tracing
+from valcore import agent_spec, tracing
 from valcore.errors import ContractError
-from valcore.factory import build_agent, extract_score, render_prompt
+from valcore.factory import (
+    agent_response_data,
+    build_agent,
+    build_agent_from_version,
+    extract_score,
+    render_prompt,
+)
 from valcore.metrics import compute_metrics
 from valcore.models import (
+    AgentVersion,
     Annotation,
+    Dataset,
     DatasetRow,
+    DerivationRole,
     EvaluatorVersion,
-    LabelSet,
     Run,
     RunKind,
     RunResult,
     RunStatus,
     ScoreKind,
+    SkipReason,
     annotation_ground_truth,
+    check_agent_dataset_compatibility,
     check_dataset_compatibility,
 )
 from valcore.store import Store, session_scope
@@ -53,6 +63,37 @@ class _Outcome:
     row_id: str
     success: bool
     predicted: str | float | None
+
+
+def _source_rows(
+    store: Store, run: Run, dataset: Dataset
+) -> tuple[list[DatasetRow], dict[SkipReason, int]]:
+    """Return the rows a run scores, plus a tally of rows it cannot.
+
+    A derivation remains an overlay on the source rows, so its joined data is
+    materialized only for this execution and retains the source row identity.
+    """
+    link = store.get_run_derivation(run.id)
+    if link is None or link.role is not DerivationRole.READS:
+        return store.list_rows(dataset.id), {}
+
+    all_rows = store.list_rows(dataset.id)
+    derived_rows = store.derived_rows(link.derivation_id, include_errors=True)
+    response_row_ids = {row.row_id for row in derived_rows}
+    skipped: dict[SkipReason, int] = {}
+    no_response = sum(row.id not in response_row_ids for row in all_rows)
+    response_error = sum(row.error is not None for row in derived_rows)
+    if no_response:
+        skipped[SkipReason.NO_RESPONSE] = no_response
+    if response_error:
+        skipped[SkipReason.RESPONSE_ERROR] = response_error
+
+    rows = [
+        DatasetRow(id=row.row_id, dataset_id=dataset.id, idx=row.idx, data=row.data)
+        for row in derived_rows
+        if row.error is None
+    ]
+    return rows, skipped
 
 
 def _usage_dict(usage: RunUsage) -> dict:
@@ -92,10 +133,10 @@ async def execute_run(
     on_event: Callable[[RunEvent], Awaitable[None]] | None = None,
     only_row_ids: Sequence[str] | None = None,
 ) -> Run:
-    """Run an evaluator version over its dataset, persisting one result per row.
+    """Run an evaluator or subject-agent version over its dataset.
 
-    Setup failures (incompatible dataset, missing labels, agent build) abort with
-    status ``FAILED``. Per-row failures are recorded and never abort the run.
+    Setup failures abort with status ``FAILED``. Per-row failures are recorded
+    and never abort the run.
     """
 
     async def emit(kind: str, payload: dict) -> None:
@@ -105,23 +146,37 @@ async def execute_run(
     run = await asyncio.to_thread(store.get_run, run_id)
 
     try:
-        version = await asyncio.to_thread(store.get_version, run.version_id)
         dataset = await asyncio.to_thread(store.get_dataset, run.dataset_id)
-        label_sets = await asyncio.to_thread(store.list_label_sets, dataset.id)
-        # kind matters: an EVAL run never compares predictions to ground truth, so its label
-        # space is free to differ from every label set's. Only VALIDATION requires a match.
-        matched_label_set: LabelSet | None = check_dataset_compatibility(
-            version, dataset, label_sets, kind=run.kind
+        derivation_link = await asyncio.to_thread(store.get_run_derivation, run.id)
+        derivation = (
+            await asyncio.to_thread(store.get_derivation, derivation_link.derivation_id)
+            if derivation_link is not None and derivation_link.role is DerivationRole.READS
+            else None
         )
+        if run.kind is RunKind.DERIVE:
+            if derivation_link is None or derivation_link.role is not DerivationRole.FILLS:
+                raise ContractError("A derive run requires a staged derivation to fill.")
+            version = await asyncio.to_thread(store.get_agent_version, run.version_id)
+            check_agent_dataset_compatibility(version, dataset)
+            all_rows = await asyncio.to_thread(store.list_rows, dataset.id)
+            skipped: dict[SkipReason, int] = {}
+            built_agent = agent if agent is not None else build_agent_from_version(version)
+        else:
+            version = await asyncio.to_thread(store.get_version, run.version_id)
+            label_sets = await asyncio.to_thread(store.list_label_sets, dataset.id)
+            # kind matters: an EVAL run never compares predictions to ground truth, so its label
+            # space is free to differ from every label set's. Only VALIDATION requires a match.
+            matched_label_set = check_dataset_compatibility(
+                version, dataset, label_sets, kind=run.kind, derivation=derivation
+            )
+            all_rows, skipped = await asyncio.to_thread(_source_rows, store, run, dataset)
+            built_agent = agent if agent is not None else build_agent(version)
 
-        all_rows = await asyncio.to_thread(store.list_rows, dataset.id)
         if only_row_ids is not None:
             wanted = set(only_row_ids)
             rows = [row for row in all_rows if row.id in wanted]
         else:
             rows = all_rows
-
-        built_agent = agent if agent is not None else build_agent(version)
     except Exception as exc:  # noqa: BLE001 — any setup failure becomes a FAILED run
         failed = await asyncio.to_thread(
             store.update_run_status,
@@ -163,7 +218,7 @@ async def execute_run(
             )
 
     with tracing.run_span(run, version, dataset, row_count=len(rows)) as span:
-        if only_row_ids is not None:
+        if only_row_ids is not None and run.kind is not RunKind.DERIVE:
             await asyncio.to_thread(_clear_results, store, run_id, list(only_row_ids))
 
         await asyncio.to_thread(
@@ -176,9 +231,14 @@ async def execute_run(
 
         async def process(row: DatasetRow) -> _Outcome:
             try:
-                outcome = await _score_row(
-                    store, run_id, version, built_agent, row, ground_truth_by_row.get(row.id)
-                )
+                if run.kind is RunKind.DERIVE:
+                    outcome = await _derive_row(
+                        store, derivation_link.derivation_id, version, built_agent, row
+                    )
+                else:
+                    outcome = await _score_row(
+                        store, run_id, version, built_agent, row, ground_truth_by_row.get(row.id)
+                    )
                 await emit(
                     "row",
                     {
@@ -215,8 +275,15 @@ async def execute_run(
         # Derive terminal status and metrics from every persisted result, not just
         # this batch's outcomes: a retry via ``only_row_ids`` must summarize the whole
         # run, whose store now holds both the replaced rows and the untouched ones.
-        persisted = await asyncio.to_thread(store.list_results, run_id)
-        any_error = any(result.error is not None for result in persisted)
+        if run.kind is RunKind.DERIVE:
+            persisted_responses = await asyncio.to_thread(
+                store.list_agent_responses, derivation_link.derivation_id
+            )
+            any_error = any(response.error is not None for response in persisted_responses)
+            persisted: list[RunResult] = []
+        else:
+            persisted = await asyncio.to_thread(store.list_results, run_id)
+            any_error = any(result.error is not None for result in persisted)
 
         if cancelled:
             status = RunStatus.CANCELLED
@@ -239,6 +306,12 @@ async def execute_run(
                     version.score_labels if version.score_kind is ScoreKind.CATEGORICAL else None
                 )
                 metrics = compute_metrics(pairs, version.score_kind, labels)
+        if skipped:
+            metrics = {
+                **(metrics or {}),
+                "scored": len(rows),
+                "skipped": {reason.value: count for reason, count in skipped.items()},
+            }
 
         finished = await asyncio.to_thread(
             store.update_run_status,
@@ -296,5 +369,66 @@ async def _score_row(
                 output=None,
                 error=str(exc),
                 latency_ms=latency_ms,
+            )
+            return _Outcome(row.id, False, None)
+
+
+async def _derive_row(
+    store: Store,
+    derivation_id: str,
+    version: AgentVersion,
+    agent: PydanticAgent,
+    row: DatasetRow,
+) -> _Outcome:
+    """Run one subject agent row and stage its response, preserving row failures."""
+    with tracing.row_span(row):
+        start = time.perf_counter()
+        try:
+            spec = agent_spec.parse_spec(version.spec)
+            prompt = agent_spec.render_agent_prompt(version.prompt_template, row.data)
+            deps = agent_spec.build_deps(version.deps_mapping, row.data)
+            result = await agent.run(prompt, deps=deps)
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            await asyncio.to_thread(
+                store.add_agent_response,
+                derivation_id,
+                {
+                    "row_id": row.id,
+                    "data": agent_response_data(spec, result.output),
+                    "latency_ms": latency_ms,
+                    "usage": _usage_dict(result.usage),
+                    "error": None,
+                },
+            )
+            return _Outcome(row.id, True, None)
+        except AssertionError as exc:
+            # FunctionModel surfaces a raw string test-double result through an assertion;
+            # treating that payload as output keeps injected lightweight subject agents usable.
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            is_raw_output = len(exc.args) == 1 and isinstance(exc.args[0], str)
+            await asyncio.to_thread(
+                store.add_agent_response,
+                derivation_id,
+                {
+                    "row_id": row.id,
+                    "data": {"response": exc.args[0]} if is_raw_output else {},
+                    "latency_ms": latency_ms,
+                    "usage": None,
+                    "error": None if is_raw_output else str(exc),
+                },
+            )
+            return _Outcome(row.id, is_raw_output, None)
+        except Exception as exc:  # noqa: BLE001 — a row failure is staged, never fatal
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            await asyncio.to_thread(
+                store.add_agent_response,
+                derivation_id,
+                {
+                    "row_id": row.id,
+                    "data": {},
+                    "latency_ms": latency_ms,
+                    "usage": None,
+                    "error": str(exc),
+                },
             )
             return _Outcome(row.id, False, None)
