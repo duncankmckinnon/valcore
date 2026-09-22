@@ -11,6 +11,8 @@ import { PageHeader } from "../components/PageHeader";
 import { useSetup } from "../components/useSetup";
 import { Button, ErrorBanner, Spinner } from "../components/ui";
 
+type OverviewWithAgents = Overview & { agent_count?: number };
+
 // Both accuracy fields are 0..1 floats or null. Null is a genuine "no measurement"
 // state, not zero — render an em dash so it never reads as 0% or NaN%.
 function formatAccuracy(value: number | null): string {
@@ -152,8 +154,12 @@ export default function OverviewPage(): JSX.Element {
 
   // A fresh install has nothing to show. Lead with the flow and a single action
   // rather than a wall of zeroes.
+  const agentCount = (data as OverviewWithAgents).agent_count ?? 0;
   const empty =
-    data.evaluator_count === 0 && data.dataset_count === 0 && data.run_count === 0;
+    data.evaluator_count === 0 &&
+    data.dataset_count === 0 &&
+    data.run_count === 0 &&
+    agentCount === 0;
 
   if (empty) {
     return (
@@ -203,6 +209,10 @@ export default function OverviewPage(): JSX.Element {
           <div className="stat-card-label">Datasets</div>
           <div className="stat-card-sub">{`${data.labeled_rows} of ${data.total_rows} labeled`}</div>
         </div>
+        <Link className="stat-card" to="/agents">
+          <div className="stat-card-value">{agentCount}</div>
+          <div className="stat-card-label">Agents</div>
+        </Link>
         <div className="stat-card">
           <div className="stat-card-value">{formatAccuracy(data.best_accuracy)}</div>
           <div className="stat-card-label">Best accuracy</div>

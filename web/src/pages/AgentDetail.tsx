@@ -8,11 +8,13 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { api, agents } from "../api/client";
+import { useNavigate } from "react-router-dom";
+import { api, agents, datasets, runs } from "../api/client";
 import type {
   AgentDetail as AgentDetailData,
   AgentVersion,
   AgentVersionCreate,
+  DatasetSummary,
 } from "../api/types";
 import AgentTrialPanel from "../components/AgentTrialPanel";
 import type { AppConfig } from "../components/VersionEditor";
@@ -100,6 +102,7 @@ function mappingObject(rows: [string, string][]): Record<string, string> {
 
 /** Displays, edits, and trials the versions attached to an agent. */
 export default function AgentDetail({ agentId }: AgentDetailProps) {
+  const navigate = useNavigate();
   const [detail, setDetail] = useState<AgentDetailData | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -111,6 +114,9 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [importContent, setImportContent] = useState("");
+  const [runOpen, setRunOpen] = useState(false);
+  const [datasetsForRun, setDatasetsForRun] = useState<DatasetSummary[]>([]);
+  const [datasetId, setDatasetId] = useState("");
   // React may batch the final keystrokes before a following button click. Keeping the
   // current draft in a ref ensures template braces are not lost in that interaction.
   const valuesRef = useRef<EditorValues | null>(null);
@@ -371,6 +377,32 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
     }
   }
 
+  async function openRun(): Promise<void> {
+    try {
+      const availableDatasets = await datasets.list();
+      setDatasetsForRun(availableDatasets);
+      setDatasetId(availableDatasets[0]?.id ?? "");
+      setRunOpen(true);
+    } catch (err) {
+      setError(err);
+    }
+  }
+
+  async function runOverDataset(): Promise<void> {
+    if (!selected || !datasetId) return;
+    try {
+      const run = await runs.create({
+        kind: "derive",
+        version_id: selected.id,
+        dataset_id: datasetId,
+      });
+      setRunOpen(false);
+      navigate(`/runs/${run.id}`);
+    } catch (err) {
+      setError(err);
+    }
+  }
+
   if (loading && !detail) return <Spinner />;
   if (!detail)
     return <ErrorBanner error={error} onDismiss={() => setError(null)} />;
@@ -561,7 +593,27 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
           </div>
         )}
       </div>
-      {!specError && selected && <AgentTrialPanel version={selected} />}
+      {!specError && selected && (
+        <>
+          <AgentTrialPanel version={selected} />
+          <div className="form-actions">
+            <Button
+              variant="secondary"
+              onClick={() => void openRun()}
+              disabled={!selected}
+            >
+              Run over a dataset
+            </Button>
+          </div>
+        </>
+      )}
+      {!selected && (
+        <div className="form-actions">
+          <Button variant="secondary" disabled>
+            Run over a dataset
+          </Button>
+        </div>
+      )}
       <ConfirmDialog
         open={deleteOpen}
         title="Delete version"
@@ -588,6 +640,37 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
             aria-label="Import spec"
             value={importContent}
             onChange={(event) => setImportContent(event.target.value)}
+          />
+        </label>
+      </Modal>
+      <Modal
+        open={runOpen}
+        title="Run agent over a dataset"
+        onClose={() => setRunOpen(false)}
+        footer={
+          <div className="form-actions">
+            <Button variant="secondary" onClick={() => setRunOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void runOverDataset()}
+              disabled={!datasetId}
+            >
+              Run agent
+            </Button>
+          </div>
+        }
+      >
+        <label className="field">
+          <span className="field-label">Dataset</span>
+          <Select
+            aria-label="Dataset"
+            value={datasetId}
+            options={datasetsForRun.map((dataset) => ({
+              value: dataset.id,
+              label: dataset.name,
+            }))}
+            onChange={(event) => setDatasetId(event.target.value)}
           />
         </label>
       </Modal>
