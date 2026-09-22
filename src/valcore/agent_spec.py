@@ -80,9 +80,7 @@ def runtime_instructions(spec: AgentSpec) -> list[str | Callable[[RunContext[Any
     """Return static or locally rendered instructions for constructing a live agent."""
     if spec.instructions is None:
         return []
-    instructions = (
-        spec.instructions if isinstance(spec.instructions, list) else [spec.instructions]
-    )
+    instructions = spec.instructions if isinstance(spec.instructions, list) else [spec.instructions]
     return [
         _instruction_renderer(instruction) if "{{" in instruction else instruction
         for instruction in instructions

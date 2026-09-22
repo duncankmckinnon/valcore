@@ -869,12 +869,8 @@ async def test_compare_rejects_derive_runs(store: Store, derive_side: str) -> No
     version = make_version(store)
     agent_version = make_agent_version(store)
     dataset, rows = make_dataset(store, ["pass"])
-    evaluator_run = _seed_run_with_scores(
-        store, dataset.id, version.id, {rows[0].id: "pass"}
-    )
-    derive_run = store.create_run(
-        RunKind.DERIVE, agent_version.id, dataset.id, concurrency=1
-    )
+    evaluator_run = _seed_run_with_scores(store, dataset.id, version.id, {rows[0].id: "pass"})
+    derive_run = store.create_run(RunKind.DERIVE, agent_version.id, dataset.id, concurrency=1)
     params = (
         {"a": derive_run.id, "b": evaluator_run.id}
         if derive_side == "a"
