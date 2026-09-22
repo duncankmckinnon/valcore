@@ -445,6 +445,13 @@ class AgentVersion(SQLModel, table=True):
     required_columns: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     deps_mapping: dict = Field(default_factory=dict, sa_column=Column(JSON))
 
+    @property
+    def response_columns(self) -> list[str]:
+        """Return the output columns implied by this version's serialized agent spec."""
+        from valcore import agent_spec
+
+        return agent_spec.output_column_names(agent_spec.parse_spec(self.spec))
+
 
 class DatasetDerivation(SQLModel, table=True):
     """One saved agent run over a dataset, stored as an overlay rather than copied rows.
