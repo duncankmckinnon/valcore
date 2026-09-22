@@ -16,15 +16,20 @@ from valcore.models import (
     Dataset,
     DatasetDerivation,
     DatasetRow,
+    DerivationRole,
+    DerivationState,
+    DerivationStatus,
     EvaluatorVersion,
     ExperimentRun,
     FieldType,
     LabelSchema,
     LabelSet,
     OutputField,
+    RunDerivation,
     RunKind,
     ScoreKind,
     annotation_ground_truth,
+    check_agent_dataset_compatibility,
     check_dataset_compatibility,
     find_matching_label_set,
     label_schema_from_label_set,
@@ -252,6 +257,55 @@ def test_dataset_missing_required_column() -> None:
     with pytest.raises(ContractError, match="missing required column") as exc:
         check_dataset_compatibility(make_version(), dataset, [_matching_label_set()])
     assert "question" in str(exc.value)
+
+
+def test_derivation_supplies_evaluator_required_column() -> None:
+    """A derived view extends the dataset contract with response columns."""
+    dataset = make_dataset(columns=["question"])
+    version = make_version(required_columns=["question", "draft"])
+    derivation = DatasetDerivation(
+        dataset_id=dataset.id,
+        agent_version_id="av-1",
+        response_columns=["draft"],
+    )
+
+    check_dataset_compatibility(version, dataset, [], kind=RunKind.EVAL, derivation=derivation)
+
+    with pytest.raises(ContractError, match="draft"):
+        check_dataset_compatibility(version, dataset, [], kind=RunKind.EVAL)
+
+
+def test_derivation_compatibility_error_names_effective_contract() -> None:
+    dataset = make_dataset(columns=["question"])
+    derivation = DatasetDerivation(
+        dataset_id=dataset.id,
+        agent_version_id="av-1",
+        response_columns=["draft"],
+    )
+
+    with pytest.raises(ContractError, match="effective contract") as exc:
+        check_dataset_compatibility(
+            make_version(required_columns=["question", "final"]),
+            dataset,
+            [],
+            kind=RunKind.EVAL,
+            derivation=derivation,
+        )
+
+    assert "final" in str(exc.value)
+    assert "draft" in str(exc.value)
+
+
+def test_validation_cannot_target_derivation_without_derivation_label_set() -> None:
+    dataset = make_dataset()
+    derivation = DatasetDerivation(
+        dataset_id=dataset.id,
+        agent_version_id="av-1",
+        response_columns=["draft"],
+    )
+
+    with pytest.raises(ContractError, match="label sets"):
+        check_dataset_compatibility(make_version(), dataset, [], derivation=derivation)
 
 
 def test_dataset_kind_mismatch_no_match() -> None:
@@ -756,6 +810,15 @@ def test_agent_version_deps_mapping_satisfying_required_property_passes() -> Non
     validate_agent_version(make_agent_version(spec=spec, deps_mapping={"name": "question"}))
 
 
+def test_agent_dataset_compatibility_accepts_satisfied_columns() -> None:
+    check_agent_dataset_compatibility(make_agent_version(), make_dataset(columns=["question"]))
+
+
+def test_agent_dataset_compatibility_rejects_missing_column() -> None:
+    with pytest.raises(ContractError, match="question"):
+        check_agent_dataset_compatibility(make_agent_version(), make_dataset(columns=["answer"]))
+
+
 # -- Agent / AgentVersion / DatasetDerivation defaults -------------------------
 
 
@@ -795,6 +858,66 @@ def test_dataset_derivation_defaults() -> None:
     assert derivation.created_at is not None
     assert derivation.ordinal == 0
     assert derivation.response_columns == []
+
+
+# -- Derivation status and run links ------------------------------------------
+
+
+def test_run_kind_derive_round_trips_through_its_string_value() -> None:
+    assert RunKind.DERIVE.value == "derive"
+    assert RunKind("derive") is RunKind.DERIVE
+
+
+def test_derivation_status_unique_constraint(tmp_path: Path) -> None:
+    """A derivation has one lifecycle state, regardless of how it is read or filled."""
+    engine = create_engine(tmp_path / "models.db")
+    init_db(engine)
+    try:
+        with Session(engine) as session:
+            session.add(DerivationStatus(derivation_id="deriv-1", state=DerivationState.STAGED))
+            session.commit()
+
+            session.add(DerivationStatus(derivation_id="deriv-1", state=DerivationState.SAVED))
+            with pytest.raises(IntegrityError):
+                session.commit()
+    finally:
+        engine.dispose()
+
+
+def test_derivation_status_and_run_derivation_persist_and_rehydrate(tmp_path: Path) -> None:
+    engine = create_engine(tmp_path / "models.db")
+    init_db(engine)
+    try:
+        with Session(engine) as session:
+            status = DerivationStatus(derivation_id="deriv-1", state=DerivationState.STAGED)
+            fills = RunDerivation(
+                run_id="derive-run",
+                derivation_id=status.derivation_id,
+                role=DerivationRole.FILLS,
+            )
+            reads = RunDerivation(
+                run_id="eval-run",
+                derivation_id=status.derivation_id,
+                role=DerivationRole.READS,
+            )
+            session.add(status)
+            session.add(fills)
+            session.add(reads)
+            session.commit()
+
+            session.expire_all()
+            restored_status = session.get(DerivationStatus, status.id)
+            restored_links = session.exec(select(RunDerivation)).all()
+
+            assert restored_status is not None
+            assert restored_status.derivation_id == "deriv-1"
+            assert restored_status.state is DerivationState.STAGED
+            assert {(link.run_id, link.role) for link in restored_links} == {
+                ("derive-run", DerivationRole.FILLS),
+                ("eval-run", DerivationRole.READS),
+            }
+    finally:
+        engine.dispose()
 
 
 # -- AgentResponse --------------------------------------------------------------
