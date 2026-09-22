@@ -587,6 +587,8 @@ def run_agent(
     """Run an agent over a dataset, row, inputs, or literal liveness prompt."""
     if row_idx is not None and dataset_ref is None:
         raise ContractError("--row requires --dataset.")
+    if row_idx is not None and inputs:
+        raise ContractError("--row cannot be combined with --input.")
     if prompt_text is not None and dataset_ref is not None:
         raise ContractError("--prompt cannot be combined with --dataset.")
     if prompt_text is not None and inputs:
