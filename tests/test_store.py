@@ -15,9 +15,14 @@ from valcore.errors import (
     ReferencedError,
 )
 from valcore.models import (
+    AgentResponse,
+    DatasetDerivation,
     DatasetGeneration,
     DatasetLogfirePull,
     DatasetRow,
+    DerivationRole,
+    DerivationState,
+    DerivationStatus,
     EvaluatorVersion,
     ExperimentRun,
     LabelSet,
@@ -623,6 +628,253 @@ def test_list_derivations_filters_by_dataset_and_agent_version(store: Store) -> 
     ] == [
         first.id,
         second.id,
+    ]
+
+
+def test_staged_derivation_is_hidden_until_explicitly_included(store: Store) -> None:
+    """Keep incomplete agent passes out of all ordinary derivation selection flows."""
+    dataset_id, version_id, _ = _agent_version_and_dataset(store)
+
+    staged = store.create_staged_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=version_id,
+        response_columns=["response"],
+    )
+
+    assert staged.ordinal == 0
+    assert store.derivation_state(staged.id) is DerivationState.STAGED
+    assert store.list_derivations(dataset_id=dataset_id) == []
+    assert [derivation.id for derivation in store.list_derivations(include_staged=True)] == [
+        staged.id
+    ]
+
+
+def test_staged_derivations_do_not_consume_ordinals_when_discarded(store: Store) -> None:
+    """Allocate derivation history positions only for accepted passes."""
+    dataset_id, version_id, rows = _agent_version_and_dataset(store)
+    first = store.save_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=version_id,
+        response_columns=["response"],
+        responses=[_response(rows[0].id, "first")],
+    )
+    discarded = store.create_staged_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=version_id,
+        response_columns=["response"],
+    )
+
+    store.delete_derivation(discarded.id)
+    third = store.save_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=version_id,
+        response_columns=["response"],
+        responses=[_response(rows[1].id, "third")],
+    )
+
+    assert first.ordinal == 0
+    assert third.ordinal == 1
+    assert store.derivation_state(third.id) is DerivationState.SAVED
+
+
+def test_saving_staged_derivations_in_any_order_allocates_contiguous_ordinals(store: Store) -> None:
+    """Saving, not staging order, determines an accepted pass's ordinal."""
+    dataset_id, version_id, _ = _agent_version_and_dataset(store)
+    first_staged = store.create_staged_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=version_id,
+        response_columns=["response"],
+    )
+    second_staged = store.create_staged_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=version_id,
+        response_columns=["response"],
+    )
+
+    second_saved = store.save_staged_derivation(second_staged.id)
+    first_saved = store.save_staged_derivation(first_staged.id)
+
+    assert (second_saved.ordinal, first_saved.ordinal) == (0, 1)
+
+
+def test_saving_a_staged_derivation_twice_raises(store: Store) -> None:
+    """A saved derivation cannot be accepted again and receive a new ordinal."""
+    dataset_id, version_id, _ = _agent_version_and_dataset(store)
+    staged = store.create_staged_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=version_id,
+        response_columns=["response"],
+    )
+
+    store.save_staged_derivation(staged.id)
+
+    with pytest.raises(ContractError):
+        store.save_staged_derivation(staged.id)
+
+
+def test_add_agent_response_is_safe_for_concurrent_derivation_workers(store: Store) -> None:
+    """Workers may stage independent row responses without sharing a database session."""
+    dataset_id, version_id, rows = _agent_version_and_dataset(store)
+    staged = store.create_staged_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=version_id,
+        response_columns=["response"],
+    )
+    barrier = threading.Barrier(3)
+    errors: list[Exception] = []
+
+    def add_response(row_id: str) -> None:
+        try:
+            barrier.wait()
+            store.add_agent_response(staged.id, _response(row_id, row_id))
+        except Exception as exc:  # noqa: BLE001 - retain worker failures for the assertion below
+            errors.append(exc)
+
+    workers = [threading.Thread(target=add_response, args=(row.id,)) for row in rows]
+    for worker in workers:
+        worker.start()
+    barrier.wait()
+    for worker in workers:
+        worker.join()
+
+    assert errors == []
+    assert {response.dataset_row_id for response in store.list_agent_responses(staged.id)} == {
+        row.id for row in rows
+    }
+
+
+def test_delete_derivation_removes_its_responses_and_status(store: Store) -> None:
+    """Discarding a staged pass removes every record that made its overlay visible."""
+    dataset_id, version_id, rows = _agent_version_and_dataset(store)
+    staged = store.create_staged_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=version_id,
+        response_columns=["response"],
+    )
+    store.add_agent_response(staged.id, _response(rows[0].id))
+
+    store.delete_derivation(staged.id)
+
+    with pytest.raises(NotFoundError):
+        store.get_derivation(staged.id)
+    with session_scope(store.engine) as session:
+        assert (
+            session.exec(
+                select(AgentResponse).where(AgentResponse.derivation_id == staged.id)
+            ).first()
+            is None
+        )
+        assert (
+            session.exec(
+                select(DerivationStatus).where(DerivationStatus.derivation_id == staged.id)
+            ).first()
+            is None
+        )
+        assert (
+            session.exec(select(DatasetDerivation).where(DatasetDerivation.id == staged.id)).first()
+            is None
+        )
+
+
+def test_delete_derivation_allows_its_filling_run_but_not_a_reading_run(store: Store) -> None:
+    """An evaluator's recorded input remains immutable while an abandoned fill may disappear."""
+    dataset_id, version_id, rows = _agent_version_and_dataset(store)
+    fills_derivation = store.save_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=version_id,
+        response_columns=["response"],
+        responses=[_response(rows[0].id)],
+    )
+    fill_run = store.create_run(RunKind.DERIVE, version_id, dataset_id, concurrency=1)
+    store.link_run_derivation(fill_run.id, fills_derivation.id, DerivationRole.FILLS)
+
+    store.delete_derivation(fills_derivation.id)
+
+    reads_derivation = store.save_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=version_id,
+        response_columns=["response"],
+        responses=[_response(rows[1].id)],
+    )
+    evaluator_version_id, _ = _make_run_prereqs(store)
+    read_run = store.create_run(RunKind.EVAL, evaluator_version_id, dataset_id, concurrency=1)
+    store.link_run_derivation(read_run.id, reads_derivation.id, DerivationRole.READS)
+
+    with pytest.raises(ReferencedError):
+        store.delete_derivation(reads_derivation.id)
+    assert store.get_derivation(reads_derivation.id).id == reads_derivation.id
+
+
+def test_derivation_without_a_status_row_reads_as_saved(store: Store) -> None:
+    """Pre-staging derivations retain their historical saved meaning after migration."""
+    dataset_id, version_id, rows = _agent_version_and_dataset(store)
+    derivation = store.save_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=version_id,
+        response_columns=["response"],
+        responses=[_response(rows[0].id)],
+    )
+    with session_scope(store.engine) as session:
+        status = session.exec(
+            select(DerivationStatus).where(DerivationStatus.derivation_id == derivation.id)
+        ).one()
+        session.delete(status)
+
+    assert store.derivation_state(derivation.id) is DerivationState.SAVED
+
+
+def test_run_derivation_links_enforce_the_role_implied_by_run_kind(store: Store) -> None:
+    """A run cannot claim a derivation relationship that contradicts its execution mode."""
+    dataset_id, agent_version_id, rows = _agent_version_and_dataset(store)
+    derivation = store.save_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=agent_version_id,
+        response_columns=["response"],
+        responses=[_response(rows[0].id)],
+    )
+    derive_run = store.create_run(RunKind.DERIVE, agent_version_id, dataset_id, concurrency=1)
+    evaluator_version_id, _ = _make_run_prereqs(store)
+    eval_run = store.create_run(RunKind.EVAL, evaluator_version_id, dataset_id, concurrency=1)
+
+    with pytest.raises(ContractError):
+        store.link_run_derivation(derive_run.id, derivation.id, DerivationRole.READS)
+    with pytest.raises(ContractError):
+        store.link_run_derivation(eval_run.id, derivation.id, DerivationRole.FILLS)
+
+    link = store.link_run_derivation(eval_run.id, derivation.id, DerivationRole.READS)
+    assert store.get_run_derivation(eval_run.id) == link
+    assert store.get_run_derivation(derive_run.id) is None
+
+
+def test_derive_run_freezes_an_agent_version_not_an_evaluator_version(store: Store) -> None:
+    """Run kind disambiguates the polymorphic version id before it is frozen."""
+    dataset_id, agent_version_id, _ = _agent_version_and_dataset(store)
+    evaluator_version_id, _ = _make_run_prereqs(store)
+
+    run = store.create_run(RunKind.DERIVE, agent_version_id, dataset_id, concurrency=2)
+
+    assert run.kind is RunKind.DERIVE
+    assert store.get_agent_version(agent_version_id).frozen is True
+    with pytest.raises(NotFoundError):
+        store.create_run(RunKind.DERIVE, evaluator_version_id, dataset_id, concurrency=1)
+
+
+def test_derived_rows_can_exclude_errored_responses_in_dataset_order(store: Store) -> None:
+    """Runners can score only usable responses without changing the inspectable default view."""
+    dataset_id, version_id, rows = _agent_version_and_dataset(store)
+    derivation = store.save_derivation(
+        dataset_id=dataset_id,
+        agent_version_id=version_id,
+        response_columns=["response"],
+        responses=[
+            {**_response(rows[1].id, "errored"), "error": "model failed"},
+            _response(rows[0].id, "usable"),
+        ],
+    )
+
+    assert [row.row_id for row in store.derived_rows(derivation.id)] == [rows[0].id, rows[1].id]
+    assert [row.row_id for row in store.derived_rows(derivation.id, include_errors=False)] == [
+        rows[0].id
     ]
 
 
