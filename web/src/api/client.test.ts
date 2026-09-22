@@ -19,10 +19,8 @@ import type {
   AgentVersion,
   DatasetSummary,
   Derivation,
-  DerivationSave,
   DerivedRowsPage,
   Overview,
-  Run,
   SetupStatus,
   TrialResult,
 } from "./types";
@@ -1097,34 +1095,6 @@ describe("runs.create derivation client helper", () => {
   });
 });
 
-describe("derivation run DTO types", () => {
-  it("exposes derivation state and typed scored/skipped metrics", () => {
-    const run: Run = {
-      id: "run1",
-      created_at: "2026-09-02T00:00:00Z",
-      kind: "derive",
-      version_id: "av1",
-      dataset_id: "ds1",
-      derivation_id: "der1",
-      status: "completed",
-      concurrency: 1,
-      started_at: "2026-09-02T00:00:00Z",
-      finished_at: "2026-09-02T00:01:00Z",
-      metrics: { scored: 3, skipped: { error: 1 } },
-      error: null,
-      cancel_requested: false,
-    };
-    const metrics = run.metrics!;
-    const derivationId: string | null = run.derivation_id;
-    const scored: number | undefined = metrics.scored;
-    const skipped: Record<string, number> | undefined = metrics.skipped;
-
-    expect(derivationId).toBe("der1");
-    expect(scored).toBe(3);
-    expect(skipped).toEqual({ error: 1 });
-  });
-});
-
 // The Agent entity mirrors the Evaluator/Dataset resource-object idiom: one plain
 // object exporting methods built on `api<T>` and `jsonBody`. `remove`/`removeVersion`
 // follow the `datasets.remove` naming precedent (never `delete*`, a reserved word).
@@ -1428,32 +1398,38 @@ describe("agents client helpers", () => {
     expect(result.error).toBe("model timed out");
   });
 
-  const derivation: Derivation = {
-    id: "d1",
-    created_at: "2026-09-02T00:00:00Z",
-    dataset_id: "ds1",
-    dataset_name: "Support tickets",
-    agent_version_id: "av1",
-    agent_name: "Support triager",
-    version_name: "v1",
-    ordinal: 1,
-    response_columns: ["label"],
-    response_count: 2,
-    state: "saved",
-  };
-
-  it("agents.saveDerivation POSTs single-row trial data to /api/agents/versions/{vid}/derivations", async () => {
+  it("agents.saveDerivation POSTs to /api/agents/versions/{vid}/derivations", async () => {
+    const derivation: Derivation = {
+      id: "d1",
+      created_at: "2026-09-02T00:00:00Z",
+      dataset_id: "ds1",
+      dataset_name: "Support tickets",
+      agent_version_id: "av1",
+      agent_name: "Support triager",
+      version_name: "v1",
+      ordinal: 1,
+      response_columns: ["label"],
+      response_count: 2,
+      state: "saved",
+    };
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse(derivation));
 
-    const body: DerivationSave = {
+    const body = {
       dataset_id: "ds1",
       entries: [
         {
           row_id: "r1",
           data: { label: "billing" },
           latency_ms: 100,
+          usage: null,
+          error: null,
+        },
+        {
+          row_id: "r2",
+          data: { label: "sales" },
+          latency_ms: 90,
           usage: null,
           error: null,
         },
@@ -1467,6 +1443,20 @@ describe("agents client helpers", () => {
     expect(init?.body).toBe(JSON.stringify(body));
     expect(result).toEqual(derivation);
   });
+
+  const derivation: Derivation = {
+    id: "d1",
+    created_at: "2026-09-02T00:00:00Z",
+    dataset_id: "ds1",
+    dataset_name: "Support tickets",
+    agent_version_id: "av1",
+    agent_name: "Support triager",
+    version_name: "v1",
+    ordinal: 1,
+    response_columns: ["label"],
+    response_count: 2,
+    state: "saved",
+  };
 
   it("agents.acceptDerivation POSTs the staged derivation save endpoint with no body", async () => {
     const fetchMock = vi
