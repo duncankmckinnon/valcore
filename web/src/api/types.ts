@@ -183,6 +183,60 @@ export type AgentVersionCreate = {
 };
 export type AgentVersionUpdate = Partial<AgentVersionCreate>;
 
+export type PromptSyncField = "instructions" | "input_template";
+export type PromptSyncChoice = "local" | "remote";
+
+type PromptSyncTemplateBase = {
+  variable_name: string;
+  local_text: string | null;
+  base_text: string | null;
+  remote_text: string | null;
+  remote_version: number | null;
+  base_remote_version: number | null;
+  error: string | null;
+};
+
+// `state` narrows the values a diff can use. An unsupported template can have
+// missing local text, while a deleted remote variable has no text or version.
+export type PromptSyncTemplateStatus =
+  | (PromptSyncTemplateBase & {
+      state: "in_sync" | "local_changed" | "remote_changed" | "conflict";
+      local_text: string;
+      remote_text: string;
+      remote_version: number;
+    })
+  | (PromptSyncTemplateBase & {
+      state: "remote_missing";
+      local_text: string;
+      remote_text: null;
+      remote_version: null;
+    })
+  | (PromptSyncTemplateBase & { state: "unsupported" });
+
+export type PromptSyncStatus = {
+  linked: boolean;
+  local_version_id: string | null;
+  revision: string;
+  error: string | null;
+  templates: Record<PromptSyncField, PromptSyncTemplateStatus>;
+};
+
+export type PromptSyncPullResult = PromptSyncStatus & {
+  active_version_id: string | null;
+};
+
+export type PromptSyncRevision = { expected: string };
+export type PromptSyncLinkRequest = PromptSyncRevision & {
+  initial: PromptSyncChoice;
+};
+export type PromptSyncFieldsRequest = PromptSyncRevision & {
+  fields?: PromptSyncField[];
+};
+export type PromptSyncResolveRequest = PromptSyncRevision & {
+  fields: PromptSyncField[];
+  choice: PromptSyncChoice;
+};
+
 // A trial uses either a persisted row (`dataset_id` plus `row_id`) or ad hoc `inputs`,
 // never both. Nullable fields mirror the API schema, though callers should omit the
 // unused side of that choice.

@@ -11,6 +11,12 @@ import type {
   AgentVersion,
   AgentVersionCreate,
   AgentVersionUpdate,
+  PromptSyncFieldsRequest,
+  PromptSyncLinkRequest,
+  PromptSyncPullResult,
+  PromptSyncResolveRequest,
+  PromptSyncRevision,
+  PromptSyncStatus,
   Annotation,
   AnnotationPut,
   AnnotationRowsPage,
@@ -88,11 +94,18 @@ async function parseError(response: Response): Promise<ApiError> {
     response.statusText || `Request failed with status ${response.status}`;
   let detail: Record<string, unknown> | null = null;
   try {
-    const body = await response.json();
+    const body = await response.clone().json();
     if (body && typeof body === "object" && body.error) {
       type = body.error.type ?? type;
       message = body.error.message ?? message;
       detail = body.error.detail ?? null;
+    } else if (
+      body &&
+      typeof body === "object" &&
+      typeof body.type === "string"
+    ) {
+      type = body.type;
+      if (typeof body.detail === "string") message = body.detail;
     }
   } catch {
     // Non-JSON error body (e.g. an HTML 500 page); fall back to the status text.
@@ -118,9 +131,9 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   }
   const contentType = response.headers.get("Content-Type") ?? "";
   if (contentType.includes("application/json")) {
-    return (await response.json()) as T;
+    return (await response.clone().json()) as T;
   }
-  return (await response.text()) as T;
+  return (await response.clone().text()) as T;
 }
 
 function jsonBody(data: unknown): RequestInit {
@@ -339,6 +352,44 @@ export const agents = {
       ...jsonBody(data),
     }),
   remove: (id: string) => api<void>(`/api/agents/${id}`, { method: "DELETE" }),
+
+  promptSyncStatus: (id: string) =>
+    api<PromptSyncStatus>(`/api/agents/${id}/prompt-sync`),
+  promptSyncLink: (id: string, data: PromptSyncLinkRequest) =>
+    api<PromptSyncStatus>(`/api/agents/${id}/prompt-sync/link`, {
+      method: "POST",
+      ...jsonBody({ initial: data.initial, expected_revision: data.expected }),
+    }),
+  promptSyncPull: (id: string, data: PromptSyncFieldsRequest) =>
+    api<PromptSyncPullResult>(`/api/agents/${id}/prompt-sync/pull`, {
+      method: "POST",
+      ...jsonBody({
+        ...(data.fields !== undefined ? { fields: data.fields } : {}),
+        expected_revision: data.expected,
+      }),
+    }),
+  promptSyncPush: (id: string, data: PromptSyncFieldsRequest) =>
+    api<PromptSyncStatus>(`/api/agents/${id}/prompt-sync/push`, {
+      method: "POST",
+      ...jsonBody({
+        ...(data.fields !== undefined ? { fields: data.fields } : {}),
+        expected_revision: data.expected,
+      }),
+    }),
+  promptSyncResolve: (id: string, data: PromptSyncResolveRequest) =>
+    api<PromptSyncStatus>(`/api/agents/${id}/prompt-sync/resolve`, {
+      method: "POST",
+      ...jsonBody({
+        fields: data.fields,
+        choice: data.choice,
+        expected_revision: data.expected,
+      }),
+    }),
+  promptSyncUnlink: (id: string, data: PromptSyncRevision) =>
+    api<PromptSyncStatus>(`/api/agents/${id}/prompt-sync`, {
+      method: "DELETE",
+      ...jsonBody({ expected_revision: data.expected }),
+    }),
 
   listVersions: (id: string) =>
     api<AgentVersion[]>(`/api/agents/${id}/versions`),
