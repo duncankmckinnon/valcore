@@ -2721,3 +2721,32 @@ def test_init_db_adds_the_prompt_sync_link_table_to_an_existing_database(
         **LINK_KWARGS,
     )
     assert store.get_agent_prompt_sync_link(agent.id) is not None
+
+
+def test_advance_agent_prompt_sync_link_rejects_unknown_template_key(store: Store) -> None:
+    agent, _, _ = _linked_agent(store)
+
+    with pytest.raises(ValueError):
+        store.advance_agent_prompt_sync_link(
+            agent.id, expected_generation=0, field_updates={"bogus": {"remote_version": 1}}
+        )
+    with pytest.raises(ValueError):
+        store.advance_agent_prompt_sync_link(
+            agent.id, expected_generation=0, field_updates={"instructions": {"variable_name": "x"}}
+        )
+
+    stored = store.get_agent_prompt_sync_link(agent.id)
+    assert stored is not None and stored.generation == 0
+
+
+def test_create_agent_prompt_sync_link_requires_an_active_version(store: Store) -> None:
+    agent = store.create_agent("subject")
+
+    with pytest.raises(SyncConflictError):
+        store.create_agent_prompt_sync_link(
+            agent.id,
+            expected_active_version_id=None,
+            expected_local_texts=dict(LOCAL_TEXTS),
+            **LINK_KWARGS,
+        )
+    assert store.get_agent_prompt_sync_link(agent.id) is None
