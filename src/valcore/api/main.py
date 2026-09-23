@@ -22,6 +22,7 @@ from valcore.errors import (
     FrozenVersionError,
     NotFoundError,
     ReferencedError,
+    SyncConflictError,
     ValcoreError,
 )
 from valcore.models import VALID_CAPABILITIES
@@ -36,6 +37,7 @@ _STATUS_BY_ERROR: tuple[tuple[type[ValcoreError], int], ...] = (
     (FrozenVersionError, 409),
     (ReferencedError, 409),
     (DestructiveChangeError, 409),
+    (SyncConflictError, 409),
     (ValcoreError, 400),
 )
 
