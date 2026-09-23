@@ -142,6 +142,7 @@ def _prompt_sync_cursor_values(field_updates: dict[str, dict[str, object]]) -> d
 def _advance_prompt_sync_cursor(
     session: Session,
     agent_id: str,
+    expected_link_id: str,
     expected_generation: int,
     field_updates: dict[str, dict[str, object]],
     *,
@@ -157,16 +158,12 @@ def _advance_prompt_sync_cursor(
         update(AgentPromptSyncLink)
         .where(
             AgentPromptSyncLink.agent_id == agent_id,
+            AgentPromptSyncLink.id == expected_link_id,
             AgentPromptSyncLink.generation == expected_generation,
         )
         .values(**values)
     )
     if result.rowcount != 1:
-        existing = session.exec(
-            select(AgentPromptSyncLink.id).where(AgentPromptSyncLink.agent_id == agent_id)
-        ).first()
-        if existing is None:
-            raise NotFoundError(f"Agent prompt sync link for {agent_id!r} does not exist.")
         raise SyncConflictError("The prompt sync cursor changed; inspect sync again.")
     session.expire_all()
     link = session.exec(
@@ -640,19 +637,39 @@ class Store:
         self,
         agent_id: str,
         *,
+        expected_link_id: str,
         expected_generation: int,
         field_updates: dict[str, dict[str, object]],
+        expected_active_version_id: str | None = None,
+        expected_local_texts: dict[str, str] | None = None,
     ) -> AgentPromptSyncLink:
-        """Advance selected cursor fields if its generation is unchanged."""
+        """Advance selected cursor fields on the inspected link.
+
+        A Push also supplies the active version and both inspected texts, so its
+        successful cursor advance records the local version that was published.
+        """
+        if (expected_active_version_id is None) != (expected_local_texts is None):
+            raise ValueError("Push cursor advances require both active version and local texts.")
         with session_scope(self.engine) as session:
+            if expected_local_texts is not None:
+                agent = _require(session, Agent, agent_id)
+                _check_prompt_sync_local_state(
+                    session, agent, expected_active_version_id, expected_local_texts
+                )
             return _advance_prompt_sync_cursor(
-                session, agent_id, expected_generation, field_updates
+                session,
+                agent_id,
+                expected_link_id,
+                expected_generation,
+                field_updates,
+                agent_version_id=expected_active_version_id,
             )
 
     def create_agent_version_and_advance_prompt_sync_link(
         self,
         agent_id: str,
         *,
+        expected_link_id: str,
         expected_active_version_id: str | None,
         expected_local_texts: dict[str, str],
         expected_generation: int,
@@ -662,13 +679,6 @@ class Store:
         """Validate and activate a pulled version with a cursor advance in one transaction."""
         with session_scope(self.engine) as session:
             agent = _require(session, Agent, agent_id)
-            if (
-                session.exec(
-                    select(AgentPromptSyncLink.id).where(AgentPromptSyncLink.agent_id == agent_id)
-                ).first()
-                is None
-            ):
-                raise NotFoundError(f"Agent prompt sync link for {agent_id!r} does not exist.")
             _check_prompt_sync_local_state(
                 session, agent, expected_active_version_id, expected_local_texts
             )
@@ -681,6 +691,7 @@ class Store:
             _advance_prompt_sync_cursor(
                 session,
                 agent_id,
+                expected_link_id,
                 expected_generation,
                 field_updates,
                 agent_version_id=version.id,
@@ -688,21 +699,19 @@ class Store:
             session.refresh(version)
             return version
 
-    def delete_agent_prompt_sync_link(self, agent_id: str, *, expected_generation: int) -> None:
-        """Unlink only if no other request has advanced the cursor."""
+    def delete_agent_prompt_sync_link(
+        self, agent_id: str, *, expected_link_id: str, expected_generation: int
+    ) -> None:
+        """Unlink only the inspected cursor at its inspected generation."""
         with session_scope(self.engine) as session:
             result = session.exec(
                 delete(AgentPromptSyncLink).where(
                     AgentPromptSyncLink.agent_id == agent_id,
+                    AgentPromptSyncLink.id == expected_link_id,
                     AgentPromptSyncLink.generation == expected_generation,
                 )
             )
             if result.rowcount != 1:
-                existing = session.exec(
-                    select(AgentPromptSyncLink.id).where(AgentPromptSyncLink.agent_id == agent_id)
-                ).first()
-                if existing is None:
-                    raise NotFoundError(f"Agent prompt sync link for {agent_id!r} does not exist.")
                 raise SyncConflictError("The prompt sync cursor changed; inspect sync again.")
 
     # -- Derivations ----------------------------------------------------------

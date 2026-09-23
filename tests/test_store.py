@@ -2122,6 +2122,12 @@ def _linked_agent(store: Store, **link_overrides: object):
     return agent, version, link
 
 
+def _sync_link_id(store: Store, agent_id: str) -> str:
+    """Return the current link ID, or a stale ID for missing-link error tests."""
+    link = store.get_agent_prompt_sync_link(agent_id)
+    return link.id if link is not None else "missing-link"
+
+
 def test_get_agent_prompt_sync_link_absent_returns_none(store: Store) -> None:
     agent = store.create_agent("subject")
 
@@ -2313,6 +2319,7 @@ def test_advance_agent_prompt_sync_link_updates_only_selected_template(store: St
 
     advanced = store.advance_agent_prompt_sync_link(
         agent.id,
+        expected_link_id=_sync_link_id(store, agent.id),
         expected_generation=0,
         field_updates={"instructions": {"base_text": "New instructions.", "remote_version": 5}},
     )
@@ -2342,6 +2349,7 @@ def test_advance_agent_prompt_sync_link_can_set_remote_version_without_touching_
 
     advanced = store.advance_agent_prompt_sync_link(
         agent.id,
+        expected_link_id=_sync_link_id(store, agent.id),
         expected_generation=0,
         field_updates={"input_template": {"remote_version": 9}},
     )
@@ -2357,6 +2365,7 @@ def test_advance_agent_prompt_sync_link_can_record_recreated_remote(store: Store
 
     advanced = store.advance_agent_prompt_sync_link(
         agent.id,
+        expected_link_id=_sync_link_id(store, agent.id),
         expected_generation=0,
         field_updates={"input_template": {"base_text": "", "remote_version": 1}},
     )
@@ -2369,10 +2378,16 @@ def test_advance_agent_prompt_sync_link_increments_generation_each_time(store: S
     agent, _, _ = _linked_agent(store)
 
     store.advance_agent_prompt_sync_link(
-        agent.id, expected_generation=0, field_updates={"instructions": {"remote_version": 5}}
+        agent.id,
+        expected_link_id=_sync_link_id(store, agent.id),
+        expected_generation=0,
+        field_updates={"instructions": {"remote_version": 5}},
     )
     second = store.advance_agent_prompt_sync_link(
-        agent.id, expected_generation=1, field_updates={"instructions": {"remote_version": 6}}
+        agent.id,
+        expected_link_id=_sync_link_id(store, agent.id),
+        expected_generation=1,
+        field_updates={"instructions": {"remote_version": 6}},
     )
 
     assert second.generation == 2
@@ -2382,12 +2397,16 @@ def test_advance_agent_prompt_sync_link_increments_generation_each_time(store: S
 def test_advance_agent_prompt_sync_link_rejects_stale_generation(store: Store) -> None:
     agent, _, _ = _linked_agent(store)
     store.advance_agent_prompt_sync_link(
-        agent.id, expected_generation=0, field_updates={"instructions": {"remote_version": 5}}
+        agent.id,
+        expected_link_id=_sync_link_id(store, agent.id),
+        expected_generation=0,
+        field_updates={"instructions": {"remote_version": 5}},
     )
 
     with pytest.raises(SyncConflictError):
         store.advance_agent_prompt_sync_link(
             agent.id,
+            expected_link_id=_sync_link_id(store, agent.id),
             expected_generation=0,
             field_updates={"instructions": {"base_text": "lost update", "remote_version": 99}},
         )
@@ -2402,9 +2421,12 @@ def test_advance_agent_prompt_sync_link_rejects_stale_generation(store: Store) -
 def test_advance_agent_prompt_sync_link_without_link_raises(store: Store) -> None:
     agent = store.create_agent("subject")
 
-    with pytest.raises(NotFoundError):
+    with pytest.raises(SyncConflictError):
         store.advance_agent_prompt_sync_link(
-            agent.id, expected_generation=0, field_updates={"instructions": {"remote_version": 1}}
+            agent.id,
+            expected_link_id=_sync_link_id(store, agent.id),
+            expected_generation=0,
+            field_updates={"instructions": {"remote_version": 1}},
         )
 
 
@@ -2419,6 +2441,7 @@ def test_advance_agent_prompt_sync_link_concurrent_calls_only_one_wins(store: St
         try:
             store.advance_agent_prompt_sync_link(
                 agent.id,
+                expected_link_id=_sync_link_id(store, agent.id),
                 expected_generation=0,
                 field_updates={"instructions": {"remote_version": 100 + n}},
             )
@@ -2445,6 +2468,7 @@ def test_create_agent_version_and_advance_prompt_sync_link_pulls_atomically(
 
     created = store.create_agent_version_and_advance_prompt_sync_link(
         agent.id,
+        expected_link_id=_sync_link_id(store, agent.id),
         expected_active_version_id=original.id,
         expected_local_texts=dict(LOCAL_TEXTS),
         expected_generation=0,
@@ -2478,6 +2502,7 @@ def test_combined_pull_rolls_back_when_active_version_changed(store: Store) -> N
     with pytest.raises(SyncConflictError):
         store.create_agent_version_and_advance_prompt_sync_link(
             agent.id,
+            expected_link_id=_sync_link_id(store, agent.id),
             expected_active_version_id=original.id,
             expected_local_texts=dict(LOCAL_TEXTS),
             expected_generation=0,
@@ -2505,6 +2530,7 @@ def test_combined_pull_rolls_back_when_same_version_text_was_edited(
     with pytest.raises(SyncConflictError):
         store.create_agent_version_and_advance_prompt_sync_link(
             agent.id,
+            expected_link_id=_sync_link_id(store, agent.id),
             expected_active_version_id=original.id,
             expected_local_texts=dict(LOCAL_TEXTS),
             expected_generation=0,
@@ -2523,12 +2549,16 @@ def test_combined_pull_rolls_back_when_same_version_text_was_edited(
 def test_combined_pull_rolls_back_when_generation_is_stale(store: Store) -> None:
     agent, original, _ = _linked_agent(store)
     store.advance_agent_prompt_sync_link(
-        agent.id, expected_generation=0, field_updates={"input_template": {"remote_version": 3}}
+        agent.id,
+        expected_link_id=_sync_link_id(store, agent.id),
+        expected_generation=0,
+        field_updates={"input_template": {"remote_version": 3}},
     )
 
     with pytest.raises(SyncConflictError):
         store.create_agent_version_and_advance_prompt_sync_link(
             agent.id,
+            expected_link_id=_sync_link_id(store, agent.id),
             expected_active_version_id=original.id,
             expected_local_texts=dict(LOCAL_TEXTS),
             expected_generation=0,
@@ -2550,6 +2580,7 @@ def test_combined_pull_invalid_version_rolls_back_version_and_cursor(store: Stor
     with pytest.raises(ConfigError):
         store.create_agent_version_and_advance_prompt_sync_link(
             agent.id,
+            expected_link_id=_sync_link_id(store, agent.id),
             expected_active_version_id=original.id,
             expected_local_texts=dict(LOCAL_TEXTS),
             expected_generation=0,
@@ -2574,9 +2605,10 @@ def test_combined_pull_without_link_raises_and_creates_nothing(store: Store) -> 
     agent = store.create_agent("subject")
     version = store.create_agent_version(agent.id, **agent_version_fields())
 
-    with pytest.raises(NotFoundError):
+    with pytest.raises(SyncConflictError):
         store.create_agent_version_and_advance_prompt_sync_link(
             agent.id,
+            expected_link_id=_sync_link_id(store, agent.id),
             expected_active_version_id=version.id,
             expected_local_texts=dict(LOCAL_TEXTS),
             expected_generation=0,
@@ -2590,7 +2622,9 @@ def test_combined_pull_without_link_raises_and_creates_nothing(store: Store) -> 
 def test_delete_agent_prompt_sync_link_removes_only_the_local_cursor(store: Store) -> None:
     agent, version, _ = _linked_agent(store)
 
-    store.delete_agent_prompt_sync_link(agent.id, expected_generation=0)
+    store.delete_agent_prompt_sync_link(
+        agent.id, expected_link_id=_sync_link_id(store, agent.id), expected_generation=0
+    )
 
     assert store.get_agent_prompt_sync_link(agent.id) is None
     assert store.get_agent(agent.id).active_version_id == version.id
@@ -2600,11 +2634,16 @@ def test_delete_agent_prompt_sync_link_removes_only_the_local_cursor(store: Stor
 def test_delete_agent_prompt_sync_link_rejects_stale_generation(store: Store) -> None:
     agent, _, _ = _linked_agent(store)
     store.advance_agent_prompt_sync_link(
-        agent.id, expected_generation=0, field_updates={"instructions": {"remote_version": 5}}
+        agent.id,
+        expected_link_id=_sync_link_id(store, agent.id),
+        expected_generation=0,
+        field_updates={"instructions": {"remote_version": 5}},
     )
 
     with pytest.raises(SyncConflictError):
-        store.delete_agent_prompt_sync_link(agent.id, expected_generation=0)
+        store.delete_agent_prompt_sync_link(
+            agent.id, expected_link_id=_sync_link_id(store, agent.id), expected_generation=0
+        )
 
     link = store.get_agent_prompt_sync_link(agent.id)
     assert link is not None
@@ -2615,13 +2654,17 @@ def test_delete_agent_prompt_sync_link_rejects_stale_generation(store: Store) ->
 def test_delete_agent_prompt_sync_link_without_link_raises(store: Store) -> None:
     agent = store.create_agent("subject")
 
-    with pytest.raises(NotFoundError):
-        store.delete_agent_prompt_sync_link(agent.id, expected_generation=0)
+    with pytest.raises(SyncConflictError):
+        store.delete_agent_prompt_sync_link(
+            agent.id, expected_link_id=_sync_link_id(store, agent.id), expected_generation=0
+        )
 
 
 def test_agent_can_be_relinked_after_unlink(store: Store) -> None:
     agent, version, _ = _linked_agent(store)
-    store.delete_agent_prompt_sync_link(agent.id, expected_generation=0)
+    store.delete_agent_prompt_sync_link(
+        agent.id, expected_link_id=_sync_link_id(store, agent.id), expected_generation=0
+    )
 
     link = store.create_agent_prompt_sync_link(
         agent.id,
@@ -2685,11 +2728,16 @@ def test_deleting_the_last_synced_version_does_not_strand_the_link(store: Store)
     assert link.generation == 0
     # The link is still advanceable and deletable.
     advanced = store.advance_agent_prompt_sync_link(
-        agent.id, expected_generation=0, field_updates={"instructions": {"remote_version": 5}}
+        agent.id,
+        expected_link_id=_sync_link_id(store, agent.id),
+        expected_generation=0,
+        field_updates={"instructions": {"remote_version": 5}},
     )
     assert advanced.generation == 1
     assert store.get_agent(agent.id).active_version_id == newer.id
-    store.delete_agent_prompt_sync_link(agent.id, expected_generation=1)
+    store.delete_agent_prompt_sync_link(
+        agent.id, expected_link_id=_sync_link_id(store, agent.id), expected_generation=1
+    )
     assert store.get_agent_prompt_sync_link(agent.id) is None
 
 
@@ -2728,11 +2776,17 @@ def test_advance_agent_prompt_sync_link_rejects_unknown_template_key(store: Stor
 
     with pytest.raises(ValueError):
         store.advance_agent_prompt_sync_link(
-            agent.id, expected_generation=0, field_updates={"bogus": {"remote_version": 1}}
+            agent.id,
+            expected_link_id=_sync_link_id(store, agent.id),
+            expected_generation=0,
+            field_updates={"bogus": {"remote_version": 1}},
         )
     with pytest.raises(ValueError):
         store.advance_agent_prompt_sync_link(
-            agent.id, expected_generation=0, field_updates={"instructions": {"variable_name": "x"}}
+            agent.id,
+            expected_link_id=_sync_link_id(store, agent.id),
+            expected_generation=0,
+            field_updates={"instructions": {"variable_name": "x"}},
         )
 
     stored = store.get_agent_prompt_sync_link(agent.id)
@@ -2750,3 +2804,165 @@ def test_create_agent_prompt_sync_link_requires_an_active_version(store: Store) 
             **LINK_KWARGS,
         )
     assert store.get_agent_prompt_sync_link(agent.id) is None
+
+
+def test_stale_advance_cannot_change_replacement_link(store: Store) -> None:
+    """A relink may restart generation, but an old request still targets the old link ID."""
+    agent, version, old = _linked_agent(store)
+    store.delete_agent_prompt_sync_link(
+        agent.id, expected_link_id=old.id, expected_generation=old.generation
+    )
+    replacement = store.create_agent_prompt_sync_link(
+        agent.id,
+        expected_active_version_id=version.id,
+        expected_local_texts=dict(LOCAL_TEXTS),
+        **{**LINK_KWARGS, "key_fingerprint": "rotated"},
+    )
+
+    with pytest.raises(SyncConflictError):
+        store.advance_agent_prompt_sync_link(
+            agent.id,
+            expected_link_id=old.id,
+            expected_generation=old.generation,
+            field_updates={"instructions": {"base_text": "stale", "remote_version": 99}},
+        )
+
+    stored = store.get_agent_prompt_sync_link(agent.id)
+    assert stored is not None
+    assert stored.id == replacement.id
+    assert stored.key_fingerprint == "rotated"
+    assert stored.generation == 0
+    assert stored.instructions_base_text == LOCAL_TEXTS["instructions"]
+
+
+def test_stale_pull_cannot_create_version_on_replacement_link(store: Store) -> None:
+    agent, version, old = _linked_agent(store)
+    store.delete_agent_prompt_sync_link(
+        agent.id, expected_link_id=old.id, expected_generation=old.generation
+    )
+    replacement = store.create_agent_prompt_sync_link(
+        agent.id,
+        expected_active_version_id=version.id,
+        expected_local_texts=dict(LOCAL_TEXTS),
+        **{**LINK_KWARGS, "key_fingerprint": "rotated"},
+    )
+
+    with pytest.raises(SyncConflictError):
+        store.create_agent_version_and_advance_prompt_sync_link(
+            agent.id,
+            expected_link_id=old.id,
+            expected_active_version_id=version.id,
+            expected_local_texts=dict(LOCAL_TEXTS),
+            expected_generation=old.generation,
+            version_fields=agent_version_fields(version_name="stale pull"),
+            field_updates={"instructions": {"remote_version": 99}},
+        )
+
+    assert [v.id for v in store.list_agent_versions(agent.id)] == [version.id]
+    assert store.get_agent(agent.id).active_version_id == version.id
+    stored = store.get_agent_prompt_sync_link(agent.id)
+    assert stored is not None
+    assert stored.id == replacement.id
+    assert stored.generation == 0
+
+
+def test_stale_unlink_cannot_delete_replacement_link(store: Store) -> None:
+    agent, version, old = _linked_agent(store)
+    store.delete_agent_prompt_sync_link(
+        agent.id, expected_link_id=old.id, expected_generation=old.generation
+    )
+    replacement = store.create_agent_prompt_sync_link(
+        agent.id,
+        expected_active_version_id=version.id,
+        expected_local_texts=dict(LOCAL_TEXTS),
+        **{**LINK_KWARGS, "key_fingerprint": "rotated"},
+    )
+
+    with pytest.raises(SyncConflictError):
+        store.delete_agent_prompt_sync_link(
+            agent.id, expected_link_id=old.id, expected_generation=old.generation
+        )
+
+    assert store.get_agent_prompt_sync_link(agent.id).id == replacement.id
+
+
+def test_advance_after_unlink_reports_stale_cursor(store: Store) -> None:
+    agent, _, old = _linked_agent(store)
+    store.delete_agent_prompt_sync_link(
+        agent.id, expected_link_id=old.id, expected_generation=old.generation
+    )
+
+    with pytest.raises(SyncConflictError):
+        store.advance_agent_prompt_sync_link(
+            agent.id,
+            expected_link_id=old.id,
+            expected_generation=old.generation,
+            field_updates={"instructions": {"remote_version": 5}},
+        )
+    with pytest.raises(SyncConflictError):
+        store.delete_agent_prompt_sync_link(
+            agent.id, expected_link_id=old.id, expected_generation=old.generation
+        )
+
+
+def test_push_advance_records_current_active_version(store: Store) -> None:
+    agent, original, link = _linked_agent(store)
+    newer = store.create_agent_version(agent.id, **agent_version_fields(version_name="v2"))
+
+    advanced = store.advance_agent_prompt_sync_link(
+        agent.id,
+        expected_link_id=link.id,
+        expected_generation=link.generation,
+        expected_active_version_id=newer.id,
+        expected_local_texts=dict(LOCAL_TEXTS),
+        field_updates={"instructions": {"remote_version": 5}},
+    )
+
+    assert original.id != newer.id
+    assert advanced.agent_version_id == newer.id
+    assert store.get_agent_prompt_sync_link(agent.id).agent_version_id == newer.id
+
+
+@pytest.mark.parametrize("edited", ["instructions", "input_template"])
+def test_push_advance_rejects_same_id_local_edit(store: Store, edited: str) -> None:
+    """A Push cannot record a version whose text changed after inspection."""
+    agent, version, link = _linked_agent(store)
+    if edited == "instructions":
+        store.update_agent_version(version.id, spec={"instructions": "Changed."})
+    else:
+        store.update_agent_version(version.id, prompt_template="Changed {question}.")
+
+    with pytest.raises(SyncConflictError):
+        store.advance_agent_prompt_sync_link(
+            agent.id,
+            expected_link_id=link.id,
+            expected_generation=link.generation,
+            expected_active_version_id=version.id,
+            expected_local_texts=dict(LOCAL_TEXTS),
+            field_updates={"instructions": {"base_text": "Changed.", "remote_version": 5}},
+        )
+
+    stored = store.get_agent_prompt_sync_link(agent.id)
+    assert stored is not None
+    assert stored.generation == 0
+    assert stored.instructions_remote_version == 4
+
+
+def test_push_advance_rejects_changed_active_version(store: Store) -> None:
+    agent, version, link = _linked_agent(store)
+    store.create_agent_version(agent.id, **agent_version_fields(version_name="v2"))
+
+    with pytest.raises(SyncConflictError):
+        store.advance_agent_prompt_sync_link(
+            agent.id,
+            expected_link_id=link.id,
+            expected_generation=link.generation,
+            expected_active_version_id=version.id,
+            expected_local_texts=dict(LOCAL_TEXTS),
+            field_updates={"instructions": {"remote_version": 5}},
+        )
+
+    stored = store.get_agent_prompt_sync_link(agent.id)
+    assert stored is not None
+    assert stored.generation == 0
+    assert stored.agent_version_id == version.id
