@@ -41,6 +41,27 @@ vi.mock("../components/AgentTrialPanel", () => ({
   ),
 }));
 
+vi.mock("../components/AgentPromptSync", () => ({
+  default: ({
+    agentId,
+    open,
+    onClose,
+    onPulled,
+  }: {
+    agentId: string;
+    open: boolean;
+    onClose: () => void;
+    onPulled: (activeVersionId: string | null) => void;
+  }) =>
+    open ? (
+      <div role="dialog" aria-label="Logfire sync">
+        Prompt sync for {agentId}
+        <button onClick={() => onPulled("av-2")}>Simulate pull</button>
+        <button onClick={onClose}>Close sync</button>
+      </div>
+    ) : null,
+}));
+
 vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
   return {
@@ -55,6 +76,12 @@ vi.mock("../api/client", async (importOriginal) => {
       removeVersion: vi.fn(),
       exportVersion: vi.fn(),
       importSpec: vi.fn(),
+      promptSyncStatus: vi.fn(),
+      promptSyncLink: vi.fn(),
+      promptSyncPull: vi.fn(),
+      promptSyncPush: vi.fn(),
+      promptSyncResolve: vi.fn(),
+      promptSyncUnlink: vi.fn(),
     },
     datasets: { ...actual.datasets, list: vi.fn() },
     evaluators: { ...actual.evaluators, generate: vi.fn() },
@@ -748,5 +775,95 @@ describe("AgentDetail", () => {
         }),
       ),
     );
+  });
+
+  it("puts Logfire sync in the top action bar beside the existing actions", async () => {
+    vi.mocked(agents.get).mockResolvedValue(makeDetail());
+    renderDetail();
+
+    await screen.findByRole("heading", { name: "Support agent" });
+    for (const name of ["Logfire sync", "Run agent", "Create evaluator", "Import", "Export"]) {
+      expect(screen.getByRole("button", { name })).toBeInTheDocument();
+    }
+    expect(screen.queryByRole("dialog", { name: "Logfire sync" })).not.toBeInTheDocument();
+  });
+
+  it("opens and closes the sync dialog for the current agent", async () => {
+    vi.mocked(agents.get).mockResolvedValue(makeDetail());
+    const user = userEvent.setup();
+    renderDetail();
+
+    await user.click(await screen.findByRole("button", { name: "Logfire sync" }));
+    expect(screen.getByRole("dialog", { name: "Logfire sync" })).toHaveTextContent("agent-1");
+    await user.click(screen.getByRole("button", { name: "Close sync" }));
+    expect(screen.queryByRole("dialog", { name: "Logfire sync" })).not.toBeInTheDocument();
+  });
+
+  it("does not call any sync write API on page load or when opening the dialog", async () => {
+    vi.mocked(agents.get).mockResolvedValue(makeDetail());
+    const user = userEvent.setup();
+    renderDetail();
+
+    await user.click(await screen.findByRole("button", { name: "Logfire sync" }));
+    for (const fn of [
+      agents.promptSyncLink,
+      agents.promptSyncPull,
+      agents.promptSyncPush,
+      agents.promptSyncResolve,
+      agents.promptSyncUnlink,
+    ]) {
+      expect(fn).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not silently push to Logfire when a local version is saved", async () => {
+    vi.mocked(agents.get).mockResolvedValue(makeDetail());
+    vi.mocked(agents.updateVersion).mockResolvedValue(makeVersion());
+    const user = userEvent.setup();
+    renderDetail();
+
+    const prompt = await screen.findByLabelText("Prompt template");
+    await user.clear(prompt);
+    fireEvent.change(prompt, { target: { value: "Changed: {question}" } });
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(agents.updateVersion).toHaveBeenCalled());
+    expect(agents.promptSyncPush).not.toHaveBeenCalled();
+    expect(agents.promptSyncStatus).not.toHaveBeenCalled();
+  });
+
+  it("reloads the agent and selects the new active version after a pull", async () => {
+    const pulled = makeVersion({
+      id: "av-2",
+      version_name: "pulled",
+      prompt_template: "Remote: {question}",
+    });
+    vi.mocked(agents.get)
+      .mockResolvedValueOnce(makeDetail())
+      .mockResolvedValue(
+        makeDetail({
+          agent: { ...makeDetail().agent, active_version_id: "av-2", version_count: 2 },
+          versions: [makeVersion(), pulled],
+        }),
+      );
+    const user = userEvent.setup();
+    renderDetail();
+
+    await user.click(await screen.findByRole("button", { name: "Logfire sync" }));
+    await user.click(screen.getByRole("button", { name: "Simulate pull" }));
+
+    await waitFor(() => expect(agents.get).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByLabelText("Version")).toHaveValue("av-2"));
+    expect(screen.getByLabelText("Prompt template")).toHaveValue("Remote: {question}");
+  });
+
+  it("keeps the run side panel working alongside the sync action", async () => {
+    vi.mocked(agents.get).mockResolvedValue(makeDetail());
+    const user = userEvent.setup();
+    renderDetail();
+
+    await user.click(await screen.findByRole("button", { name: "Run agent" }));
+    expect(screen.getByRole("dialog", { name: "Run agent" }).classList.contains("modal-side")).toBe(true);
+    expect(screen.getByTestId("trial-panel")).toHaveTextContent("av-1");
   });
 });
