@@ -10,6 +10,7 @@ import { Button, ConfirmDialog, ErrorBanner, Select, Spinner, TextArea } from ".
 /** Props for a scratch trial bound to one immutable agent version. */
 export type AgentTrialPanelProps = {
   version: AgentVersion;
+  onUnsavedChange?: (unsaved: boolean) => void;
 };
 
 type PendingTrial = {
@@ -29,7 +30,7 @@ function emptyInputs(columns: string[]): Record<string, string> {
 }
 
 /** Runs a version with ad-hoc inputs and optionally persists its one response. */
-export default function AgentTrialPanel({ version }: AgentTrialPanelProps) {
+export default function AgentTrialPanel({ version, onUnsavedChange }: AgentTrialPanelProps) {
   const [inputs, setInputs] = useState<Record<string, string>>(() =>
     emptyInputs(version.required_columns),
   );
@@ -84,6 +85,10 @@ export default function AgentTrialPanel({ version }: AgentTrialPanelProps) {
     window.addEventListener("beforeunload", warnBeforeUnload);
     return () => window.removeEventListener("beforeunload", warnBeforeUnload);
   }, [unsaved]);
+
+  useEffect(() => {
+    onUnsavedChange?.(unsaved);
+  }, [unsaved, onUnsavedChange]);
 
   const canSave =
     unsaved &&
@@ -157,7 +162,8 @@ export default function AgentTrialPanel({ version }: AgentTrialPanelProps) {
       {version.required_columns.map((column) => (
         <label className="field" key={column}>
           <span className="field-label">{column}</span>
-          <input
+          <TextArea
+            rows={4}
             value={inputs[column] ?? ""}
             onChange={(event) =>
               setInputs((current) => ({
@@ -174,6 +180,7 @@ export default function AgentTrialPanel({ version }: AgentTrialPanelProps) {
           <span className="field-label">Input (optional)</span>
           <TextArea
             aria-label="Input (optional)"
+            rows={12}
             value={freeformInput}
             onChange={(event) => setFreeformInput(event.target.value)}
           />
@@ -202,6 +209,7 @@ export default function AgentTrialPanel({ version }: AgentTrialPanelProps) {
                 <span className="field-label">{column}</span>
                 <textarea
                   aria-label={`Output ${column}`}
+                  rows={8}
                   readOnly
                   value={displayValue(trial.result.output[column])}
                 />
