@@ -11,7 +11,22 @@ from string import Formatter
 from valcore.errors import ConfigError
 
 _COMPOSITION_REFERENCE = re.compile(r"@\{[^{}]*\}@")
-_REMOTE_DIRECTIVES = frozenset({"else", "this"})
+_RESERVED_REMOTE_NAMES = frozenset(
+    {
+        "if",
+        "unless",
+        "each",
+        "with",
+        "lookup",
+        "log",
+        "else",
+        "this",
+        "true",
+        "false",
+        "null",
+        "undefined",
+    }
+)
 
 
 def _input_error(reason: str) -> ConfigError:
@@ -19,7 +34,7 @@ def _input_error(reason: str) -> ConfigError:
 
 
 def _valid_field(name: str) -> bool:
-    return name.isidentifier() and name not in _REMOTE_DIRECTIVES
+    return name.isidentifier() and name not in _RESERVED_REMOTE_NAMES
 
 
 def local_to_remote_input(text: str) -> str:
@@ -43,6 +58,10 @@ def local_to_remote_input(text: str) -> str:
             canonical_local.append(literal)
             if field is None:
                 continue
+            if literal.endswith("\\"):
+                raise _input_error(
+                    "has an escaped placeholder; remove the backslash before {column}."
+                )
             if not _valid_field(field):
                 raise _input_error(f"has an unsupported placeholder {field!r}; use a column name.")
             if conversion is not None or format_spec:
@@ -77,7 +96,10 @@ def remote_to_local_input(text: str) -> str:
             break
         if opening < 0 or (closing >= 0 and closing < opening):
             raise _input_error("has an unsupported or unmatched brace.")
-        parts.append(text[cursor:opening])
+        literal = text[cursor:opening]
+        if literal.endswith("\\"):
+            raise _input_error("has an escaped variable; remove the backslash before {{column}}.")
+        parts.append(literal)
         if not text.startswith("{{", opening):
             raise _input_error("must use only {{column}} variables; single braces are unsupported.")
         end = text.find("}}", opening + 2)
