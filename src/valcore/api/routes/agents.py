@@ -590,7 +590,9 @@ async def link_prompt_sync(
 ) -> SyncStatusRead:
     """Create a link using the selected side as its initial baseline."""
     store.get_agent(id)
-    return _sync_status(await run_in_threadpool(sync.link, id, body.initial, body.expected_revision))
+    return _sync_status(
+        await run_in_threadpool(sync.link, id, body.initial, body.expected_revision)
+    )
 
 
 @router.post("/{id}/prompt-sync/pull", response_model=SyncPullRead)
@@ -611,9 +613,7 @@ async def push_prompt_sync(
 ) -> SyncStatusRead:
     """Publish eligible local texts to the linked Logfire variables."""
     store.get_agent(id)
-    return _sync_status(
-        await run_in_threadpool(sync.push, id, body.fields, body.expected_revision)
-    )
+    return _sync_status(await run_in_threadpool(sync.push, id, body.fields, body.expected_revision))
 
 
 @router.post("/{id}/prompt-sync/resolve", response_model=SyncStatusRead)
