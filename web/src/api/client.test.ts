@@ -21,6 +21,8 @@ import type {
   Derivation,
   DerivedRowsPage,
   Overview,
+  PromptSyncPullResult,
+  PromptSyncStatus,
   SetupStatus,
   TrialResult,
 } from "./types";
@@ -1592,5 +1594,188 @@ describe("agents client helpers", () => {
     expect(error.status).toBe(404);
     expect(error.type).toBe("NotFoundError");
     expect(error.message).toBe("no such agent");
+  });
+});
+
+describe("agents prompt sync client helpers", () => {
+  const status: PromptSyncStatus = {
+    linked: true,
+    local_version_id: "av1",
+    revision: "rev-1",
+    error: null,
+    templates: {
+      instructions: {
+        variable_name: "valcore_agent_a1_instructions",
+        state: "conflict",
+        local_text: "local",
+        base_text: "base",
+        remote_text: "remote",
+        remote_version: 3,
+        base_remote_version: 2,
+        error: null,
+      },
+      input_template: {
+        variable_name: "valcore_agent_a1_input_template",
+        state: "in_sync",
+        local_text: "{q}",
+        base_text: "{q}",
+        remote_text: "{q}",
+        remote_version: 1,
+        base_remote_version: 1,
+        error: null,
+      },
+    },
+  };
+
+  function mockFetch(body: unknown) {
+    return vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(body));
+  }
+
+  it("promptSyncStatus GETs /api/agents/{id}/prompt-sync and parses the body", async () => {
+    const fetchMock = mockFetch(status);
+
+    const result = await agents.promptSyncStatus("a1");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents/a1/prompt-sync");
+    expect(init?.method ?? "GET").toBe("GET");
+    expect(init?.body).toBeUndefined();
+    expect(result).toEqual(status);
+  });
+
+  it("promptSyncLink POSTs {initial, expected_revision} to /link", async () => {
+    const fetchMock = mockFetch(status);
+
+    const result = await agents.promptSyncLink("a1", {
+      initial: "local",
+      expected: "rev-0",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents/a1/prompt-sync/link");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(init?.body as string)).toEqual({
+      initial: "local",
+      expected_revision: "rev-0",
+    });
+    expect(result).toEqual(status);
+  });
+
+  it("promptSyncPull POSTs fields and expected_revision to /pull", async () => {
+    const pulled: PromptSyncPullResult = { ...status, active_version_id: "av2" };
+    const fetchMock = mockFetch(pulled);
+
+    const result = await agents.promptSyncPull("a1", {
+      expected: "rev-1",
+      fields: ["instructions"],
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents/a1/prompt-sync/pull");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(init?.body as string)).toEqual({
+      fields: ["instructions"],
+      expected_revision: "rev-1",
+    });
+    expect(result.active_version_id).toBe("av2");
+  });
+
+  it("promptSyncPull omits fields when none are given", async () => {
+    const fetchMock = mockFetch({ ...status, active_version_id: "av1" });
+
+    await agents.promptSyncPull("a1", { expected: "rev-1" });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init?.body as string)).toEqual({
+      expected_revision: "rev-1",
+    });
+  });
+
+  it("promptSyncPush POSTs fields and expected_revision to /push", async () => {
+    const fetchMock = mockFetch(status);
+
+    const result = await agents.promptSyncPush("a1", {
+      expected: "rev-1",
+      fields: ["input_template", "instructions"],
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents/a1/prompt-sync/push");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(init?.body as string)).toEqual({
+      fields: ["input_template", "instructions"],
+      expected_revision: "rev-1",
+    });
+    expect(result).toEqual(status);
+  });
+
+  it("promptSyncPush omits fields when none are given", async () => {
+    const fetchMock = mockFetch(status);
+
+    await agents.promptSyncPush("a1", { expected: "rev-1" });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init?.body as string)).toEqual({
+      expected_revision: "rev-1",
+    });
+  });
+
+  it("promptSyncResolve POSTs fields, choice, and expected_revision to /resolve", async () => {
+    const fetchMock = mockFetch(status);
+
+    const result = await agents.promptSyncResolve("a1", {
+      expected: "rev-1",
+      fields: ["instructions"],
+      choice: "remote",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents/a1/prompt-sync/resolve");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(init?.body as string)).toEqual({
+      fields: ["instructions"],
+      choice: "remote",
+      expected_revision: "rev-1",
+    });
+    expect(result).toEqual(status);
+  });
+
+  it("promptSyncUnlink DELETEs /api/agents/{id}/prompt-sync with expected_revision", async () => {
+    const unlinked: PromptSyncStatus = { ...status, linked: false };
+    const fetchMock = mockFetch(unlinked);
+
+    const result = await agents.promptSyncUnlink("a1", { expected: "rev-1" });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents/a1/prompt-sync");
+    expect(init?.method).toBe("DELETE");
+    expect(JSON.parse(init?.body as string)).toEqual({
+      expected_revision: "rev-1",
+    });
+    expect(result.linked).toBe(false);
+  });
+
+  it("never sends a Logfire key in any mutation body", async () => {
+    const fetchMock = mockFetch(status);
+
+    await agents.promptSyncLink("a1", { initial: "remote", expected: "r" });
+    await agents.promptSyncUnlink("a1", { expected: "r" });
+
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(String(init?.body)).not.toMatch(/key|token|fingerprint/i);
+    }
+  });
+
+  it("surfaces a stale-revision conflict as an ApiError", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(
+        { detail: "revision changed", type: "SyncConflictError" },
+        { status: 409 },
+      ),
+    );
+
+    await expect(
+      agents.promptSyncPush("a1", { expected: "stale" }),
+    ).rejects.toMatchObject({ status: 409, type: "SyncConflictError" });
   });
 });
