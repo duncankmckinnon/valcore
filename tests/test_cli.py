@@ -1932,7 +1932,7 @@ def test_prompt_sync_pull_push_yes_skips_the_prompt(runner, db_path, sync_agent,
 
 @pytest.mark.parametrize("command", ["pull", "push"])
 def test_prompt_sync_pull_push_pass_selected_fields(runner, db_path, sync_agent, command):
-    agent, install = sync_agent
+    _agent, install = sync_agent
     state = "remote_changed" if command == "pull" else "local_changed"
     fake = install(_sync_status(state, state))
     result = _sync(runner, db_path, command, "writer", "--field", "input_template", "--yes")
