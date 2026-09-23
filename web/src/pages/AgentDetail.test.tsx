@@ -33,8 +33,11 @@ vi.mock("react-router-dom", async () => {
 });
 
 vi.mock("../components/AgentTrialPanel", () => ({
-  default: ({ version }: { version: AgentVersion }) => (
-    <div data-testid="trial-panel">Trial panel for {version.id}</div>
+  default: ({ version, onUnsavedChange }: { version: AgentVersion; onUnsavedChange?: (unsaved: boolean) => void }) => (
+    <div data-testid="trial-panel">
+      Trial panel for {version.id}
+      <button onClick={() => onUnsavedChange?.(true)}>Simulate response</button>
+    </div>
   ),
 }));
 
@@ -159,13 +162,17 @@ describe("AgentDetail", () => {
 
     await screen.findByRole("heading", { name: "Support agent" });
     await user.click(
-      screen.getByRole("button", { name: "Run over a dataset" }),
+      screen.getByRole("button", { name: "Run agent" }),
     );
+    expect(screen.getByRole("dialog", { name: "Run agent" }).classList.contains("modal-side")).toBe(true);
+    expect(screen.getByTestId("trial-panel")).toHaveTextContent("av-1");
+    await user.click(screen.getByRole("tab", { name: "Run a dataset" }));
+    expect(screen.getByTestId("trial-panel")).toHaveTextContent("av-1");
     await user.selectOptions(
       await screen.findByLabelText("Dataset"),
       "dataset-1",
     );
-    await user.click(screen.getByRole("button", { name: "Run agent" }));
+    await user.click(screen.getByRole("button", { name: "Run dataset" }));
 
     await waitFor(() =>
       expect(runs.create).toHaveBeenCalledWith(
@@ -179,6 +186,39 @@ describe("AgentDetail", () => {
     const payload = vi.mocked(runs.create).mock.calls[0]?.[0];
     expect(payload).not.toHaveProperty("derivation_id");
     expect(navigate).toHaveBeenCalledWith("/runs/run-derive-1");
+  });
+
+  it("confirms before closing an unsaved trial response", async () => {
+    vi.mocked(agents.get).mockResolvedValue(makeDetail());
+    const user = userEvent.setup();
+    renderDetail();
+
+    await user.click(await screen.findByRole("button", { name: "Run agent" }));
+    await user.click(screen.getByRole("button", { name: "Simulate response" }));
+    await user.click(screen.getByRole("button", { name: "Close" }));
+
+    const confirm = screen.getByRole("dialog", { name: "Discard unsaved response?" });
+    expect(screen.getByRole("dialog", { name: "Run agent" })).toBeInTheDocument();
+    await user.click(within(confirm).getByRole("button", { name: "Discard response" }));
+    expect(screen.queryByRole("dialog", { name: "Run agent" })).toBeNull();
+  });
+
+  it("confirms before replacing an unsaved trial with a dataset run", async () => {
+    vi.mocked(agents.get).mockResolvedValue(makeDetail());
+    vi.mocked(runs.create).mockResolvedValue(makeRun());
+    const user = userEvent.setup();
+    renderDetail();
+
+    await user.click(await screen.findByRole("button", { name: "Run agent" }));
+    await user.click(screen.getByRole("button", { name: "Simulate response" }));
+    await user.click(screen.getByRole("tab", { name: "Run a dataset" }));
+    await user.click(screen.getByRole("button", { name: "Run dataset" }));
+
+    expect(runs.create).not.toHaveBeenCalled();
+    const confirm = screen.getByRole("dialog", { name: "Discard unsaved response?" });
+    expect(within(confirm).getByText("Running a dataset will discard the unsaved response.")).toBeInTheDocument();
+    await user.click(within(confirm).getByRole("button", { name: "Discard response" }));
+    await waitFor(() => expect(runs.create).toHaveBeenCalledOnce());
   });
 
   it("disables a whole-dataset run when the agent has no selected version", async () => {
@@ -196,7 +236,7 @@ describe("AgentDetail", () => {
 
     await screen.findByRole("heading", { name: "Support agent" });
     expect(
-      screen.getByRole("button", { name: "Run over a dataset" }),
+      screen.getByRole("button", { name: "Run agent" }),
     ).toBeDisabled();
   });
 
@@ -214,23 +254,24 @@ describe("AgentDetail", () => {
 
     await screen.findByRole("heading", { name: "Support agent" });
     await user.click(
-      screen.getByRole("button", { name: "Run over a dataset" }),
+      screen.getByRole("button", { name: "Run agent" }),
     );
     const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("tab", { name: "Run a dataset" }));
     await user.selectOptions(
       within(dialog).getByLabelText("Dataset"),
       "dataset-1",
     );
-    await user.click(within(dialog).getByRole("button", { name: "Run agent" }));
+    await user.click(within(dialog).getByRole("button", { name: "Run dataset" }));
 
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
       "Dataset is missing required columns: context",
     );
     expect(
-      within(dialog).getByRole("button", { name: "Run agent" }),
+      within(dialog).getByRole("button", { name: "Run dataset" }),
     ).not.toBeDisabled();
     expect(
-      within(dialog).getByRole("button", { name: "Cancel" }),
+      within(dialog).getByRole("button", { name: "Close" }),
     ).not.toBeDisabled();
     expect(navigate).not.toHaveBeenCalled();
   });
@@ -246,17 +287,18 @@ describe("AgentDetail", () => {
 
     await screen.findByRole("heading", { name: "Support agent" });
     await user.click(
-      screen.getByRole("button", { name: "Run over a dataset" }),
+      screen.getByRole("button", { name: "Run agent" }),
     );
     const dialog = await screen.findByRole("dialog");
-    const submit = within(dialog).getByRole("button", { name: "Run agent" });
+    await user.click(within(dialog).getByRole("tab", { name: "Run a dataset" }));
+    const submit = within(dialog).getByRole("button", { name: "Run dataset" });
 
     await user.click(submit);
     await user.click(submit);
 
     expect(runs.create).toHaveBeenCalledOnce();
     expect(submit).toBeDisabled();
-    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Close" })).toBeDisabled();
     expect(within(dialog).getByRole("status", { name: "Loading" })).toBeInTheDocument();
 
     resolveRun(makeRun());
@@ -292,7 +334,7 @@ describe("AgentDetail", () => {
     );
     expect(screen.getByText("answer")).toBeInTheDocument();
     expect(screen.getByText("confidence")).toBeInTheDocument();
-    expect(screen.getByTestId("trial-panel")).toHaveTextContent("av-1");
+    expect(screen.queryByTestId("trial-panel")).toBeNull();
   });
 
   it("switches the editor and trial panel when another version is selected", async () => {
@@ -325,6 +367,7 @@ describe("AgentDetail", () => {
       "Account: {account}",
     );
     expect(screen.getByLabelText("Required columns")).toHaveValue("account");
+    await user.click(screen.getByRole("button", { name: "Run agent" }));
     expect(screen.getByTestId("trial-panel")).toHaveTextContent("av-2");
   });
 
@@ -574,7 +617,9 @@ describe("AgentDetail", () => {
     const user = userEvent.setup();
     renderDetail();
 
-    expect(await screen.findByTestId("trial-panel")).toHaveTextContent("av-1");
+    await screen.findByRole("button", { name: "Run agent" });
+    await user.click(screen.getByRole("button", { name: "Run agent" }));
+    expect(screen.getByTestId("trial-panel")).toHaveTextContent("av-1");
     await user.selectOptions(
       screen.getByRole("combobox", { name: "Version" }),
       "av-2",
@@ -587,7 +632,9 @@ describe("AgentDetail", () => {
     const user = userEvent.setup();
     renderDetail();
 
-    expect(await screen.findByTestId("trial-panel")).toHaveTextContent("av-1");
+    await screen.findByRole("button", { name: "Run agent" });
+    await user.click(screen.getByRole("button", { name: "Run agent" }));
+    expect(screen.getByTestId("trial-panel")).toHaveTextContent("av-1");
     await user.click(screen.getByRole("button", { name: "New version" }));
 
     expect(

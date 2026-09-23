@@ -391,6 +391,33 @@ h1 {
   z-index: 100;
 }
 
+.modal-backdrop-side {
+  justify-content: flex-end;
+  align-items: stretch;
+}
+
+.modal.modal-side {
+  width: min(760px, 100vw);
+  max-width: none;
+  max-height: none;
+  height: 100%;
+  border-radius: 0;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+}
+
+.agent-run-tabs {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.agent-run-tabs .btn[aria-selected="true"] {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
 /* A column flex so a fixed header and footer can bracket a scrolling body. */
 .modal {
   display: flex;
@@ -1398,6 +1425,7 @@ kbd {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
+  flex-wrap: wrap;
   padding: var(--space-3) var(--space-4);
   background: var(--panel);
   border: 1px solid var(--border);
@@ -1408,6 +1436,7 @@ kbd {
 .version-bar-actions {
   display: flex;
   gap: var(--space-2);
+  flex-wrap: wrap;
 }
 
 /* -- Config diff ------------------------------------------------------------ */
