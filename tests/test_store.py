@@ -13,8 +13,10 @@ from valcore.errors import (
     FrozenVersionError,
     NotFoundError,
     ReferencedError,
+    SyncConflictError,
 )
 from valcore.models import (
+    AgentPromptSyncLink,
     AgentResponse,
     DatasetDerivation,
     DatasetGeneration,
@@ -2081,3 +2083,641 @@ def test_init_db_adds_the_logfire_pull_table_to_an_existing_database(tmp_path, m
     init_db(engine)
     store.set_logfire_pull(dataset.id, sql="SELECT 1", sample_n=1, seed=1)
     assert store.get_logfire_pull(dataset.id).sql == "SELECT 1"
+
+
+# -- Agent prompt sync links ---------------------------------------------------
+#
+# Cursor shape used by these tests: ``field_updates`` maps a template key
+# (``"instructions"`` / ``"input_template"``) to a dict that may carry ``base_text`` and/or
+# ``remote_version``. ``expected_local_texts`` maps the same keys to the current local text.
+# The link stores ``agent_version_id`` (no foreign key) plus ``<key>_base_text``,
+# ``<key>_remote_version`` and ``<key>_variable_name`` columns.
+
+LINK_KWARGS: dict[str, object] = {
+    "key_fingerprint": "fp-1",
+    "instructions_variable_name": "valcore_agent_x_instructions",
+    "input_template_variable_name": "valcore_agent_x_input_template",
+    "instructions_remote_version": 4,
+    "input_template_remote_version": 2,
+    "instructions_base_text": "You are a helpful assistant.",
+    "input_template_base_text": "Answer {question}.",
+}
+
+LOCAL_TEXTS: dict[str, str] = {
+    "instructions": "You are a helpful assistant.",
+    "input_template": "Answer {question}.",
+}
+
+
+def _linked_agent(store: Store, **link_overrides: object):
+    """Create an agent with one version and a sync link; return (agent, version, link)."""
+    agent = store.create_agent("subject")
+    version = store.create_agent_version(agent.id, **agent_version_fields())
+    link = store.create_agent_prompt_sync_link(
+        agent.id,
+        expected_active_version_id=version.id,
+        expected_local_texts=dict(LOCAL_TEXTS),
+        **{**LINK_KWARGS, **link_overrides},
+    )
+    return agent, version, link
+
+
+def test_get_agent_prompt_sync_link_absent_returns_none(store: Store) -> None:
+    agent = store.create_agent("subject")
+
+    assert store.get_agent_prompt_sync_link(agent.id) is None
+
+
+def test_create_agent_prompt_sync_link_persists_cursor(store: Store) -> None:
+    agent, version, link = _linked_agent(store)
+
+    assert isinstance(link, AgentPromptSyncLink)
+    assert link.agent_id == agent.id
+    assert link.agent_version_id == version.id
+    assert link.key_fingerprint == "fp-1"
+    assert link.instructions_variable_name == "valcore_agent_x_instructions"
+    assert link.input_template_variable_name == "valcore_agent_x_input_template"
+    assert link.instructions_remote_version == 4
+    assert link.input_template_remote_version == 2
+    assert link.instructions_base_text == "You are a helpful assistant."
+    assert link.input_template_base_text == "Answer {question}."
+    assert link.generation == 0
+
+    stored = store.get_agent_prompt_sync_link(agent.id)
+    assert stored is not None
+    assert stored.id == link.id
+    assert stored.generation == 0
+    # No new local version is created for a local-initial link.
+    assert [v.id for v in store.list_agent_versions(agent.id)] == [version.id]
+
+
+def test_create_agent_prompt_sync_link_allows_missing_remote_versions(store: Store) -> None:
+    _, _, link = _linked_agent(
+        store, instructions_remote_version=None, input_template_remote_version=None
+    )
+
+    assert link.instructions_remote_version is None
+    assert link.input_template_remote_version is None
+
+
+def test_create_agent_prompt_sync_link_unknown_agent_raises(store: Store) -> None:
+    with pytest.raises(NotFoundError):
+        store.create_agent_prompt_sync_link(
+            "nope",
+            expected_active_version_id=None,
+            expected_local_texts=dict(LOCAL_TEXTS),
+            **LINK_KWARGS,
+        )
+
+
+def test_create_agent_prompt_sync_link_is_unique_per_agent(store: Store) -> None:
+    agent, version, first = _linked_agent(store)
+
+    with pytest.raises(SyncConflictError):
+        store.create_agent_prompt_sync_link(
+            agent.id,
+            expected_active_version_id=version.id,
+            expected_local_texts=dict(LOCAL_TEXTS),
+            **{**LINK_KWARGS, "key_fingerprint": "other"},
+        )
+
+    stored = store.get_agent_prompt_sync_link(agent.id)
+    assert stored is not None
+    assert stored.id == first.id
+    assert stored.key_fingerprint == "fp-1"
+
+
+def test_create_agent_prompt_sync_link_rejects_stale_active_version(store: Store) -> None:
+    agent = store.create_agent("subject")
+    first = store.create_agent_version(agent.id, **agent_version_fields(version_name="v1"))
+    store.create_agent_version(agent.id, **agent_version_fields(version_name="v2"))
+
+    with pytest.raises(SyncConflictError):
+        store.create_agent_prompt_sync_link(
+            agent.id,
+            expected_active_version_id=first.id,
+            expected_local_texts=dict(LOCAL_TEXTS),
+            **LINK_KWARGS,
+        )
+
+    assert store.get_agent_prompt_sync_link(agent.id) is None
+
+
+@pytest.mark.parametrize("stale_key", ["instructions", "input_template"])
+def test_create_agent_prompt_sync_link_rejects_stale_local_text_on_same_version(
+    store: Store, stale_key: str
+) -> None:
+    agent = store.create_agent("subject")
+    version = store.create_agent_version(agent.id, **agent_version_fields())
+    # An unfrozen version can be edited in place without changing its ID.
+    store.update_agent_version(
+        version.id,
+        spec={"instructions": "Edited instructions."},
+        prompt_template="Edited {question}.",
+    )
+
+    with pytest.raises(SyncConflictError):
+        store.create_agent_prompt_sync_link(
+            agent.id,
+            expected_active_version_id=version.id,
+            expected_local_texts={
+                "instructions": "Edited instructions.",
+                "input_template": "Edited {question}.",
+                stale_key: LOCAL_TEXTS[stale_key],
+            },
+            **LINK_KWARGS,
+        )
+
+    assert store.get_agent_prompt_sync_link(agent.id) is None
+
+
+def test_create_agent_prompt_sync_link_with_initial_version_creates_and_activates_it(
+    store: Store,
+) -> None:
+    agent = store.create_agent("subject")
+    original = store.create_agent_version(agent.id, **agent_version_fields())
+
+    link = store.create_agent_prompt_sync_link(
+        agent.id,
+        expected_active_version_id=original.id,
+        expected_local_texts=dict(LOCAL_TEXTS),
+        initial_version_fields=agent_version_fields(
+            version_name="from-logfire",
+            spec={"instructions": "Remote instructions."},
+            prompt_template="Remote {question}.",
+        ),
+        **{
+            **LINK_KWARGS,
+            "instructions_base_text": "Remote instructions.",
+            "input_template_base_text": "Remote {question}.",
+        },
+    )
+
+    versions = store.list_agent_versions(agent.id)
+    assert len(versions) == 2
+    created = versions[-1]
+    assert created.id != original.id
+    assert created.spec == {"instructions": "Remote instructions."}
+    assert created.prompt_template == "Remote {question}."
+    assert store.get_agent(agent.id).active_version_id == created.id
+    # The cursor points at the pulled version, and the original stays untouched.
+    assert link.agent_version_id == created.id
+    assert store.get_agent_version(original.id).prompt_template == "Answer {question}."
+
+
+def test_create_agent_prompt_sync_link_invalid_initial_version_leaves_neither(
+    store: Store,
+) -> None:
+    """A first-link remote failure leaves neither link nor version."""
+    agent = store.create_agent("subject")
+    original = store.create_agent_version(agent.id, **agent_version_fields())
+
+    with pytest.raises(ConfigError):
+        store.create_agent_prompt_sync_link(
+            agent.id,
+            expected_active_version_id=original.id,
+            expected_local_texts=dict(LOCAL_TEXTS),
+            initial_version_fields=agent_version_fields(
+                version_name="bad", prompt_template="Answer {missing}."
+            ),
+            **LINK_KWARGS,
+        )
+
+    assert store.get_agent_prompt_sync_link(agent.id) is None
+    assert [v.id for v in store.list_agent_versions(agent.id)] == [original.id]
+    assert store.get_agent(agent.id).active_version_id == original.id
+
+
+def test_create_agent_prompt_sync_link_stale_with_initial_version_creates_nothing(
+    store: Store,
+) -> None:
+    agent = store.create_agent("subject")
+    version = store.create_agent_version(agent.id, **agent_version_fields())
+
+    with pytest.raises(SyncConflictError):
+        store.create_agent_prompt_sync_link(
+            agent.id,
+            expected_active_version_id=version.id,
+            expected_local_texts={**LOCAL_TEXTS, "instructions": "not current"},
+            initial_version_fields=agent_version_fields(version_name="pulled"),
+            **LINK_KWARGS,
+        )
+
+    assert store.get_agent_prompt_sync_link(agent.id) is None
+    assert len(store.list_agent_versions(agent.id)) == 1
+    assert store.get_agent(agent.id).active_version_id == version.id
+
+
+def test_advance_agent_prompt_sync_link_updates_only_selected_template(store: Store) -> None:
+    agent, version, link = _linked_agent(store)
+
+    advanced = store.advance_agent_prompt_sync_link(
+        agent.id,
+        expected_generation=0,
+        field_updates={"instructions": {"base_text": "New instructions.", "remote_version": 5}},
+    )
+
+    assert advanced.generation == 1
+    assert advanced.instructions_base_text == "New instructions."
+    assert advanced.instructions_remote_version == 5
+    # The other template's cursor fields and every non-template field stay intact.
+    assert advanced.input_template_base_text == "Answer {question}."
+    assert advanced.input_template_remote_version == 2
+    assert advanced.key_fingerprint == "fp-1"
+    assert advanced.agent_version_id == version.id
+    assert advanced.instructions_variable_name == link.instructions_variable_name
+    assert advanced.input_template_variable_name == link.input_template_variable_name
+
+    stored = store.get_agent_prompt_sync_link(agent.id)
+    assert stored is not None
+    assert stored.generation == 1
+    assert stored.instructions_base_text == "New instructions."
+    assert stored.input_template_remote_version == 2
+
+
+def test_advance_agent_prompt_sync_link_can_set_remote_version_without_touching_text(
+    store: Store,
+) -> None:
+    agent, _, _ = _linked_agent(store)
+
+    advanced = store.advance_agent_prompt_sync_link(
+        agent.id,
+        expected_generation=0,
+        field_updates={"input_template": {"remote_version": 9}},
+    )
+
+    assert advanced.input_template_remote_version == 9
+    assert advanced.input_template_base_text == "Answer {question}."
+    assert advanced.instructions_remote_version == 4
+
+
+def test_advance_agent_prompt_sync_link_can_record_recreated_remote(store: Store) -> None:
+    """A missing remote (version ``None``) can be recreated with an empty baseline."""
+    agent, _, _ = _linked_agent(store, input_template_remote_version=None)
+
+    advanced = store.advance_agent_prompt_sync_link(
+        agent.id,
+        expected_generation=0,
+        field_updates={"input_template": {"base_text": "", "remote_version": 1}},
+    )
+
+    assert advanced.input_template_remote_version == 1
+    assert advanced.input_template_base_text == ""
+
+
+def test_advance_agent_prompt_sync_link_increments_generation_each_time(store: Store) -> None:
+    agent, _, _ = _linked_agent(store)
+
+    store.advance_agent_prompt_sync_link(
+        agent.id, expected_generation=0, field_updates={"instructions": {"remote_version": 5}}
+    )
+    second = store.advance_agent_prompt_sync_link(
+        agent.id, expected_generation=1, field_updates={"instructions": {"remote_version": 6}}
+    )
+
+    assert second.generation == 2
+    assert second.instructions_remote_version == 6
+
+
+def test_advance_agent_prompt_sync_link_rejects_stale_generation(store: Store) -> None:
+    agent, _, _ = _linked_agent(store)
+    store.advance_agent_prompt_sync_link(
+        agent.id, expected_generation=0, field_updates={"instructions": {"remote_version": 5}}
+    )
+
+    with pytest.raises(SyncConflictError):
+        store.advance_agent_prompt_sync_link(
+            agent.id,
+            expected_generation=0,
+            field_updates={"instructions": {"base_text": "lost update", "remote_version": 99}},
+        )
+
+    stored = store.get_agent_prompt_sync_link(agent.id)
+    assert stored is not None
+    assert stored.generation == 1
+    assert stored.instructions_remote_version == 5
+    assert stored.instructions_base_text == "You are a helpful assistant."
+
+
+def test_advance_agent_prompt_sync_link_without_link_raises(store: Store) -> None:
+    agent = store.create_agent("subject")
+
+    with pytest.raises(NotFoundError):
+        store.advance_agent_prompt_sync_link(
+            agent.id, expected_generation=0, field_updates={"instructions": {"remote_version": 1}}
+        )
+
+
+def test_advance_agent_prompt_sync_link_concurrent_calls_only_one_wins(store: Store) -> None:
+    """The generation-conditioned update is atomic, so exactly one racer succeeds."""
+    agent, _, _ = _linked_agent(store)
+    barrier = threading.Barrier(4)
+    outcomes: list[str] = []
+
+    def worker(n: int) -> None:
+        barrier.wait()
+        try:
+            store.advance_agent_prompt_sync_link(
+                agent.id,
+                expected_generation=0,
+                field_updates={"instructions": {"remote_version": 100 + n}},
+            )
+            outcomes.append("ok")
+        except SyncConflictError:
+            outcomes.append("conflict")
+
+    threads = [threading.Thread(target=worker, args=(n,)) for n in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert sorted(outcomes) == ["conflict", "conflict", "conflict", "ok"]
+    stored = store.get_agent_prompt_sync_link(agent.id)
+    assert stored is not None
+    assert stored.generation == 1
+
+
+def test_create_agent_version_and_advance_prompt_sync_link_pulls_atomically(
+    store: Store,
+) -> None:
+    agent, original, _ = _linked_agent(store)
+
+    created = store.create_agent_version_and_advance_prompt_sync_link(
+        agent.id,
+        expected_active_version_id=original.id,
+        expected_local_texts=dict(LOCAL_TEXTS),
+        expected_generation=0,
+        version_fields=agent_version_fields(
+            version_name="pulled", spec={"instructions": "Pulled instructions."}
+        ),
+        field_updates={"instructions": {"base_text": "Pulled instructions.", "remote_version": 7}},
+    )
+
+    assert created.id != original.id
+    assert created.spec == {"instructions": "Pulled instructions."}
+    assert store.get_agent(agent.id).active_version_id == created.id
+    assert store.get_agent_version(original.id).spec == {
+        "instructions": "You are a helpful assistant."
+    }
+    link = store.get_agent_prompt_sync_link(agent.id)
+    assert link is not None
+    assert link.generation == 1
+    assert link.agent_version_id == created.id
+    assert link.instructions_base_text == "Pulled instructions."
+    assert link.instructions_remote_version == 7
+    # The unselected template's baseline and remote version stay untouched.
+    assert link.input_template_base_text == "Answer {question}."
+    assert link.input_template_remote_version == 2
+
+
+def test_combined_pull_rolls_back_when_active_version_changed(store: Store) -> None:
+    agent, original, _ = _linked_agent(store)
+    newer = store.create_agent_version(agent.id, **agent_version_fields(version_name="v2"))
+
+    with pytest.raises(SyncConflictError):
+        store.create_agent_version_and_advance_prompt_sync_link(
+            agent.id,
+            expected_active_version_id=original.id,
+            expected_local_texts=dict(LOCAL_TEXTS),
+            expected_generation=0,
+            version_fields=agent_version_fields(version_name="pulled"),
+            field_updates={"instructions": {"remote_version": 7}},
+        )
+
+    assert [v.id for v in store.list_agent_versions(agent.id)] == [original.id, newer.id]
+    assert store.get_agent(agent.id).active_version_id == newer.id
+    link = store.get_agent_prompt_sync_link(agent.id)
+    assert link is not None and link.generation == 0
+
+
+@pytest.mark.parametrize("edited", ["instructions", "input_template"])
+def test_combined_pull_rolls_back_when_same_version_text_was_edited(
+    store: Store, edited: str
+) -> None:
+    """A same-ID edit to an unfrozen version must still invalidate a pending Pull."""
+    agent, original, _ = _linked_agent(store)
+    if edited == "instructions":
+        store.update_agent_version(original.id, spec={"instructions": "Edited meanwhile."})
+    else:
+        store.update_agent_version(original.id, prompt_template="Edited {question}.")
+
+    with pytest.raises(SyncConflictError):
+        store.create_agent_version_and_advance_prompt_sync_link(
+            agent.id,
+            expected_active_version_id=original.id,
+            expected_local_texts=dict(LOCAL_TEXTS),
+            expected_generation=0,
+            version_fields=agent_version_fields(version_name="pulled"),
+            field_updates={"instructions": {"remote_version": 7}},
+        )
+
+    assert [v.id for v in store.list_agent_versions(agent.id)] == [original.id]
+    assert store.get_agent(agent.id).active_version_id == original.id
+    link = store.get_agent_prompt_sync_link(agent.id)
+    assert link is not None
+    assert link.generation == 0
+    assert link.instructions_remote_version == 4
+
+
+def test_combined_pull_rolls_back_when_generation_is_stale(store: Store) -> None:
+    agent, original, _ = _linked_agent(store)
+    store.advance_agent_prompt_sync_link(
+        agent.id, expected_generation=0, field_updates={"input_template": {"remote_version": 3}}
+    )
+
+    with pytest.raises(SyncConflictError):
+        store.create_agent_version_and_advance_prompt_sync_link(
+            agent.id,
+            expected_active_version_id=original.id,
+            expected_local_texts=dict(LOCAL_TEXTS),
+            expected_generation=0,
+            version_fields=agent_version_fields(version_name="pulled"),
+            field_updates={"instructions": {"remote_version": 7}},
+        )
+
+    assert [v.id for v in store.list_agent_versions(agent.id)] == [original.id]
+    assert store.get_agent(agent.id).active_version_id == original.id
+    link = store.get_agent_prompt_sync_link(agent.id)
+    assert link is not None
+    assert link.generation == 1
+    assert link.instructions_remote_version == 4
+
+
+def test_combined_pull_invalid_version_rolls_back_version_and_cursor(store: Store) -> None:
+    agent, original, _ = _linked_agent(store)
+
+    with pytest.raises(ConfigError):
+        store.create_agent_version_and_advance_prompt_sync_link(
+            agent.id,
+            expected_active_version_id=original.id,
+            expected_local_texts=dict(LOCAL_TEXTS),
+            expected_generation=0,
+            version_fields=agent_version_fields(
+                version_name="bad", prompt_template="Answer {missing}."
+            ),
+            field_updates={
+                "input_template": {"base_text": "Answer {missing}.", "remote_version": 8}
+            },
+        )
+
+    assert [v.id for v in store.list_agent_versions(agent.id)] == [original.id]
+    assert store.get_agent(agent.id).active_version_id == original.id
+    link = store.get_agent_prompt_sync_link(agent.id)
+    assert link is not None
+    assert link.generation == 0
+    assert link.input_template_base_text == "Answer {question}."
+    assert link.input_template_remote_version == 2
+
+
+def test_combined_pull_without_link_raises_and_creates_nothing(store: Store) -> None:
+    agent = store.create_agent("subject")
+    version = store.create_agent_version(agent.id, **agent_version_fields())
+
+    with pytest.raises(NotFoundError):
+        store.create_agent_version_and_advance_prompt_sync_link(
+            agent.id,
+            expected_active_version_id=version.id,
+            expected_local_texts=dict(LOCAL_TEXTS),
+            expected_generation=0,
+            version_fields=agent_version_fields(version_name="pulled"),
+            field_updates={"instructions": {"remote_version": 7}},
+        )
+
+    assert [v.id for v in store.list_agent_versions(agent.id)] == [version.id]
+
+
+def test_delete_agent_prompt_sync_link_removes_only_the_local_cursor(store: Store) -> None:
+    agent, version, _ = _linked_agent(store)
+
+    store.delete_agent_prompt_sync_link(agent.id, expected_generation=0)
+
+    assert store.get_agent_prompt_sync_link(agent.id) is None
+    assert store.get_agent(agent.id).active_version_id == version.id
+    assert [v.id for v in store.list_agent_versions(agent.id)] == [version.id]
+
+
+def test_delete_agent_prompt_sync_link_rejects_stale_generation(store: Store) -> None:
+    agent, _, _ = _linked_agent(store)
+    store.advance_agent_prompt_sync_link(
+        agent.id, expected_generation=0, field_updates={"instructions": {"remote_version": 5}}
+    )
+
+    with pytest.raises(SyncConflictError):
+        store.delete_agent_prompt_sync_link(agent.id, expected_generation=0)
+
+    link = store.get_agent_prompt_sync_link(agent.id)
+    assert link is not None
+    assert link.generation == 1
+    assert link.instructions_remote_version == 5
+
+
+def test_delete_agent_prompt_sync_link_without_link_raises(store: Store) -> None:
+    agent = store.create_agent("subject")
+
+    with pytest.raises(NotFoundError):
+        store.delete_agent_prompt_sync_link(agent.id, expected_generation=0)
+
+
+def test_agent_can_be_relinked_after_unlink(store: Store) -> None:
+    agent, version, _ = _linked_agent(store)
+    store.delete_agent_prompt_sync_link(agent.id, expected_generation=0)
+
+    link = store.create_agent_prompt_sync_link(
+        agent.id,
+        expected_active_version_id=version.id,
+        expected_local_texts=dict(LOCAL_TEXTS),
+        **{**LINK_KWARGS, "key_fingerprint": "rotated"},
+    )
+
+    assert link.key_fingerprint == "rotated"
+    assert link.generation == 0
+
+
+def test_delete_agent_removes_its_sync_link(store: Store) -> None:
+    agent, _, _ = _linked_agent(store)
+
+    store.delete_agent(agent.id)
+
+    assert store.get_agent_prompt_sync_link(agent.id) is None
+    with session_scope(store.engine) as session:
+        assert session.exec(select(AgentPromptSyncLink)).all() == []
+
+
+def test_delete_agent_leaves_other_agents_links(store: Store) -> None:
+    keep, _, keep_link = _linked_agent(store)
+    other, _, _ = _linked_agent(store)
+
+    store.delete_agent(other.id)
+
+    stored = store.get_agent_prompt_sync_link(keep.id)
+    assert stored is not None
+    assert stored.id == keep_link.id
+
+
+def test_blocked_agent_delete_keeps_the_sync_link(store: Store) -> None:
+    """A delete refused for referencing derivations rolls back, so the cursor survives."""
+    agent, version, _ = _linked_agent(store)
+    dataset = store.create_dataset("inputs", "", ["question"])
+    row = store.add_rows(dataset.id, [{"question": "q"}])[0]
+    store.save_derivation(
+        dataset_id=dataset.id,
+        agent_version_id=version.id,
+        response_columns=["response"],
+        responses=[{"row_id": row.id, "data": {"response": "a"}}],
+    )
+
+    with pytest.raises(ReferencedError):
+        store.delete_agent(agent.id)
+
+    assert store.get_agent_prompt_sync_link(agent.id) is not None
+
+
+def test_deleting_the_last_synced_version_does_not_strand_the_link(store: Store) -> None:
+    agent, synced, _ = _linked_agent(store)
+    newer = store.create_agent_version(agent.id, **agent_version_fields(version_name="v2"))
+
+    store.delete_agent_version(synced.id)
+
+    link = store.get_agent_prompt_sync_link(agent.id)
+    assert link is not None
+    assert link.agent_version_id == synced.id
+    assert link.generation == 0
+    # The link is still advanceable and deletable.
+    advanced = store.advance_agent_prompt_sync_link(
+        agent.id, expected_generation=0, field_updates={"instructions": {"remote_version": 5}}
+    )
+    assert advanced.generation == 1
+    assert store.get_agent(agent.id).active_version_id == newer.id
+    store.delete_agent_prompt_sync_link(agent.id, expected_generation=1)
+    assert store.get_agent_prompt_sync_link(agent.id) is None
+
+
+def test_init_db_adds_the_prompt_sync_link_table_to_an_existing_database(
+    tmp_path, make_engine
+) -> None:
+    """A database written before the sync link existed gains its table on the next start.
+
+    The link is a new table because ``init_db`` is a bare ``create_all``: it creates missing
+    tables but never adds columns to ``Agent`` or ``AgentVersion``.
+    """
+    engine = make_engine(tmp_path / "existing.db")
+    init_db(engine)
+    store = Store(engine)
+    agent = store.create_agent("from-before")
+    version = store.create_agent_version(agent.id, **agent_version_fields())
+
+    AgentPromptSyncLink.__table__.drop(engine)
+
+    init_db(engine)
+
+    assert store.get_agent(agent.id).name == "from-before"
+    assert store.get_agent_version(version.id).prompt_template == "Answer {question}."
+    assert store.get_agent_prompt_sync_link(agent.id) is None
+    store.create_agent_prompt_sync_link(
+        agent.id,
+        expected_active_version_id=version.id,
+        expected_local_texts=dict(LOCAL_TEXTS),
+        **LINK_KWARGS,
+    )
+    assert store.get_agent_prompt_sync_link(agent.id) is not None

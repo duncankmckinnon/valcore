@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 from valcore.errors import ConfigError, ContractError
 from valcore.models import (
     Agent,
+    AgentPromptSyncLink,
     AgentResponse,
     AgentVersion,
     Annotation,
@@ -1021,5 +1022,97 @@ def test_agent_response_and_derivation_json_and_telemetry_round_trip(tmp_path: P
             assert restored_response.latency_ms == 125
             assert restored_response.usage == {"input_tokens": 7, "output_tokens": 2}
             assert restored_response.error == "provider warning"
+    finally:
+        engine.dispose()
+
+
+def _make_sync_link(**overrides: object) -> AgentPromptSyncLink:
+    """Build a sync link with valid required fields."""
+    fields: dict[str, object] = {
+        "agent_id": "agent-1",
+        "key_fingerprint": "fp-1",
+        "agent_version_id": "ver-1",
+        "instructions_variable_name": "valcore_agent_agent-1_instructions",
+        "input_template_variable_name": "valcore_agent_agent-1_input_template",
+        "instructions_base_text": "Be brief.",
+        "input_template_base_text": "Answer {question}.",
+    }
+    fields.update(overrides)
+    return AgentPromptSyncLink(**fields)
+
+
+def test_agent_prompt_sync_link_defaults_and_round_trip(tmp_path: Path) -> None:
+    """The cursor persists both templates' baselines and starts at generation zero."""
+    engine = create_engine(tmp_path / "models.db")
+    init_db(engine)
+    try:
+        link = _make_sync_link()
+        assert link.generation == 0
+        assert link.instructions_remote_version is None
+        assert link.input_template_remote_version is None
+        assert link.id
+        assert link.updated_at is not None
+
+        with Session(engine) as session:
+            session.add(link)
+            session.commit()
+
+        with Session(engine) as session:
+            stored = session.exec(select(AgentPromptSyncLink)).one()
+            assert stored.agent_id == "agent-1"
+            assert stored.key_fingerprint == "fp-1"
+            assert stored.agent_version_id == "ver-1"
+            assert stored.instructions_variable_name == "valcore_agent_agent-1_instructions"
+            assert stored.input_template_variable_name == "valcore_agent_agent-1_input_template"
+            assert stored.instructions_base_text == "Be brief."
+            assert stored.input_template_base_text == "Answer {question}."
+            assert stored.generation == 0
+    finally:
+        engine.dispose()
+
+
+def test_agent_prompt_sync_link_agent_id_is_unique(tmp_path: Path) -> None:
+    """An agent has at most one sync link."""
+    engine = create_engine(tmp_path / "models.db")
+    init_db(engine)
+    try:
+        with Session(engine) as session:
+            session.add(_make_sync_link())
+            session.commit()
+            session.add(_make_sync_link())
+            with pytest.raises(IntegrityError):
+                session.commit()
+    finally:
+        engine.dispose()
+
+
+def test_agent_prompt_sync_link_has_no_foreign_keys() -> None:
+    """A deleted last-synced version must not be able to strand the link."""
+    assert not AgentPromptSyncLink.__table__.foreign_keys
+
+
+def test_agent_prompt_sync_link_remote_versions_and_texts_may_be_absent_or_empty(
+    tmp_path: Path,
+) -> None:
+    """Empty baseline text is valid and distinct from a null remote version."""
+    engine = create_engine(tmp_path / "models.db")
+    init_db(engine)
+    try:
+        with Session(engine) as session:
+            session.add(
+                _make_sync_link(
+                    instructions_remote_version=3,
+                    input_template_remote_version=None,
+                    instructions_base_text="",
+                    input_template_base_text="",
+                )
+            )
+            session.commit()
+        with Session(engine) as session:
+            stored = session.exec(select(AgentPromptSyncLink)).one()
+            assert stored.instructions_remote_version == 3
+            assert stored.input_template_remote_version is None
+            assert stored.instructions_base_text == ""
+            assert stored.input_template_base_text == ""
     finally:
         engine.dispose()
