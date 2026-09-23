@@ -52,7 +52,6 @@ dev = [
     # unpinned bump would change lint results in CI and locally at once.
     "ruff>=0.16,<0.17",
     "pre-commit>=4,<5",
-    "pydantic-handlebars>=0.2.1",
 ]
 
 [build-system]

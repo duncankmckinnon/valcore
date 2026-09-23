@@ -450,7 +450,9 @@ def test_inspect_without_configured_key_reports_error_and_makes_no_remote_call(e
 
     status = env.status()
 
-    assert status.error
+    assert status.error is not None
+    assert "project:read_variables" in status.error
+    assert "project:write_variables" in status.error
     assert env.adapter.reads == 0
     for key in KEYS:
         assert status.templates[key].remote_text is None
@@ -671,8 +673,10 @@ def test_link_without_active_version_is_rejected(store: Store) -> None:
 def test_link_without_configured_key_is_rejected(env: Env) -> None:
     env.key.value = None
 
-    with pytest.raises(ConfigError):
+    with pytest.raises(ConfigError) as excinfo:
         env.svc.link(env.agent_id, "local", env.rev())
+    assert "project:read_variables" in str(excinfo.value)
+    assert "project:write_variables" in str(excinfo.value)
 
     assert env.cursor() is None
     assert env.adapter.writes == []

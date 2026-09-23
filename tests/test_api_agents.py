@@ -723,7 +723,10 @@ async def test_get_prompt_sync_without_key_reports_configuration_error(
         agent.id,
         linked=False,
         local_version_id=version.id,
-        error="Configure a Logfire API key with read and write variable scopes.",
+        error=(
+            "Configure a Logfire API key with project:read_variables and "
+            "project:write_variables scopes."
+        ),
         templates={
             key: _template(
                 key,
@@ -742,6 +745,8 @@ async def test_get_prompt_sync_without_key_reports_configuration_error(
     assert response.status_code == 200, response.text
     body = response.json()
     assert "Configure a Logfire API key" in body["error"]
+    assert "project:read_variables" in body["error"]
+    assert "project:write_variables" in body["error"]
     assert all(t["remote_text"] is None for t in body["templates"].values())
 
 
@@ -1079,9 +1084,32 @@ async def test_underscoped_or_missing_key_error_is_422_and_leaks_nothing(
     async with _sync_client(store, service) as client:
         response = await client.get(f"/api/agents/{agent.id}/prompt-sync")
     assert response.status_code == 422
+    assert "project:read_variables" in response.json()["error"]["message"]
     assert "project:write_variables" in response.json()["error"]["message"]
     assert SYNC_KEY not in response.text
     assert SYNC_FINGERPRINT not in response.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("method", "suffix", "body"), _SYNC_MUTATIONS[:-1])
+async def test_missing_key_mutation_error_names_both_scopes(
+    store: Store, sync_setup, method: str, suffix: str, body: dict
+) -> None:
+    from valcore.errors import ConfigError
+
+    agent, _version, service = sync_setup
+    service.raises = ConfigError(
+        "Configure a Logfire API key with project:read_variables and "
+        "project:write_variables scopes."
+    )
+    async with _sync_client(store, service) as client:
+        response = await client.request(
+            method, f"/api/agents/{agent.id}/prompt-sync{suffix}", json=body
+        )
+    assert response.status_code == 422
+    assert response.json()["error"]["type"] == "ConfigError"
+    assert "project:read_variables" in response.json()["error"]["message"]
+    assert "project:write_variables" in response.json()["error"]["message"]
 
 
 @pytest.mark.anyio

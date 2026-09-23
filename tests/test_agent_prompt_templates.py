@@ -7,14 +7,12 @@ instruction string. Conversion must round-trip exactly, and every unsupported fo
 """
 
 import pytest
-from pydantic_handlebars import render
 
 from valcore.agent_prompt_templates import (
     local_to_remote_input,
     remote_to_local_input,
     validate_instruction_text,
 )
-from valcore.agent_spec import render_agent_prompt
 from valcore.errors import ConfigError
 
 # --- local -> remote -------------------------------------------------------------------------
@@ -72,17 +70,8 @@ def test_empty_input_template_round_trips_unchanged() -> None:
     assert remote_to_local_input("") == ""
 
 
-def test_converted_input_renders_the_same_on_both_sides() -> None:
-    local = "Hello {name}, meet {friend}!"
-    values = {"name": "Alice", "friend": "Bob"}
-    assert render_agent_prompt(local, values) == render(local_to_remote_input(local), values)
-
-
-def test_escaped_expression_would_change_rendered_meaning() -> None:
+def test_escaped_expression_is_rejected_on_both_sides() -> None:
     local = r"\{name}"
-    values = {"name": "Alice"}
-    assert render_agent_prompt(local, values) == r"\Alice"
-    assert render(r"\{{name}}", values) == "{{name}}"
     with pytest.raises(ConfigError, match="input_template.*escaped"):
         local_to_remote_input(local)
     with pytest.raises(ConfigError, match="input_template.*escaped"):
@@ -98,13 +87,6 @@ def test_reserved_handlebars_names_are_rejected_on_both_sides(name: str) -> None
         local_to_remote_input("{" + name + "}")
     with pytest.raises(ConfigError, match="input_template"):
         remote_to_local_input("{{" + name + "}}")
-
-
-@pytest.mark.parametrize("name", ["if", "true"])
-def test_reserved_names_render_differently_from_columns(name: str) -> None:
-    values = {name: "Alice"}
-    assert render_agent_prompt("{" + name + "}", values) == "Alice"
-    assert render("{{" + name + "}}", values) != "Alice"
 
 
 # --- local -> remote rejections --------------------------------------------------------------

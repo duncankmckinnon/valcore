@@ -173,7 +173,10 @@ class AgentPromptSync:
         error: str | None = None
         remote: RemoteSnapshot | None = None
         if fingerprint is None:
-            error = "Configure a Logfire API key with read and write variable scopes."
+            error = (
+                "Configure a Logfire API key with project:read_variables and "
+                "project:write_variables scopes."
+            )
         elif link is not None and fingerprint != link.key_fingerprint:
             error = "The configured Logfire key changed; unlink before linking the new project."
         elif read_remote:
