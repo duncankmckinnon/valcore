@@ -603,7 +603,7 @@ async def pull_prompt_sync(
     store.get_agent(id)
     status = await run_in_threadpool(sync.pull, id, body.fields, body.expected_revision)
     return SyncPullRead(
-        **_sync_status(status).model_dump(), active_version_id=store.get_agent(id).active_version_id
+        **_sync_status(status).model_dump(), active_version_id=status.local_version_id
     )
 
 

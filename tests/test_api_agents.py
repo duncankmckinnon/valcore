@@ -864,6 +864,7 @@ async def test_pull_response_includes_new_active_version_id(store: Store, sync_s
             deps_mapping={},
         )
         created.append(new.id)
+        service.result = _status(agent.id, local_version_id=new.id)
 
     service.on_call = create_pulled_version
     async with _sync_client(store, service) as client:
@@ -873,6 +874,56 @@ async def test_pull_response_includes_new_active_version_id(store: Store, sync_s
     assert response.status_code == 200, response.text
     assert created and created[0] != version.id
     assert response.json()["active_version_id"] == created[0]
+
+
+@pytest.mark.anyio
+async def test_pull_response_uses_service_version_when_active_version_changes_after_return(
+    store: Store, sync_setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from valcore.api.routes import agents as agents_routes
+
+    agent, _version, service = sync_setup
+    pulled = store.create_agent_version(
+        agent.id,
+        version_name="pulled",
+        notes="",
+        model=MODEL,
+        spec=SPEC,
+        prompt_template="Answer: {question}",
+        required_columns=["question"],
+        deps_mapping={},
+    )
+    service.result = _status(agent.id, local_version_id=pulled.id)
+    original_run_in_threadpool = agents_routes.run_in_threadpool
+    competing_version_ids: list[str] = []
+
+    async def change_active_after_service_returns(func, *args):
+        status = await original_run_in_threadpool(func, *args)
+        competing = store.create_agent_version(
+            agent.id,
+            version_name="competing edit",
+            notes="",
+            model=MODEL,
+            spec=SPEC,
+            prompt_template="Answer: {question}",
+            required_columns=["question"],
+            deps_mapping={},
+        )
+        competing_version_ids.append(competing.id)
+        return status
+
+    monkeypatch.setattr(agents_routes, "run_in_threadpool", change_active_after_service_returns)
+    async with _sync_client(store, service) as client:
+        response = await client.post(
+            f"/api/agents/{agent.id}/prompt-sync/pull", json={"expected_revision": "rev-1"}
+        )
+    assert response.status_code == 200, response.text
+    assert (
+        competing_version_ids
+        and store.get_agent(agent.id).active_version_id == competing_version_ids[0]
+    )
+    assert response.json()["local_version_id"] == pulled.id
+    assert response.json()["active_version_id"] == pulled.id
 
 
 @pytest.mark.anyio
