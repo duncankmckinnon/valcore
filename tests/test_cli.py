@@ -2173,6 +2173,33 @@ def test_prompt_sync_resolve_shows_line_level_diffs(runner, db_path, sync_agent)
     assert "+remote line" in result.output
 
 
+def test_prompt_sync_resolve_shows_final_newline_only_change(runner, db_path, sync_agent):
+    _, install = sync_agent
+    install(
+        _sync_status(
+            "conflict",
+            "in_sync",
+            base="same text\n",
+            local="same text",
+            remote="other text\n",
+        )
+    )
+    result = _sync(
+        runner,
+        db_path,
+        "resolve",
+        "writer",
+        "--choice",
+        "local",
+        "--field",
+        "instructions",
+        "--yes",
+    )
+    assert result.exit_code == 0, result.output
+    assert "-same text\n+same text\n\\ No newline at end of file" in result.output
+    assert "(no line changes)" not in result.output
+
+
 def test_prompt_sync_resolve_interactive_json_shows_diff_on_stderr(runner, db_path, sync_agent):
     _, install = sync_agent
     install(_sync_status("conflict", "in_sync", base="old", local="local", remote="remote"))

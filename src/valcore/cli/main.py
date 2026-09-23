@@ -586,15 +586,19 @@ def _sync_unsupported_error(status: SyncStatus, key: str) -> ConfigError:
 
 
 def _sync_diff(base: str | None, other: str | None, side: str) -> str:
-    """Render line changes from the shared baseline to one side."""
+    """Render line changes, including a missing final newline, from the baseline."""
     lines = difflib.unified_diff(
-        (base or "").splitlines(),
-        (other or "").splitlines(),
+        (base or "").splitlines(keepends=True),
+        (other or "").splitlines(keepends=True),
         fromfile="base" if base is not None else "base (missing)",
         tofile=side if other is not None else f"{side} (missing)",
-        lineterm="",
+        lineterm="\n",
     )
-    return "\n".join(lines) or "(no line changes)"
+    rendered = "".join(
+        line if line.endswith("\n") else f"{line}\n\\ No newline at end of file\n"
+        for line in lines
+    )
+    return rendered.rstrip("\n") or "(no line changes)"
 
 
 @agent_group.group("prompt-sync")
