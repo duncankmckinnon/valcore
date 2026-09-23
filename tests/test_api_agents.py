@@ -543,3 +543,543 @@ async def test_list_derivations_filters_staged_and_reports_legacy_saved_state(st
         saved.id: "saved",
         staged.id: "staged",
     }
+
+
+# -- Prompt sync ---------------------------------------------------------------------------------
+#
+# The routes are thin: they call an ``AgentPromptSync`` service supplied by the
+# ``valcore.api.deps.get_prompt_sync`` dependency, run it in a worker thread, and serialize its
+# ``SyncStatus``. These tests substitute a recording fake service; nothing contacts Logfire.
+
+SYNC_KEY = "pylf_v1_secret_write_key_value"
+SYNC_FINGERPRINT = "fp-3a9c7e51d0b24f68-secret"
+SYNC_KEYS = ("instructions", "input_template")
+
+
+def _template(key: str, agent_id: str, **overrides: object):
+    """Build one template record in the shared ``inspect`` shape."""
+    from valcore.agent_prompt_sync import TemplateStatus
+
+    fields: dict[str, object] = {
+        "variable_name": f"valcore_agent_{agent_id}_{key}",
+        "state": "in_sync",
+        "local_text": "text",
+        "base_text": "text",
+        "remote_text": "text",
+        "remote_version": 3,
+        "base_remote_version": 3,
+    }
+    fields.update(overrides)
+    return TemplateStatus(**fields)  # type: ignore[arg-type]
+
+
+def _status(agent_id: str, *, revision: str = "rev-1", **overrides: object):
+    """Build a ``SyncStatus`` for both templates; ``overrides`` apply to the status itself."""
+    from valcore.agent_prompt_sync import SyncStatus
+
+    fields: dict[str, object] = {
+        "linked": True,
+        "local_version_id": "ver-1",
+        "revision": revision,
+        "error": None,
+        "templates": {key: _template(key, agent_id) for key in SYNC_KEYS},
+    }
+    fields.update(overrides)
+    return SyncStatus(**fields)  # type: ignore[arg-type]
+
+
+class FakeSyncService:
+    """Records calls and returns/raises whatever a test configures."""
+
+    def __init__(self, store: Store, agent_id: str) -> None:
+        self.store = store
+        self.agent_id = agent_id
+        self.calls: list[tuple] = []
+        self.result = _status(agent_id)
+        self.raises: Exception | None = None
+        self.key_fingerprint = SYNC_FINGERPRINT  # must never reach a response
+        self.api_key = SYNC_KEY  # must never reach a response
+        self.on_call = None  # optional hook run inside the call, e.g. to create a version
+        self.threads: list[int] = []
+
+    def _run(self, name: str, *args: object):
+        import threading
+
+        self.threads.append(threading.get_ident())
+        self.calls.append((name, *args))
+        if self.on_call is not None:
+            self.on_call()
+        if self.raises is not None:
+            raise self.raises
+        return self.result
+
+    def inspect(self, agent_id: str):
+        return self._run("inspect", agent_id)
+
+    def link(self, agent_id: str, initial: str, expected_revision: str):
+        return self._run("link", agent_id, initial, expected_revision)
+
+    def pull(self, agent_id: str, fields, expected_revision: str):
+        return self._run("pull", agent_id, fields, expected_revision)
+
+    def push(self, agent_id: str, fields, expected_revision: str):
+        return self._run("push", agent_id, fields, expected_revision)
+
+    def resolve(self, agent_id: str, fields, choice: str, expected_revision: str):
+        return self._run("resolve", agent_id, fields, choice, expected_revision)
+
+    def unlink(self, agent_id: str, expected_revision: str):
+        return self._run("unlink", agent_id, expected_revision)
+
+
+def _sync_client(store: Store, service: FakeSyncService) -> httpx.AsyncClient:
+    """Like ``_client`` but with the prompt-sync service dependency replaced by a fake."""
+    from valcore.api.deps import get_prompt_sync
+
+    app = create_app()
+    app.dependency_overrides[get_store] = lambda: store
+    app.dependency_overrides[get_prompt_sync] = lambda: service
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+
+
+@pytest.fixture
+def sync_setup(store: Store):
+    """An agent with one version plus a fake service bound to it."""
+    agent = store.create_agent("Sync bot", "")
+    version = store.create_agent_version(
+        agent.id,
+        version_name="v1",
+        notes="",
+        model=MODEL,
+        spec=SPEC,
+        prompt_template="Answer: {question}",
+        required_columns=["question"],
+        deps_mapping={},
+    )
+    service = FakeSyncService(store, agent.id)
+    service.result = _status(agent.id, local_version_id=version.id)
+    return agent, version, service
+
+
+@pytest.mark.anyio
+async def test_get_prompt_sync_returns_inspect_shape(store: Store, sync_setup) -> None:
+    agent, version, service = sync_setup
+    service.result = _status(
+        agent.id,
+        local_version_id=version.id,
+        templates={
+            "instructions": _template(
+                "instructions",
+                agent.id,
+                state="conflict",
+                local_text="mine",
+                base_text="base",
+                remote_text="theirs",
+                remote_version=4,
+                base_remote_version=3,
+            ),
+            "input_template": _template("input_template", agent.id, state="in_sync"),
+        },
+    )
+    async with _sync_client(store, service) as client:
+        response = await client.get(f"/api/agents/{agent.id}/prompt-sync")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["linked"] is True
+    assert body["local_version_id"] == version.id
+    assert body["revision"] == "rev-1"
+    assert body["error"] is None
+    assert set(body["templates"]) == set(SYNC_KEYS)
+    assert body["templates"]["instructions"] == {
+        "variable_name": f"valcore_agent_{agent.id}_instructions",
+        "state": "conflict",
+        "local_text": "mine",
+        "base_text": "base",
+        "remote_text": "theirs",
+        "remote_version": 4,
+        "base_remote_version": 3,
+        "error": None,
+    }
+    assert body["templates"]["input_template"]["state"] == "in_sync"
+    assert service.calls == [("inspect", agent.id)]
+
+
+@pytest.mark.anyio
+async def test_get_prompt_sync_for_unknown_agent_is_404(store: Store, sync_setup) -> None:
+    _agent, _version, service = sync_setup
+    async with _sync_client(store, service) as client:
+        response = await client.get("/api/agents/does-not-exist/prompt-sync")
+    assert response.status_code == 404
+    assert response.json()["error"]["type"] == "NotFoundError"
+
+
+@pytest.mark.anyio
+async def test_get_prompt_sync_without_key_reports_configuration_error(
+    store: Store, sync_setup
+) -> None:
+    """No key configured is a 200 status with an error and no remote state to show."""
+    agent, version, service = sync_setup
+    service.result = _status(
+        agent.id,
+        linked=False,
+        local_version_id=version.id,
+        error="Configure a Logfire API key with read and write variable scopes.",
+        templates={
+            key: _template(
+                key,
+                agent.id,
+                state="unsupported",
+                remote_text=None,
+                remote_version=None,
+                base_text=None,
+                base_remote_version=None,
+            )
+            for key in SYNC_KEYS
+        },
+    )
+    async with _sync_client(store, service) as client:
+        response = await client.get(f"/api/agents/{agent.id}/prompt-sync")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert "Configure a Logfire API key" in body["error"]
+    assert all(t["remote_text"] is None for t in body["templates"].values())
+
+
+@pytest.mark.anyio
+async def test_get_prompt_sync_after_key_rotation_shows_rebind_error(
+    store: Store, sync_setup
+) -> None:
+    agent, version, service = sync_setup
+    service.result = _status(
+        agent.id,
+        local_version_id=version.id,
+        error="The configured Logfire key changed; unlink before linking the new project.",
+        templates={
+            key: _template(
+                key, agent.id, state="unsupported", remote_text=None, remote_version=None
+            )
+            for key in SYNC_KEYS
+        },
+    )
+    async with _sync_client(store, service) as client:
+        response = await client.get(f"/api/agents/{agent.id}/prompt-sync")
+    assert response.status_code == 200
+    assert "unlink" in response.json()["error"]
+    assert all(t["remote_text"] is None for t in response.json()["templates"].values())
+
+
+@pytest.mark.anyio
+async def test_link_posts_initial_and_revision(store: Store, sync_setup) -> None:
+    agent, _version, service = sync_setup
+    async with _sync_client(store, service) as client:
+        response = await client.post(
+            f"/api/agents/{agent.id}/prompt-sync/link",
+            json={"initial": "remote", "expected_revision": "rev-1"},
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["linked"] is True
+    assert service.calls == [("link", agent.id, "remote", "rev-1")]
+
+
+@pytest.mark.anyio
+async def test_link_rejects_invalid_initial_choice(store: Store, sync_setup) -> None:
+    agent, _version, service = sync_setup
+    async with _sync_client(store, service) as client:
+        response = await client.post(
+            f"/api/agents/{agent.id}/prompt-sync/link",
+            json={"initial": "both", "expected_revision": "rev-1"},
+        )
+    assert response.status_code == 422
+    assert service.calls == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("action", ["link", "pull", "push", "resolve"])
+async def test_mutations_require_expected_revision(store: Store, sync_setup, action: str) -> None:
+    agent, _version, service = sync_setup
+    body: dict[str, object] = {"initial": "local", "fields": ["instructions"], "choice": "local"}
+    body = {k: v for k, v in body.items() if action != "link" or k == "initial"}
+    async with _sync_client(store, service) as client:
+        response = await client.post(f"/api/agents/{agent.id}/prompt-sync/{action}", json=body)
+    assert response.status_code == 422
+    assert service.calls == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("action", ["pull", "push"])
+async def test_pull_and_push_default_to_all_eligible_fields(
+    store: Store, sync_setup, action: str
+) -> None:
+    agent, _version, service = sync_setup
+    async with _sync_client(store, service) as client:
+        response = await client.post(
+            f"/api/agents/{agent.id}/prompt-sync/{action}", json={"expected_revision": "rev-1"}
+        )
+    assert response.status_code == 200, response.text
+    assert service.calls == [(action, agent.id, None, "rev-1")]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("action", ["pull", "push"])
+async def test_pull_and_push_forward_a_field_subset(store: Store, sync_setup, action: str) -> None:
+    agent, _version, service = sync_setup
+    async with _sync_client(store, service) as client:
+        response = await client.post(
+            f"/api/agents/{agent.id}/prompt-sync/{action}",
+            json={"fields": ["input_template"], "expected_revision": "rev-1"},
+        )
+    assert response.status_code == 200, response.text
+    assert service.calls == [(action, agent.id, ["input_template"], "rev-1")]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("action", ["pull", "push"])
+async def test_pull_and_push_reject_unknown_field_names(
+    store: Store, sync_setup, action: str
+) -> None:
+    agent, _version, service = sync_setup
+    async with _sync_client(store, service) as client:
+        response = await client.post(
+            f"/api/agents/{agent.id}/prompt-sync/{action}",
+            json={"fields": ["model"], "expected_revision": "rev-1"},
+        )
+    assert response.status_code == 422
+    assert service.calls == []
+
+
+@pytest.mark.anyio
+async def test_pull_response_includes_new_active_version_id(store: Store, sync_setup) -> None:
+    agent, version, service = sync_setup
+    created: list[str] = []
+
+    def create_pulled_version() -> None:
+        new = store.create_agent_version(
+            agent.id,
+            version_name="v2 (Logfire sync)",
+            notes="",
+            model=MODEL,
+            spec={"instructions": "Pulled instructions."},
+            prompt_template="Answer: {question}",
+            required_columns=["question"],
+            deps_mapping={},
+        )
+        created.append(new.id)
+
+    service.on_call = create_pulled_version
+    async with _sync_client(store, service) as client:
+        response = await client.post(
+            f"/api/agents/{agent.id}/prompt-sync/pull", json={"expected_revision": "rev-1"}
+        )
+    assert response.status_code == 200, response.text
+    assert created and created[0] != version.id
+    assert response.json()["active_version_id"] == created[0]
+
+
+@pytest.mark.anyio
+async def test_resolve_posts_fields_choice_and_revision(store: Store, sync_setup) -> None:
+    agent, _version, service = sync_setup
+    async with _sync_client(store, service) as client:
+        response = await client.post(
+            f"/api/agents/{agent.id}/prompt-sync/resolve",
+            json={"fields": ["instructions"], "choice": "remote", "expected_revision": "rev-1"},
+        )
+    assert response.status_code == 200, response.text
+    assert service.calls == [("resolve", agent.id, ["instructions"], "remote", "rev-1")]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"fields": ["instructions"], "choice": "merge", "expected_revision": "rev-1"},
+        {"fields": [], "choice": "local", "expected_revision": "rev-1"},
+        {"choice": "local", "expected_revision": "rev-1"},
+        {"fields": ["spec"], "choice": "local", "expected_revision": "rev-1"},
+        {"fields": ["instructions"], "expected_revision": "rev-1"},
+    ],
+)
+async def test_resolve_validates_body(store: Store, sync_setup, body: dict) -> None:
+    agent, _version, service = sync_setup
+    async with _sync_client(store, service) as client:
+        response = await client.post(f"/api/agents/{agent.id}/prompt-sync/resolve", json=body)
+    assert response.status_code == 422
+    assert service.calls == []
+
+
+@pytest.mark.anyio
+async def test_delete_prompt_sync_takes_revision_in_json_body(store: Store, sync_setup) -> None:
+    agent, _version, service = sync_setup
+    service.result = _status(agent.id, linked=False)
+    async with _sync_client(store, service) as client:
+        response = await client.request(
+            "DELETE", f"/api/agents/{agent.id}/prompt-sync", json={"expected_revision": "rev-1"}
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["linked"] is False
+    assert service.calls == [("unlink", agent.id, "rev-1")]
+
+
+@pytest.mark.anyio
+async def test_delete_prompt_sync_requires_expected_revision(store: Store, sync_setup) -> None:
+    agent, _version, service = sync_setup
+    async with _sync_client(store, service) as client:
+        response = await client.request("DELETE", f"/api/agents/{agent.id}/prompt-sync", json={})
+    assert response.status_code == 422
+    assert service.calls == []
+
+
+@pytest.mark.anyio
+async def test_unlink_after_key_rotation_returns_local_only_status(
+    store: Store, sync_setup
+) -> None:
+    """The service's local-only Unlink result passes through with no remote text."""
+    agent, version, service = sync_setup
+    service.result = _status(
+        agent.id,
+        linked=False,
+        local_version_id=version.id,
+        templates={
+            key: _template(
+                key,
+                agent.id,
+                state="remote_missing",
+                remote_text=None,
+                remote_version=None,
+                base_text=None,
+                base_remote_version=None,
+            )
+            for key in SYNC_KEYS
+        },
+    )
+    async with _sync_client(store, service) as client:
+        response = await client.request(
+            "DELETE", f"/api/agents/{agent.id}/prompt-sync", json={"expected_revision": "rev-1"}
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["linked"] is False
+    assert all(t["remote_text"] is None for t in response.json()["templates"].values())
+
+
+# (method, path suffix, body) for every mutating endpoint
+_SYNC_MUTATIONS = [
+    ("POST", "/link", {"initial": "local", "expected_revision": "rev-1"}),
+    ("POST", "/pull", {"expected_revision": "rev-1"}),
+    ("POST", "/push", {"expected_revision": "rev-1"}),
+    (
+        "POST",
+        "/resolve",
+        {"fields": ["instructions"], "choice": "local", "expected_revision": "rev-1"},
+    ),
+    ("DELETE", "", {"expected_revision": "rev-1"}),
+]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("method", "suffix", "body"), _SYNC_MUTATIONS)
+async def test_stale_revision_maps_to_409_in_error_envelope(
+    store: Store, sync_setup, method: str, suffix: str, body: dict
+) -> None:
+    from valcore.errors import SyncConflictError
+
+    agent, _version, service = sync_setup
+    service.raises = SyncConflictError("Prompt sync state changed; inspect sync again.")
+    async with _sync_client(store, service) as client:
+        response = await client.request(
+            method, f"/api/agents/{agent.id}/prompt-sync{suffix}", json=body
+        )
+    assert response.status_code == 409
+    assert response.json() == {
+        "error": {
+            "type": "SyncConflictError",
+            "message": "Prompt sync state changed; inspect sync again.",
+        }
+    }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("method", "suffix", "body"), _SYNC_MUTATIONS)
+async def test_unsupported_template_maps_to_422(
+    store: Store, sync_setup, method: str, suffix: str, body: dict
+) -> None:
+    from valcore.errors import ConfigError
+
+    agent, _version, service = sync_setup
+    message = "input_template cannot round-trip exactly through Logfire format."
+    service.raises = ConfigError(message)
+    async with _sync_client(store, service) as client:
+        response = await client.request(
+            method, f"/api/agents/{agent.id}/prompt-sync{suffix}", json=body
+        )
+    assert response.status_code == 422
+    assert response.json()["error"] == {"type": "ConfigError", "message": message}
+
+
+@pytest.mark.anyio
+async def test_underscoped_or_missing_key_error_is_422_and_leaks_nothing(
+    store: Store, sync_setup
+) -> None:
+    from valcore.errors import ConfigError
+
+    agent, _version, service = sync_setup
+    service.raises = ConfigError(
+        "Logfire variable sync requires an API key with "
+        "project:read_variables and project:write_variables."
+    )
+    async with _sync_client(store, service) as client:
+        response = await client.get(f"/api/agents/{agent.id}/prompt-sync")
+    assert response.status_code == 422
+    assert "project:write_variables" in response.json()["error"]["message"]
+    assert SYNC_KEY not in response.text
+    assert SYNC_FINGERPRINT not in response.text
+
+
+@pytest.mark.anyio
+async def test_responses_contain_no_credentials_or_fingerprint(store: Store, sync_setup) -> None:
+    agent, _version, service = sync_setup
+    async with _sync_client(store, service) as client:
+        responses = [
+            await client.get(f"/api/agents/{agent.id}/prompt-sync"),
+            await client.post(
+                f"/api/agents/{agent.id}/prompt-sync/link",
+                json={"initial": "local", "expected_revision": "rev-1"},
+            ),
+            await client.post(
+                f"/api/agents/{agent.id}/prompt-sync/push", json={"expected_revision": "rev-1"}
+            ),
+        ]
+    for response in responses:
+        assert response.status_code == 200, response.text
+        assert SYNC_KEY not in response.text
+        assert SYNC_FINGERPRINT not in response.text
+        assert "fingerprint" not in response.text.lower()
+        assert "authorization" not in response.text.lower()
+
+
+@pytest.mark.anyio
+async def test_slow_sync_service_runs_in_a_thread_without_blocking_the_event_loop(
+    store: Store, sync_setup
+) -> None:
+    """A blocking adapter call must not stall other requests on the same event loop."""
+    import asyncio
+    import threading
+
+    agent, _version, service = sync_setup
+    release = threading.Event()
+    outcome: dict[str, bool] = {}
+
+    def block_until_released() -> None:
+        # Times out (returns False) if the event loop is blocked and cannot serve /api/health.
+        outcome["released"] = release.wait(timeout=5)
+
+    service.on_call = block_until_released
+    main_thread = threading.get_ident()
+    async with _sync_client(store, service) as client:
+        slow = asyncio.create_task(client.get(f"/api/agents/{agent.id}/prompt-sync"))
+        await asyncio.sleep(0.2)
+        health = await asyncio.wait_for(client.get("/api/health"), timeout=2)
+        release.set()
+        response = await slow
+    assert health.status_code == 200
+    assert response.status_code == 200
+    assert outcome == {"released": True}
+    assert service.threads and service.threads[0] != main_thread
