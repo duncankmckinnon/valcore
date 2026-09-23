@@ -2,9 +2,11 @@
 
 import threading
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
 from valcore.errors import (
@@ -2966,3 +2968,112 @@ def test_push_advance_rejects_changed_active_version(store: Store) -> None:
     assert stored is not None
     assert stored.generation == 0
     assert stored.agent_version_id == version.id
+
+
+@pytest.mark.parametrize("operation", ["link", "advance", "pull"])
+def test_prompt_sync_checks_local_state_after_competing_write(
+    store: Store, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    """A committed edit or activation must be visible before a sync mutation checks state."""
+    agent = store.create_agent("subject")
+    original = store.create_agent_version(agent.id, **agent_version_fields())
+    link = None
+    if operation != "link":
+        link = store.create_agent_prompt_sync_link(
+            agent.id,
+            expected_active_version_id=original.id,
+            expected_local_texts=dict(LOCAL_TEXTS),
+            **LINK_KWARGS,
+        )
+
+    import valcore.store as store_module
+
+    checked = threading.Event()
+    started = threading.Event()
+    original_check = store_module._check_prompt_sync_local_state
+
+    def observed_check(*args, **kwargs):
+        original_check(*args, **kwargs)
+        checked.set()
+
+    monkeypatch.setattr(store_module, "_check_prompt_sync_local_state", observed_check)
+
+    def sync_mutation() -> None:
+        started.set()
+        if operation == "link":
+            store.create_agent_prompt_sync_link(
+                agent.id,
+                expected_active_version_id=original.id,
+                expected_local_texts=dict(LOCAL_TEXTS),
+                **LINK_KWARGS,
+            )
+        elif operation == "advance":
+            store.advance_agent_prompt_sync_link(
+                agent.id,
+                expected_link_id=link.id,
+                expected_generation=0,
+                expected_active_version_id=original.id,
+                expected_local_texts=dict(LOCAL_TEXTS),
+                field_updates={"instructions": {"base_text": "stale", "remote_version": 5}},
+            )
+        else:
+            store.create_agent_version_and_advance_prompt_sync_link(
+                agent.id,
+                expected_link_id=link.id,
+                expected_active_version_id=original.id,
+                expected_local_texts=dict(LOCAL_TEXTS),
+                expected_generation=0,
+                version_fields=agent_version_fields(version_name="pulled"),
+                field_updates={"instructions": {"remote_version": 5}},
+            )
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with session_scope(store.engine) as session:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            if operation == "pull":
+                replacement = store_module.AgentVersion(
+                    agent_id=agent.id, **agent_version_fields(version_name="concurrent")
+                )
+                session.add(replacement)
+                session.flush()
+                current = session.get(store_module.Agent, agent.id)
+                current.active_version_id = replacement.id
+            else:
+                current = session.get(store_module.AgentVersion, original.id)
+                current.spec = {"instructions": "Edited concurrently."}
+            session.flush()
+            future = executor.submit(sync_mutation)
+            assert started.wait(5)
+            # The old implementation checks the pre-commit state here. The fixed
+            # implementation waits until this write commits before checking.
+            assert not checked.wait(0.25)
+        with pytest.raises(SyncConflictError):
+            future.result(timeout=5)
+    if operation == "link":
+        assert store.get_agent_prompt_sync_link(agent.id) is None
+    else:
+        stored = store.get_agent_prompt_sync_link(agent.id)
+        assert stored.generation == 0
+        assert stored.instructions_remote_version == 4
+    if operation == "pull":
+        assert len(store.list_agent_versions(agent.id)) == 2
+        assert store.get_agent(agent.id).active_version_id != original.id
+
+
+def test_link_preserves_unrelated_integrity_error(store: Store) -> None:
+    """A duplicate first-pulled version ID is not an already-linked conflict."""
+    agent = store.create_agent("subject")
+    original = store.create_agent_version(agent.id, **agent_version_fields())
+
+    with pytest.raises(IntegrityError):
+        store.create_agent_prompt_sync_link(
+            agent.id,
+            expected_active_version_id=original.id,
+            expected_local_texts=dict(LOCAL_TEXTS),
+            initial_version_fields={**agent_version_fields(), "id": original.id},
+            **LINK_KWARGS,
+        )
+
+    assert store.get_agent_prompt_sync_link(agent.id) is None
+    assert [version.id for version in store.list_agent_versions(agent.id)] == [original.id]
+    assert store.get_agent(agent.id).active_version_id == original.id

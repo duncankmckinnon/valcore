@@ -9,7 +9,6 @@ from typing import TypeVar
 
 from sqlalchemy import delete, event, or_, update
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, func, select
 from sqlmodel import create_engine as _sqlmodel_create_engine
 
@@ -124,6 +123,11 @@ def _check_prompt_sync_local_state(
         or version.prompt_template != expected_local_texts.get("input_template")
     ):
         raise SyncConflictError("An agent template changed; inspect sync again.")
+
+
+def _begin_prompt_sync_write(session: Session) -> None:
+    """Serialize SQLite writers before reading the active version or its templates."""
+    session.connection().exec_driver_sql("BEGIN IMMEDIATE")
 
 
 def _prompt_sync_cursor_values(field_updates: dict[str, dict[str, object]]) -> dict[str, object]:
@@ -592,46 +596,42 @@ class Store:
         initial_version_fields: dict[str, object] | None = None,
     ) -> AgentPromptSyncLink:
         """Link an agent, optionally creating its first remotely sourced version atomically."""
-        try:
-            with session_scope(self.engine) as session:
-                agent = _require(session, Agent, agent_id)
-                _check_prompt_sync_local_state(
-                    session, agent, expected_active_version_id, expected_local_texts
-                )
-                if (
-                    session.exec(
-                        select(AgentPromptSyncLink.id).where(
-                            AgentPromptSyncLink.agent_id == agent_id
-                        )
-                    ).first()
-                    is not None
-                ):
-                    raise SyncConflictError("The agent is already linked; inspect sync again.")
-                version_id = agent.active_version_id
-                if initial_version_fields is not None:
-                    version = AgentVersion(agent_id=agent_id, **initial_version_fields)
-                    validate_agent_version(version)
-                    session.add(version)
-                    session.flush()
-                    version_id = version.id
-                    agent.active_version_id = version_id
-                    session.add(agent)
-                link = AgentPromptSyncLink(
-                    agent_id=agent_id,
-                    key_fingerprint=key_fingerprint,
-                    agent_version_id=version_id,
-                    instructions_variable_name=instructions_variable_name,
-                    input_template_variable_name=input_template_variable_name,
-                    instructions_remote_version=instructions_remote_version,
-                    input_template_remote_version=input_template_remote_version,
-                    instructions_base_text=instructions_base_text,
-                    input_template_base_text=input_template_base_text,
-                )
-                session.add(link)
+        with session_scope(self.engine) as session:
+            _begin_prompt_sync_write(session)
+            agent = _require(session, Agent, agent_id)
+            _check_prompt_sync_local_state(
+                session, agent, expected_active_version_id, expected_local_texts
+            )
+            if (
+                session.exec(
+                    select(AgentPromptSyncLink.id).where(AgentPromptSyncLink.agent_id == agent_id)
+                ).first()
+                is not None
+            ):
+                raise SyncConflictError("The agent is already linked; inspect sync again.")
+            version_id = agent.active_version_id
+            if initial_version_fields is not None:
+                version = AgentVersion(agent_id=agent_id, **initial_version_fields)
+                validate_agent_version(version)
+                session.add(version)
                 session.flush()
-                return link
-        except IntegrityError as exc:
-            raise SyncConflictError("The agent is already linked; inspect sync again.") from exc
+                version_id = version.id
+                agent.active_version_id = version_id
+                session.add(agent)
+            link = AgentPromptSyncLink(
+                agent_id=agent_id,
+                key_fingerprint=key_fingerprint,
+                agent_version_id=version_id,
+                instructions_variable_name=instructions_variable_name,
+                input_template_variable_name=input_template_variable_name,
+                instructions_remote_version=instructions_remote_version,
+                input_template_remote_version=input_template_remote_version,
+                instructions_base_text=instructions_base_text,
+                input_template_base_text=input_template_base_text,
+            )
+            session.add(link)
+            session.flush()
+            return link
 
     def advance_agent_prompt_sync_link(
         self,
@@ -651,6 +651,7 @@ class Store:
         if (expected_active_version_id is None) != (expected_local_texts is None):
             raise ValueError("Push cursor advances require both active version and local texts.")
         with session_scope(self.engine) as session:
+            _begin_prompt_sync_write(session)
             if expected_local_texts is not None:
                 agent = _require(session, Agent, agent_id)
                 _check_prompt_sync_local_state(
@@ -678,6 +679,7 @@ class Store:
     ) -> AgentVersion:
         """Validate and activate a pulled version with a cursor advance in one transaction."""
         with session_scope(self.engine) as session:
+            _begin_prompt_sync_write(session)
             agent = _require(session, Agent, agent_id)
             _check_prompt_sync_local_state(
                 session, agent, expected_active_version_id, expected_local_texts
