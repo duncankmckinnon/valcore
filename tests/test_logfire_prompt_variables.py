@@ -14,23 +14,28 @@ so schema drift in the pinned SDK surfaces here.
 Assumed public shapes (the task text fixes the method names, not the return types):
 ``RemoteSnapshot.templates`` maps ``"instructions"`` / ``"input_template"`` to a record with
 ``variable_name``, ``version`` (``None`` when absent) and ``text`` (``None`` when absent);
-``changes`` is ``{key: new_text}``; ``expected_versions`` is ``{key: version | None}``;
+``changes`` is ``{key: new_text}``; ``expected_versions`` contains both version and text;
 ``SyncConflictError`` lives in ``valcore.errors``.
 """
 
 import copy
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import logfire
 import pytest
+from logfire._internal.config import VariablesOptions
 from logfire.variables.config import (
     LabeledValue,
+    LabelRef,
     LatestVersion,
     Rollout,
+    RolloutOverride,
     VariableConfig,
     VariablesConfig,
 )
+from logfire.variables.remote import LogfireRemoteVariableProvider
 
 from valcore.config import FileConfig, save_config
 from valcore.errors import ConfigError, SyncConflictError, ValcoreError
@@ -150,6 +155,19 @@ def label_value(var: VariableConfig, label: str = "valcore_sync") -> LabeledValu
     return entry
 
 
+def expected(
+    remote: dict[str, VariableConfig], versions: dict[str, int | None]
+) -> dict[str, tuple[int | None, str | None]]:
+    """Build an observed head for tests where only the version is in dispute."""
+    names = {"instructions": INSTR, "input_template": TMPL}
+    result = {}
+    for key, version in versions.items():
+        variable = remote.get(names[key])
+        latest = variable.latest_version if variable is not None else None
+        result[key] = (version, json.loads(latest.serialized_value) if latest else None)
+    return result
+
+
 # --------------------------------------------------------------------------- read
 
 
@@ -261,7 +279,7 @@ def test_never_reconfigures_process_global_logfire(harness, remote, monkeypatch)
 
     adapter = PromptVariableAdapter()
     adapter.read(AGENT_ID)
-    adapter.write(AGENT_ID, {"instructions": "c"}, {"instructions": 1})
+    adapter.write(AGENT_ID, {"instructions": "c"}, expected(remote, {"instructions": 1}))
 
     # Only the per-call isolated configure (local=True) ever ran.
     assert harness.configure_calls
@@ -285,7 +303,9 @@ def test_shutdown_after_failed_read(harness, remote):
 
 
 def test_shutdown_after_successful_write(harness, remote):
-    PromptVariableAdapter().write(AGENT_ID, {"instructions": "hi"}, {"instructions": None})
+    PromptVariableAdapter().write(
+        AGENT_ID, {"instructions": "hi"}, expected(remote, {"instructions": None})
+    )
 
     assert [i.shutdowns for i in harness.instances] == [1]
 
@@ -294,7 +314,9 @@ def test_shutdown_after_failed_write(harness, remote):
     harness.customize = lambda inst: setattr(inst, "push_error", RuntimeError("boom"))
 
     with pytest.raises(FAILURES):
-        PromptVariableAdapter().write(AGENT_ID, {"instructions": "hi"}, {"instructions": None})
+        PromptVariableAdapter().write(
+            AGENT_ID, {"instructions": "hi"}, expected(remote, {"instructions": None})
+        )
 
     assert [i.shutdowns for i in harness.instances] == [1]
 
@@ -303,7 +325,9 @@ def test_shutdown_after_stale_write_rejection(harness, remote):
     remote[INSTR] = make_variable(INSTR, "a", version=2)
 
     with pytest.raises(SyncConflictError):
-        PromptVariableAdapter().write(AGENT_ID, {"instructions": "b"}, {"instructions": 1})
+        PromptVariableAdapter().write(
+            AGENT_ID, {"instructions": "b"}, expected(remote, {"instructions": 1})
+        )
 
     assert [i.shutdowns for i in harness.instances] == [1]
 
@@ -323,7 +347,9 @@ def test_key_resolved_once_per_call(harness, remote, monkeypatch):
 
     monkeypatch.setattr(config, "resolve_logfire_write_key", counting)
 
-    PromptVariableAdapter().write(AGENT_ID, {"instructions": "x"}, {"instructions": None})
+    PromptVariableAdapter().write(
+        AGENT_ID, {"instructions": "x"}, expected(remote, {"instructions": None})
+    )
 
     assert len(calls) == 1
 
@@ -334,7 +360,7 @@ def test_missing_key_raises_config_error_naming_both_scopes(harness, remote):
     for call in (
         lambda: PromptVariableAdapter().read(AGENT_ID),
         lambda: PromptVariableAdapter().write(
-            AGENT_ID, {"instructions": "x"}, {"instructions": None}
+            AGENT_ID, {"instructions": "x"}, expected(remote, {"instructions": None})
         ),
     ):
         with pytest.raises(ConfigError) as exc:
@@ -360,13 +386,48 @@ def test_read_scope_failure_becomes_config_error_without_key(harness, remote, st
     assert [i.shutdowns for i in harness.instances] == [1]
 
 
+@pytest.mark.parametrize("operation", ["read", "write"])
+@pytest.mark.parametrize("has_cache", [False, True])
+def test_real_provider_suppressed_fetch_failure_fails_closed(
+    harness, monkeypatch, operation, has_cache
+):
+    """The pinned remote provider swallows failed fetches and returns its cache."""
+    provider = LogfireRemoteVariableProvider("https://example.invalid", KEY, VariablesOptions())
+    if has_cache:
+        provider._config = VariablesConfig(variables={INSTR: make_variable(INSTR, "cached")})
+    monkeypatch.setattr(
+        provider._session, "get", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("403"))
+    )
+    monkeypatch.setattr(provider, "_log_error", lambda *a: None)
+
+    class RealProviderInstance:
+        config = SimpleNamespace(get_variable_provider=lambda: provider)
+
+        def variables_pull_config(self):
+            return provider.pull_config()
+
+        def shutdown(self):
+            provider.shutdown()
+
+    monkeypatch.setattr(logfire, "configure", lambda **kwargs: RealProviderInstance())
+    with pytest.raises(ConfigError, match="project:read_variables"):
+        if operation == "read":
+            PromptVariableAdapter().read(AGENT_ID)
+        else:
+            PromptVariableAdapter().write(
+                AGENT_ID, {"instructions": "new"}, {"instructions": (1, "cached")}
+            )
+
+
 def test_write_scope_failure_becomes_config_error_without_key(harness, remote):
     harness.customize = lambda inst: setattr(
         inst, "push_error", RuntimeError(f"HTTP 403 Forbidden {KEY}")
     )
 
     with pytest.raises(ConfigError) as exc:
-        PromptVariableAdapter().write(AGENT_ID, {"instructions": "x"}, {"instructions": None})
+        PromptVariableAdapter().write(
+            AGENT_ID, {"instructions": "x"}, expected(remote, {"instructions": None})
+        )
 
     assert "project:write_variables" in str(exc.value)
     assert KEY not in str(exc.value)
@@ -384,7 +445,7 @@ def test_first_push_creates_variables_at_version_one(harness, remote):
     snap = PromptVariableAdapter().write(
         AGENT_ID,
         {"instructions": "Be terse.", "input_template": "Q: {{question}}"},
-        {"instructions": None, "input_template": None},
+        expected(remote, {"instructions": None, "input_template": None}),
     )
 
     push = harness.instances[0].pushes[0]
@@ -407,7 +468,9 @@ def test_first_push_creates_variables_at_version_one(harness, remote):
 
 
 def test_first_push_of_empty_string_is_a_real_version(harness, remote):
-    snap = PromptVariableAdapter().write(AGENT_ID, {"input_template": ""}, {"input_template": None})
+    snap = PromptVariableAdapter().write(
+        AGENT_ID, {"input_template": ""}, expected(remote, {"input_template": None})
+    )
 
     var = harness.instances[0].pushes[0]["config"].variables[TMPL]
     assert label_value(var).serialized_value == '""'
@@ -418,7 +481,9 @@ def test_first_push_of_empty_string_is_a_real_version(harness, remote):
 def test_serialized_value_is_json_string_with_unicode_preserved(harness, remote):
     text = 'héllo "quoted"\nnew line — 日本語'
 
-    PromptVariableAdapter().write(AGENT_ID, {"instructions": text}, {"instructions": None})
+    PromptVariableAdapter().write(
+        AGENT_ID, {"instructions": text}, expected(remote, {"instructions": None})
+    )
 
     raw = label_value(harness.instances[0].pushes[0]["config"].variables[INSTR]).serialized_value
     assert raw == json.dumps(text, ensure_ascii=False)
@@ -430,7 +495,9 @@ def test_changed_push_bumps_from_latest_version(harness, remote):
     remote[INSTR] = make_variable(INSTR, "old", version=4)
     remote[TMPL] = make_variable(TMPL, "t", version=1)
 
-    snap = PromptVariableAdapter().write(AGENT_ID, {"instructions": "new"}, {"instructions": 4})
+    snap = PromptVariableAdapter().write(
+        AGENT_ID, {"instructions": "new"}, expected(remote, {"instructions": 4})
+    )
 
     var = harness.instances[0].pushes[0]["config"].variables[INSTR]
     assert label_value(var).version == 5
@@ -446,7 +513,9 @@ def test_push_wraps_only_selected_variables(harness, remote):
     remote[TMPL] = make_variable(TMPL, "t", version=1)
     remote["unrelated"] = make_variable("unrelated", "x")
 
-    PromptVariableAdapter().write(AGENT_ID, {"instructions": "new"}, {"instructions": 1})
+    PromptVariableAdapter().write(
+        AGENT_ID, {"instructions": "new"}, expected(remote, {"instructions": 1})
+    )
 
     pushed = harness.instances[0].pushes[0]["config"]
     assert set(pushed.variables) == {INSTR}
@@ -470,7 +539,9 @@ def test_push_preserves_existing_config_and_other_labels(harness, remote):
     )
     before = copy.deepcopy(remote[INSTR])
 
-    PromptVariableAdapter().write(AGENT_ID, {"instructions": "new"}, {"instructions": 2})
+    PromptVariableAdapter().write(
+        AGENT_ID, {"instructions": "new"}, expected(remote, {"instructions": 2})
+    )
 
     var = harness.instances[0].pushes[0]["config"].variables[INSTR]
     assert var.description == "Judge instructions"
@@ -498,7 +569,9 @@ def test_push_replaces_only_the_valcore_sync_label(harness, remote):
         labels={"valcore_sync": LabeledValue(version=2, serialized_value='"old"')},
     )
 
-    PromptVariableAdapter().write(AGENT_ID, {"instructions": "new"}, {"instructions": 2})
+    PromptVariableAdapter().write(
+        AGENT_ID, {"instructions": "new"}, expected(remote, {"instructions": 2})
+    )
 
     var = harness.instances[0].pushes[0]["config"].variables[INSTR]
     assert label_value(var).version == 3
@@ -509,7 +582,7 @@ def test_write_never_uses_replace_mode_or_prompt_names(harness, remote):
     PromptVariableAdapter().write(
         AGENT_ID,
         {"instructions": "a", "input_template": "b"},
-        {"instructions": None, "input_template": None},
+        expected(remote, {"instructions": None, "input_template": None}),
     )
 
     for push in harness.instances[0].pushes:
@@ -521,7 +594,7 @@ def test_unchanged_push_writes_nothing(harness, remote):
     remote[INSTR] = make_variable(INSTR, "same", version=3)
     remote[TMPL] = make_variable(TMPL, "t", version=1)
 
-    snap = PromptVariableAdapter().write(AGENT_ID, {}, {})
+    snap = PromptVariableAdapter().write(AGENT_ID, {}, expected(remote, {}))
 
     assert harness.instances[0].pushes == []
     assert snap.templates["instructions"].version == 3
@@ -531,7 +604,9 @@ def test_unchanged_push_writes_nothing(harness, remote):
 def test_write_with_identical_text_does_not_create_a_version(harness, remote):
     remote[INSTR] = make_variable(INSTR, "same", version=3)
 
-    snap = PromptVariableAdapter().write(AGENT_ID, {"instructions": "same"}, {"instructions": 3})
+    snap = PromptVariableAdapter().write(
+        AGENT_ID, {"instructions": "same"}, expected(remote, {"instructions": 3})
+    )
 
     assert harness.instances[0].pushes == []
     assert snap.templates["instructions"].version == 3
@@ -541,7 +616,9 @@ def test_only_requested_key_is_written(harness, remote):
     remote[INSTR] = make_variable(INSTR, "i", version=1)
     remote[TMPL] = make_variable(TMPL, "t", version=1)
 
-    PromptVariableAdapter().write(AGENT_ID, {"input_template": "t2"}, {"input_template": 1})
+    PromptVariableAdapter().write(
+        AGENT_ID, {"input_template": "t2"}, expected(remote, {"input_template": 1})
+    )
 
     assert set(harness.instances[0].pushes[0]["config"].variables) == {TMPL}
     assert remote[INSTR].latest_version.version == 1
@@ -554,7 +631,20 @@ def test_stale_remote_head_is_rejected_before_any_push(harness, remote):
     remote[INSTR] = make_variable(INSTR, "edited in logfire", version=6)
 
     with pytest.raises(SyncConflictError):
-        PromptVariableAdapter().write(AGENT_ID, {"instructions": "mine"}, {"instructions": 5})
+        PromptVariableAdapter().write(
+            AGENT_ID, {"instructions": "mine"}, expected(remote, {"instructions": 5})
+        )
+
+    assert harness.instances[0].pushes == []
+
+
+def test_same_version_different_text_is_stale(harness, remote):
+    remote[INSTR] = make_variable(INSTR, "edited", version=6)
+
+    with pytest.raises(SyncConflictError):
+        PromptVariableAdapter().write(
+            AGENT_ID, {"instructions": "mine"}, {"instructions": (6, "old")}
+        )
 
     assert harness.instances[0].pushes == []
 
@@ -563,14 +653,18 @@ def test_expected_absent_but_remote_now_exists_is_stale(harness, remote):
     remote[INSTR] = make_variable(INSTR, "someone created it", version=1)
 
     with pytest.raises(SyncConflictError):
-        PromptVariableAdapter().write(AGENT_ID, {"instructions": "mine"}, {"instructions": None})
+        PromptVariableAdapter().write(
+            AGENT_ID, {"instructions": "mine"}, expected(remote, {"instructions": None})
+        )
 
     assert harness.instances[0].pushes == []
 
 
 def test_expected_version_but_remote_deleted_is_stale(harness, remote):
     with pytest.raises(SyncConflictError):
-        PromptVariableAdapter().write(AGENT_ID, {"instructions": "mine"}, {"instructions": 2})
+        PromptVariableAdapter().write(
+            AGENT_ID, {"instructions": "mine"}, expected(remote, {"instructions": 2})
+        )
 
     assert harness.instances[0].pushes == []
 
@@ -583,7 +677,7 @@ def test_stale_check_covers_every_selected_key(harness, remote):
         PromptVariableAdapter().write(
             AGENT_ID,
             {"instructions": "i2", "input_template": "t2"},
-            {"instructions": 1, "input_template": 8},
+            expected(remote, {"instructions": 1, "input_template": 8}),
         )
 
     # No partial write even though instructions matched.
@@ -597,7 +691,9 @@ def test_rejects_non_string_schema_before_writing(harness, remote):
     remote[INSTR] = make_variable(INSTR, "old", version=1, json_schema={"type": "integer"})
 
     with pytest.raises(ConfigError):
-        PromptVariableAdapter().write(AGENT_ID, {"instructions": "new"}, {"instructions": 1})
+        PromptVariableAdapter().write(
+            AGENT_ID, {"instructions": "new"}, expected(remote, {"instructions": 1})
+        )
 
     assert harness.instances[0].pushes == []
 
@@ -610,14 +706,68 @@ def test_rejects_valcore_sync_label_ref_collision_before_writing(harness, remote
     )
 
     with pytest.raises(ConfigError):
-        PromptVariableAdapter().write(AGENT_ID, {"instructions": "new"}, {"instructions": 1})
+        PromptVariableAdapter().write(
+            AGENT_ID, {"instructions": "new"}, expected(remote, {"instructions": 1})
+        )
+
+    assert harness.instances[0].pushes == []
+
+
+@pytest.mark.parametrize(
+    "labels,rollout",
+    [
+        (
+            {
+                "production": LabelRef(ref="valcore_sync"),
+                "valcore_sync": LabeledValue(version=1, serialized_value='"old"'),
+            },
+            Rollout(labels={}),
+        ),
+        ({"production": LabelRef(ref="latest")}, Rollout(labels={})),
+        (
+            {
+                "production": LabelRef(ref="canary"),
+                "canary": LabelRef(ref="valcore_sync"),
+                "valcore_sync": LabeledValue(version=1, serialized_value='"old"'),
+            },
+            Rollout(labels={}),
+        ),
+        (
+            {"valcore_sync": LabeledValue(version=1, serialized_value='"old"')},
+            Rollout(labels={"valcore_sync": 1.0}),
+        ),
+    ],
+)
+def test_rejects_serving_references_before_write(harness, remote, labels, rollout):
+    remote[INSTR] = make_variable(INSTR, "old", version=1, labels=labels, rollout=rollout)
+
+    with pytest.raises(ConfigError):
+        PromptVariableAdapter().write(
+            AGENT_ID, {"instructions": "new"}, {"instructions": (1, "old")}
+        )
+
+    assert harness.instances[0].pushes == []
+
+
+def test_rejects_override_rollout_selecting_sync_label(harness, remote):
+    remote[INSTR] = make_variable(
+        INSTR,
+        "old",
+        labels={"valcore_sync": LabeledValue(version=1, serialized_value='"old"')},
+        overrides=[RolloutOverride(conditions=[], rollout=Rollout(labels={"valcore_sync": 1.0}))],
+    )
+
+    with pytest.raises(ConfigError):
+        PromptVariableAdapter().write(
+            AGENT_ID, {"instructions": "new"}, {"instructions": (1, "old")}
+        )
 
     assert harness.instances[0].pushes == []
 
 
 def test_rejects_unknown_template_key(harness, remote):
     with pytest.raises(ValueError):
-        PromptVariableAdapter().write(AGENT_ID, {"prompt__evil": "x"}, {})
+        PromptVariableAdapter().write(AGENT_ID, {"prompt__evil": "x"}, expected(remote, {}))
 
     assert harness.instances == [] or harness.instances[0].pushes == []
 
@@ -635,7 +785,7 @@ def test_rejects_agent_id_that_cannot_form_a_variable_name(harness, remote, bad_
 
 def test_returns_read_back_snapshot_not_the_request(harness, remote):
     snap = PromptVariableAdapter().write(
-        AGENT_ID, {"instructions": "hello"}, {"instructions": None}
+        AGENT_ID, {"instructions": "hello"}, expected(remote, {"instructions": None})
     )
 
     inst = harness.instances[0]
@@ -653,7 +803,9 @@ def test_false_push_result_without_matching_readback_is_error(harness, remote):
     harness.customize = customize
 
     with pytest.raises(FAILURES) as exc:
-        PromptVariableAdapter().write(AGENT_ID, {"instructions": "x"}, {"instructions": None})
+        PromptVariableAdapter().write(
+            AGENT_ID, {"instructions": "x"}, expected(remote, {"instructions": None})
+        )
 
     assert not isinstance(exc.value, SyncConflictError)
 
@@ -662,13 +814,17 @@ def test_readback_mismatch_is_error_even_when_push_returns_true(harness, remote)
     harness.customize = lambda inst: setattr(inst, "drop_writes", True)
 
     with pytest.raises(FAILURES):
-        PromptVariableAdapter().write(AGENT_ID, {"instructions": "x"}, {"instructions": None})
+        PromptVariableAdapter().write(
+            AGENT_ID, {"instructions": "x"}, expected(remote, {"instructions": None})
+        )
 
 
 def test_false_push_result_with_matching_readback_is_accepted(harness, remote):
     harness.customize = lambda inst: setattr(inst, "push_result", False)
 
-    snap = PromptVariableAdapter().write(AGENT_ID, {"instructions": "x"}, {"instructions": None})
+    snap = PromptVariableAdapter().write(
+        AGENT_ID, {"instructions": "x"}, expected(remote, {"instructions": None})
+    )
 
     assert snap.templates["instructions"].text == "x"
     assert snap.templates["instructions"].version == 1
@@ -677,16 +833,38 @@ def test_false_push_result_with_matching_readback_is_accepted(harness, remote):
 def test_partial_failure_on_second_write_leaves_first_visible_for_retry(harness, remote):
     """A two-variable write is not atomic; a retry sees the first write and must not duplicate."""
     adapter = PromptVariableAdapter()
-    adapter.write(AGENT_ID, {"instructions": "i"}, {"instructions": None})
 
-    harness.customize = lambda inst: setattr(inst, "push_error", RuntimeError("network"))
+    def fail_after_first(inst: FakeInstance) -> None:
+        def partial_push(config: VariablesConfig, *, mode: str, yes: bool) -> bool:
+            assert list(config.variables) == [INSTR, TMPL]
+            first = copy.deepcopy(config.variables[INSTR])
+            sync = label_value(first)
+            first.latest_version = LatestVersion(
+                version=sync.version, serialized_value=sync.serialized_value
+            )
+            remote[INSTR] = first
+            raise RuntimeError("second variable failed")
+
+        inst.variables_push_config = partial_push  # type: ignore[method-assign]
+
+    harness.customize = fail_after_first
     with pytest.raises(FAILURES):
-        adapter.write(AGENT_ID, {"input_template": "t"}, {"input_template": None})
+        adapter.write(
+            AGENT_ID,
+            {"instructions": "i", "input_template": "t"},
+            expected(remote, {"instructions": None, "input_template": None}),
+        )
 
     harness.customize = None
     snap = adapter.read(AGENT_ID)
     assert snap.templates["instructions"].version == 1
+    assert snap.templates["instructions"].text == "i"
     assert snap.templates["input_template"].version is None
+
+    retry = adapter.write(AGENT_ID, {"input_template": "t"}, {"input_template": (None, None)})
+    assert retry.templates["instructions"].version == 1
+    assert retry.templates["input_template"].version == 1
+    assert set(harness.instances[-1].pushes[0]["config"].variables) == {TMPL}
 
 
 # ----------------------------------------------------- real SDK schema round-trip
@@ -737,12 +915,14 @@ def test_configure_failure_is_sanitized(harness, remote):
 
 def test_write_requires_expected_versions_for_every_change(harness, remote):
     with pytest.raises(ValueError):
-        PromptVariableAdapter().write(AGENT_ID, {"instructions": "x"}, {})
+        PromptVariableAdapter().write(AGENT_ID, {"instructions": "x"}, expected(remote, {}))
 
 
 def test_write_rejects_non_string_value(harness, remote):
     with pytest.raises(ValueError):
-        PromptVariableAdapter().write(AGENT_ID, {"instructions": 5}, {"instructions": None})  # type: ignore[dict-item]
+        PromptVariableAdapter().write(
+            AGENT_ID, {"instructions": 5}, expected(remote, {"instructions": None})
+        )  # type: ignore[dict-item]
 
 
 def test_rejects_sync_label_ahead_of_latest(harness, remote):
@@ -754,7 +934,9 @@ def test_rejects_sync_label_ahead_of_latest(harness, remote):
     )
 
     with pytest.raises(ConfigError):
-        PromptVariableAdapter().write(AGENT_ID, {"instructions": "new"}, {"instructions": 1})
+        PromptVariableAdapter().write(
+            AGENT_ID, {"instructions": "new"}, expected(remote, {"instructions": 1})
+        )
 
     assert harness.instances[0].pushes == []
 
@@ -768,6 +950,8 @@ def test_rejects_sync_label_diverging_from_latest_text(harness, remote):
     )
 
     with pytest.raises(ConfigError):
-        PromptVariableAdapter().write(AGENT_ID, {"instructions": "new"}, {"instructions": 1})
+        PromptVariableAdapter().write(
+            AGENT_ID, {"instructions": "new"}, expected(remote, {"instructions": 1})
+        )
 
     assert harness.instances[0].pushes == []

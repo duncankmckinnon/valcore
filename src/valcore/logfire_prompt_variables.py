@@ -15,7 +15,14 @@ from dataclasses import dataclass
 from typing import Literal
 
 import logfire
-from logfire.variables.config import LabeledValue, Rollout, VariableConfig, VariablesConfig
+from logfire.variables.config import (
+    LabeledValue,
+    LabelRef,
+    Rollout,
+    VariableConfig,
+    VariablesConfig,
+)
+from logfire.variables.remote import LogfireRemoteVariableProvider
 
 from valcore import config
 from valcore.errors import ConfigError, SyncConflictError, ValcoreError
@@ -82,10 +89,48 @@ def _request_error(exc: Exception) -> ValcoreError:
 
 def _pull(instance: logfire.Logfire) -> VariablesConfig:
     """Pull variables while sanitizing SDK errors before they reach an API caller."""
+    # The pinned remote provider swallows fetch errors and returns cached (possibly
+    # empty) config. Its successful-fetch timestamp is the only way to distinguish
+    # a fresh pull from that fallback. This is intentionally pinned to 4.39.0.
     try:
-        return instance.variables_pull_config()
+        provider = instance.config.get_variable_provider() if hasattr(instance, "config") else None
+        if provider is not None and not isinstance(provider, LogfireRemoteVariableProvider):
+            raise ConfigError(f"Logfire variable sync requires an API key with {_REQUIRED_SCOPES}.")
+        fetched_at = provider._last_fetched_at if provider is not None else None
+        remote = instance.variables_pull_config()
+    except ConfigError:
+        raise
     except Exception as exc:  # noqa: BLE001 - SDK errors may contain the API key
         raise _request_error(exc) from None
+    if provider is not None and provider._last_fetched_at == fetched_at:
+        raise ConfigError(
+            f"Logfire variable sync could not fetch variables; check {_REQUIRED_SCOPES}."
+        )
+    return remote
+
+
+def _check_serving_references(variable: VariableConfig) -> None:
+    """Reject references whose resolved serving text would change on publish."""
+    unsafe = {_SYNC_LABEL, "latest"}
+
+    def reaches_new_version(label: str, seen: set[str]) -> bool:
+        if label in unsafe:
+            return True
+        if label in seen:
+            return False
+        entry = variable.labels.get(label)
+        return isinstance(entry, LabelRef) and reaches_new_version(entry.ref, seen | {label})
+
+    for label, entry in variable.labels.items():
+        if (
+            label != _SYNC_LABEL
+            and isinstance(entry, LabelRef)
+            and reaches_new_version(entry.ref, {label})
+        ):
+            raise ConfigError(f"Logfire variable {variable.name} has a serving label reference")
+    rollouts = [variable.rollout, *(override.rollout for override in variable.overrides)]
+    if any(reaches_new_version(label, set()) for rollout in rollouts for label in rollout.labels):
+        raise ConfigError(f"Logfire variable {variable.name} has a serving rollout reference")
 
 
 class PromptVariableAdapter:
@@ -112,9 +157,9 @@ class PromptVariableAdapter:
         self,
         agent_id: str,
         changes: Mapping[TemplateKey, str],
-        expected_versions: Mapping[TemplateKey, int | None],
+        expected_versions: Mapping[TemplateKey, tuple[int | None, str | None]],
     ) -> RemoteSnapshot:
-        """Publish selected texts after checking their latest remote versions.
+        """Publish selected texts after checking their latest remote version and text.
 
         The SDK has no atomic compare-and-swap. Callers must re-inspect after a
         partial failure or a concurrent remote write.
@@ -122,8 +167,10 @@ class PromptVariableAdapter:
         names = _names(agent_id)
         if not set(changes) <= set(_TEMPLATE_KEYS):
             raise ValueError("Unknown prompt template key")
-        if set(changes) != set(expected_versions):
-            raise ValueError("Expected versions are required for every changed template")
+        if set(changes) != set(expected_versions) or any(
+            not isinstance(value, tuple) or len(value) != 2 for value in expected_versions.values()
+        ):
+            raise ValueError("Expected version and text are required for every changed template")
         if any(not isinstance(value, str) for value in changes.values()):
             raise ValueError("Prompt variable values must be strings")
 
@@ -140,7 +187,9 @@ class PromptVariableAdapter:
             before_config = _pull(instance)
             before = _snapshot(names, before_config)
             for template_key in changes:
-                if before.templates[template_key].version != expected_versions[template_key]:
+                actual = before.templates[template_key]
+                expected_version, expected_text = expected_versions[template_key]
+                if actual.version != expected_version or actual.text != expected_text:
                     raise SyncConflictError(
                         f"Logfire variable {names[template_key]} changed; inspect again."
                     )
@@ -165,6 +214,7 @@ class PromptVariableAdapter:
                         raise ConfigError(
                             f"Logfire variable {old.variable_name} must have a string schema"
                         )
+                    _check_serving_references(existing)
                     label = existing.labels.get(_SYNC_LABEL)
                     if label is not None and (
                         not isinstance(label, LabeledValue)
