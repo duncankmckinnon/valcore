@@ -2028,7 +2028,12 @@ def test_prompt_sync_pull_json_output(runner, db_path, sync_agent):
 
 
 @pytest.mark.parametrize("command", ["pull", "push"])
-def test_prompt_sync_interactive_json_previews_on_stderr(runner, db_path, sync_agent, command):
+@pytest.mark.parametrize("click_windows", [False, True])
+def test_prompt_sync_interactive_json_previews_on_stderr(
+    runner, db_path, sync_agent, monkeypatch, command, click_windows
+):
+    # Click's Windows prompt path echoes the typed response to stdout by default.
+    monkeypatch.setattr("click.termui.WIN", click_windows)
     _, install = sync_agent
     state = "remote_changed" if command == "pull" else "local_changed"
     install(_sync_status(state, "in_sync", local="LOCAL-PROPOSAL", remote="REMOTE-PROPOSAL"))
@@ -2200,7 +2205,11 @@ def test_prompt_sync_resolve_shows_final_newline_only_change(runner, db_path, sy
     assert "(no line changes)" not in result.output
 
 
-def test_prompt_sync_resolve_interactive_json_shows_diff_on_stderr(runner, db_path, sync_agent):
+@pytest.mark.parametrize("click_windows", [False, True])
+def test_prompt_sync_resolve_interactive_json_shows_diff_on_stderr(
+    runner, db_path, sync_agent, monkeypatch, click_windows
+):
+    monkeypatch.setattr("click.termui.WIN", click_windows)
     _, install = sync_agent
     install(_sync_status("conflict", "in_sync", base="old", local="local", remote="remote"))
     result = _sync(

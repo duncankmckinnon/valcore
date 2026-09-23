@@ -340,9 +340,9 @@ async def test_concurrency_is_bounded(store: Store) -> None:
 
     agent = Agent(FunctionModel(respond), output_type=build_output_model(version))
 
-    # If the runner stops launching a second request, the barrier must turn that
-    # regression into a test failure rather than stalling the whole suite.
-    result = await asyncio.wait_for(execute_run(store, run.id, agent=agent), timeout=1)
+    # The timeout detects a deadlocked barrier, not execution speed. Leave room
+    # for slow CI hosts while still failing if no second request starts.
+    result = await asyncio.wait_for(execute_run(store, run.id, agent=agent), timeout=10)
 
     assert result.status is RunStatus.COMPLETED
     assert len(store.list_results(run.id)) == 6

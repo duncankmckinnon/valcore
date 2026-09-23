@@ -14,6 +14,7 @@ import sys
 import threading
 import webbrowser
 from collections.abc import Callable
+from contextlib import redirect_stdout
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError
@@ -595,10 +596,20 @@ def _sync_diff(base: str | None, other: str | None, side: str) -> str:
         lineterm="\n",
     )
     rendered = "".join(
-        line if line.endswith("\n") else f"{line}\n\\ No newline at end of file\n"
-        for line in lines
+        line if line.endswith("\n") else f"{line}\n\\ No newline at end of file\n" for line in lines
     )
     return rendered.rstrip("\n") or "(no line changes)"
+
+
+def _sync_confirm(prompt: str, as_json: bool) -> None:
+    """Keep Click's echoed Windows confirmation input off JSON stdout."""
+    if as_json:
+        # On Windows Click writes the final prompt character and input to stdout
+        # even with err=True; redirect those writes while the prompt is active.
+        with redirect_stdout(sys.stderr):
+            click.confirm(prompt, abort=True, err=True)
+    else:
+        click.confirm(prompt, abort=True)
 
 
 @agent_group.group("prompt-sync")
@@ -690,7 +701,7 @@ def _sync_change(
             err=as_json,
         )
     if not yes:
-        click.confirm(f"{operation.capitalize()} these templates?", abort=True, err=as_json)
+        _sync_confirm(f"{operation.capitalize()} these templates?", as_json)
     result = (service.pull if operation == "pull" else service.push)(
         agent_id, selected, _sync_confirmed_revision(service, agent_id, status)
     )
@@ -754,7 +765,7 @@ def agent_prompt_sync_resolve(
             err=as_json,
         )
     if not yes:
-        click.confirm(f"Resolve these templates with {choice} text?", abort=True, err=as_json)
+        _sync_confirm(f"Resolve these templates with {choice} text?", as_json)
     _sync_output(
         service.resolve(
             agent_id, fields, choice, _sync_confirmed_revision(service, agent_id, status)
@@ -772,7 +783,7 @@ def agent_prompt_sync_unlink(ctx: click.Context, agent_ref: str, yes: bool, as_j
     """Remove only the local sync cursor, leaving Logfire variables intact."""
     agent_id, service, status = _sync_inspection(ctx, agent_ref, allow_rebind_error=True)
     if not yes:
-        click.confirm(f"Unlink prompt sync for {agent_ref}?", abort=True, err=as_json)
+        _sync_confirm(f"Unlink prompt sync for {agent_ref}?", as_json)
     _sync_output(
         service.unlink(agent_id, _sync_confirmed_revision(service, agent_id, status, unlink=True)),
         as_json,
