@@ -17,6 +17,7 @@ import type {
   CapabilitySpec,
 } from "../api/types";
 import AgentTrialPanel from "../components/AgentTrialPanel";
+import AgentPromptSync from "../components/AgentPromptSync";
 import EvaluatorFromAgent from "../components/EvaluatorFromAgent";
 import { CapabilitiesEditor } from "../components/CapabilitiesEditor";
 import { useSetup } from "../components/useSetup";
@@ -159,6 +160,8 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
   const [discardRunOpen, setDiscardRunOpen] = useState(false);
   const [discardAction, setDiscardAction] = useState<"close" | "dataset">("close");
   const [evaluatorOpen, setEvaluatorOpen] = useState(false);
+  const [promptSyncOpen, setPromptSyncOpen] = useState(false);
+  const [discardSyncEditsOpen, setDiscardSyncEditsOpen] = useState(false);
   const [datasetsForRun, setDatasetsForRun] = useState<DatasetSummary[]>([]);
   const [datasetId, setDatasetId] = useState("");
   const [runError, setRunError] = useState<unknown>(null);
@@ -167,6 +170,7 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
   // current draft in a ref ensures template braces are not lost in that interaction.
   const valuesRef = useRef<EditorValues | null>(null);
   const modelEdited = useRef(false);
+  const syncEditDecision = useRef<((discard: boolean) => void) | null>(null);
 
   const load = useCallback(
     async (preferId?: string): Promise<void> => {
@@ -197,6 +201,10 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
     setSelectedId(null);
     setDraft(false);
     setRunOpen(false);
+    setPromptSyncOpen(false);
+    setDiscardSyncEditsOpen(false);
+    syncEditDecision.current?.(false);
+    syncEditDecision.current = null;
     setTrialUnsaved(false);
   }, [agentId]);
 
@@ -486,6 +494,21 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
     setRunError(null);
   }
 
+  function beforeSyncLocalReplace(): Promise<boolean> {
+    const current = valuesRef.current;
+    const dirty = draft || (selected && current &&
+      JSON.stringify(current) !== JSON.stringify(editorValues(selected)));
+    if (!dirty) return Promise.resolve(true);
+    setDiscardSyncEditsOpen(true);
+    return new Promise((resolve) => { syncEditDecision.current = resolve; });
+  }
+
+  function decideSyncEditDiscard(discard: boolean): void {
+    setDiscardSyncEditsOpen(false);
+    syncEditDecision.current?.(discard);
+    syncEditDecision.current = null;
+  }
+
   if (loading && !detail) return <Spinner />;
   if (!detail)
     return <ErrorBanner error={error} onDismiss={() => setError(null)} />;
@@ -535,6 +558,9 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
           </Button>
           <Button onClick={() => void openRun()} disabled={!selected}>
             Run agent
+          </Button>
+          <Button variant="secondary" onClick={() => setPromptSyncOpen(true)}>
+            Logfire sync
           </Button>
           {!empty && (
             <Button variant="secondary" onClick={startDraft}>
@@ -832,6 +858,24 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
         confirmLabel="Discard response"
         onClose={() => setDiscardRunOpen(false)}
         onConfirm={discardAndContinue}
+      />
+      <AgentPromptSync
+        agentId={agentId}
+        open={promptSyncOpen}
+        onClose={() => setPromptSyncOpen(false)}
+        beforeLocalReplace={beforeSyncLocalReplace}
+        onPulled={(activeVersionId) => {
+          setDraft(false);
+          void load(activeVersionId ?? undefined);
+        }}
+      />
+      <ConfirmDialog
+        open={discardSyncEditsOpen}
+        title="Discard unsaved agent edits?"
+        message="Applying remote text will select a new agent version and discard your unsaved editor changes."
+        confirmLabel="Discard edits"
+        onClose={() => decideSyncEditDiscard(false)}
+        onConfirm={() => decideSyncEditDiscard(true)}
       />
     </section>
   );

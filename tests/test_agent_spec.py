@@ -319,9 +319,7 @@ class TestRenderAgentPrompt:
         result = render_agent_prompt("Static prompt.", {"anything": "value"})
         assert result == "Static prompt."
 
-    def test_no_template_forwards_plain_input_or_complete_row(self) -> None:
-        assert render_agent_prompt("", {"input": "Help me"}) == "Help me"
-        assert render_agent_prompt("", {"question": "Why?", "context": "A"}) == (
-            '{\n  "question": "Why?",\n  "context": "A"\n}'
-        )
+    def test_empty_template_ignores_row_data(self) -> None:
+        assert render_agent_prompt("", {"input": "Help me"}) == ""
+        assert render_agent_prompt("", {"question": "Why?", "context": "A"}) == ""
         assert render_agent_prompt("", {}) == ""

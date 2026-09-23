@@ -211,6 +211,12 @@ source of truth (`scripts/sync_command_table.py --check` fails CI if the two dri
 | `valcore agent derivation list` | List saved and staged response derivations. |
 | `valcore agent derivation save <ref>` | Accept a staged derivation. |
 | `valcore agent derivation discard <ref>` | Discard a derivation. |
+| `valcore agent prompt-sync status <agent>` | Inspect local agent text and the configured Logfire project's latest variable versions. |
+| `valcore agent prompt-sync link <agent> --initial local\|remote` | Link an agent, choosing the initial text source. |
+| `valcore agent prompt-sync pull <agent>` | Pull remote text into a new local agent version, with confirmation. |
+| `valcore agent prompt-sync push <agent>` | Push local text into new Logfire variable versions, with confirmation. |
+| `valcore agent prompt-sync resolve <agent> --choice local\|remote --field FIELD` | Show a three-way diff and explicitly resolve selected conflicts. |
+| `valcore agent prompt-sync unlink <agent>` | Remove the local sync link. |
 | `valcore agent import <file>` | Import a YAML or JSON AgentSpec and its valcore binding. |
 | `valcore agent export <agent>` | Export an agent version as a YAML AgentSpec with its valcore binding. |
 | `valcore config set <key> <value>` | Set any config key, including `model`, `local_cli_default`, `port`, `concurrency`, and `db_path`. |
@@ -382,6 +388,12 @@ enabled, valcore records UI text and input values outside the blocked Settings p
 disables console capture. See Logfire's
 [frontend observability guide](https://pydantic.dev/logfire/observe/frontend/) for the
 Logfire-side setup.
+
+Agent `instructions` and input templates can also be synced explicitly with ordinary Logfire
+managed variables (not Prompt Management objects). Runs use the local agent version and make
+no prompt-sync calls to Logfire. See
+[Agent prompt sync with Logfire](docs/agent-logfire-prompt-sync.md) for the required
+`project:read_variables` and `project:write_variables` key, the conflict flow, and limits.
 
 `valcore run experiment <evaluator> --dataset <dataset>` runs the same evaluation through
 `pydantic_evals.Dataset.evaluate` instead of the evaluator runner, so it also appears in

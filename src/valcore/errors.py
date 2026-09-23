@@ -31,3 +31,7 @@ class ReferencedError(ValcoreError):
 
 class DestructiveChangeError(ValcoreError):
     """Raised when an edit would discard labels and the caller did not force it."""
+
+
+class SyncConflictError(ValcoreError):
+    """Raised when prompt sync state changed since the caller inspected it."""

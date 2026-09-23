@@ -6,15 +6,17 @@ ephemeral, while a saved derivation records an overlay on the source dataset.
 
 import re
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import yaml
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from valcore import agent_spec, config
+from valcore.agent_prompt_sync import AgentPromptSync, SyncStatus, TemplateStatus
 from valcore.agent_spec import AgentSpec
-from valcore.api.deps import get_store
+from valcore.api.deps import get_prompt_sync, get_store
 from valcore.errors import ContractError, NotFoundError
 from valcore.factory import build_agent_from_version, execute_agent_version
 from valcore.models import Agent, AgentVersion, DatasetDerivation, DerivationState
@@ -24,6 +26,9 @@ from valcore.store import DerivedRow, Store
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
 StoreDep = Annotated[Store, Depends(get_store)]
+PromptSyncDep = Annotated[AgentPromptSync, Depends(get_prompt_sync)]
+SyncField = Literal["instructions", "input_template"]
+SyncChoice = Literal["local", "remote"]
 
 
 # -- Request bodies -----------------------------------------------------------
@@ -108,6 +113,31 @@ class AgentSpecImportRequest(BaseModel):
 
     content: str
     format: str
+
+
+class SyncRevisionRequest(BaseModel):
+    """Optimistic revision required for every prompt-sync mutation."""
+
+    expected_revision: str
+
+
+class SyncLinkRequest(SyncRevisionRequest):
+    """Choose which side supplies the initial shared baseline."""
+
+    initial: SyncChoice
+
+
+class SyncFieldsRequest(SyncRevisionRequest):
+    """Select templates for an ordinary pull or push, or omit for all eligible ones."""
+
+    fields: list[SyncField] | None = None
+
+
+class SyncResolveRequest(SyncRevisionRequest):
+    """Explicitly choose one side for a nonempty set of conflicted templates."""
+
+    fields: list[SyncField] = Field(min_length=1)
+    choice: SyncChoice
 
 
 # -- Response bodies ----------------------------------------------------------
@@ -212,6 +242,65 @@ class AgentSpecImport(BaseModel):
     prompt_template: str | None
     required_columns: list[str]
     deps_mapping: dict[str, str]
+
+
+class SyncTemplateRead(BaseModel):
+    """Browser-safe three-way comparison for one template."""
+
+    variable_name: str
+    state: Literal[
+        "in_sync", "local_changed", "remote_changed", "conflict", "remote_missing", "unsupported"
+    ]
+    local_text: str | None
+    base_text: str | None
+    remote_text: str | None
+    remote_version: int | None
+    base_remote_version: int | None
+    error: str | None
+
+
+class SyncStatusRead(BaseModel):
+    """Public prompt-sync status without credentials or the key fingerprint."""
+
+    linked: bool
+    local_version_id: str | None
+    revision: str
+    error: str | None
+    templates: dict[SyncField, SyncTemplateRead]
+
+
+class SyncPullRead(SyncStatusRead):
+    """Sync status plus the active agent version after a pull."""
+
+    active_version_id: str | None
+
+
+def _sync_status(status: SyncStatus) -> SyncStatusRead:
+    """Copy the public status fields explicitly so service secrets cannot leak."""
+    return SyncStatusRead(
+        linked=status.linked,
+        local_version_id=status.local_version_id,
+        revision=status.revision,
+        error=status.error,
+        templates={
+            key: SyncTemplateRead(**_template_fields(template))
+            for key, template in status.templates.items()
+        },
+    )
+
+
+def _template_fields(template: TemplateStatus) -> dict[str, Any]:
+    """Select only template comparison fields from a service record."""
+    return {
+        "variable_name": template.variable_name,
+        "state": template.state,
+        "local_text": template.local_text,
+        "base_text": template.base_text,
+        "remote_text": template.remote_text,
+        "remote_version": template.remote_version,
+        "base_remote_version": template.base_remote_version,
+        "error": template.error,
+    }
 
 
 def _agent_summary(agent: Agent, store: Store) -> AgentSummary:
@@ -486,6 +575,65 @@ async def list_versions(id: str, store: StoreDep) -> list[AgentVersionRead]:
 async def create_version(id: str, body: AgentVersionCreate, store: StoreDep) -> AgentVersionRead:
     """Create a validated version and make it active."""
     return _version_read(store.create_agent_version(id, **body.model_dump()))
+
+
+@router.get("/{id}/prompt-sync", response_model=SyncStatusRead)
+async def inspect_prompt_sync(id: str, store: StoreDep, sync: PromptSyncDep) -> SyncStatusRead:
+    """Inspect both text templates without changing either side."""
+    store.get_agent(id)
+    return _sync_status(await run_in_threadpool(sync.inspect, id))
+
+
+@router.post("/{id}/prompt-sync/link", response_model=SyncStatusRead)
+async def link_prompt_sync(
+    id: str, body: SyncLinkRequest, store: StoreDep, sync: PromptSyncDep
+) -> SyncStatusRead:
+    """Create a link using the selected side as its initial baseline."""
+    store.get_agent(id)
+    return _sync_status(
+        await run_in_threadpool(sync.link, id, body.initial, body.expected_revision)
+    )
+
+
+@router.post("/{id}/prompt-sync/pull", response_model=SyncPullRead)
+async def pull_prompt_sync(
+    id: str, body: SyncFieldsRequest, store: StoreDep, sync: PromptSyncDep
+) -> SyncPullRead:
+    """Pull eligible remote texts and report the resulting active version."""
+    store.get_agent(id)
+    status = await run_in_threadpool(sync.pull, id, body.fields, body.expected_revision)
+    return SyncPullRead(
+        **_sync_status(status).model_dump(), active_version_id=status.local_version_id
+    )
+
+
+@router.post("/{id}/prompt-sync/push", response_model=SyncStatusRead)
+async def push_prompt_sync(
+    id: str, body: SyncFieldsRequest, store: StoreDep, sync: PromptSyncDep
+) -> SyncStatusRead:
+    """Publish eligible local texts to the linked Logfire variables."""
+    store.get_agent(id)
+    return _sync_status(await run_in_threadpool(sync.push, id, body.fields, body.expected_revision))
+
+
+@router.post("/{id}/prompt-sync/resolve", response_model=SyncStatusRead)
+async def resolve_prompt_sync(
+    id: str, body: SyncResolveRequest, store: StoreDep, sync: PromptSyncDep
+) -> SyncStatusRead:
+    """Apply an explicit local or remote choice to selected conflicts."""
+    store.get_agent(id)
+    return _sync_status(
+        await run_in_threadpool(sync.resolve, id, body.fields, body.choice, body.expected_revision)
+    )
+
+
+@router.delete("/{id}/prompt-sync", response_model=SyncStatusRead)
+async def unlink_prompt_sync(
+    id: str, body: SyncRevisionRequest, store: StoreDep, sync: PromptSyncDep
+) -> SyncStatusRead:
+    """Remove the local link, including after a configured-key change."""
+    store.get_agent(id)
+    return _sync_status(await run_in_threadpool(sync.unlink, id, body.expected_revision))
 
 
 @router.get("/{id}", response_model=AgentDetail)
