@@ -117,6 +117,7 @@ type ModalProps = {
   description?: ReactNode;
   footer?: ReactNode;
   size?: "sm" | "md" | "lg";
+  placement?: "center" | "side";
   onClose: () => void;
   children: ReactNode;
 };
@@ -127,6 +128,7 @@ export function Modal({
   description,
   footer,
   size = "md",
+  placement = "center",
   onClose,
   children,
 }: ModalProps) {
@@ -152,9 +154,12 @@ export function Modal({
     return null;
   }
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div
+      className={`modal-backdrop ${placement === "side" ? "modal-backdrop-side" : ""}`}
+      onClick={onClose}
+    >
       <div
-        className={`modal modal-${size}`}
+        className={`modal modal-${size} ${placement === "side" ? "modal-side" : ""}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby={title ? titleId : undefined}

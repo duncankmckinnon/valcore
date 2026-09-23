@@ -152,7 +152,7 @@ describe("AgentTrialPanel", () => {
         inputs: { question: "What is 2+2?" },
       }),
     );
-    expect(await screen.findByText("What is 2+2?")).toBeInTheDocument();
+    expect(await screen.findByText("What is 2+2?", { selector: "p" })).toBeInTheDocument();
     expect(screen.getByLabelText("Output answer")).toHaveTextContent("4");
     expect(screen.getByText("Latency: 120 ms")).toBeInTheDocument();
   });
@@ -235,7 +235,7 @@ describe("AgentTrialPanel", () => {
     render(<AgentTrialPanel version={makeVersion()} />);
 
     await runTrial(user);
-    expect(await screen.findByText("What is 2+2?")).toBeInTheDocument();
+    expect(await screen.findByText("What is 2+2?", { selector: "p" })).toBeInTheDocument();
 
     // Re-running an unsaved result requires confirming first.
     trialMock.mockRejectedValueOnce(
@@ -248,7 +248,7 @@ describe("AgentTrialPanel", () => {
     expect(await screen.findByText("Trial failed")).toBeInTheDocument();
     // The prior successful result must still be on screen -- a failed rerun must not
     // silently wipe out the last good trial.
-    expect(screen.getByText("What is 2+2?")).toBeInTheDocument();
+    expect(screen.getByText("What is 2+2?", { selector: "p" })).toBeInTheDocument();
     expect(screen.getByLabelText("Output answer")).toHaveTextContent("4");
   });
 
@@ -288,7 +288,7 @@ describe("AgentTrialPanel", () => {
     expect(trialMock).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     // The prior result is untouched by a cancelled rerun.
-    expect(screen.getByText("What is 2+2?")).toBeInTheDocument();
+    expect(screen.getByText("What is 2+2?", { selector: "p" })).toBeInTheDocument();
   });
 
   it("keeps Save disabled until a dataset is chosen", async () => {
@@ -296,7 +296,7 @@ describe("AgentTrialPanel", () => {
     render(<AgentTrialPanel version={makeVersion()} />);
 
     await runTrial(user);
-    await screen.findByText("What is 2+2?");
+    await screen.findByText("What is 2+2?", { selector: "p" });
 
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
 
@@ -322,7 +322,7 @@ describe("AgentTrialPanel", () => {
     render(<AgentTrialPanel version={makeVersion()} />);
 
     await runTrial(user);
-    await screen.findByText("What is 2+2?");
+    await screen.findByText("What is 2+2?", { selector: "p" });
     await user.selectOptions(await screen.findByLabelText("Dataset"), "ds-1");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
@@ -362,7 +362,7 @@ describe("AgentTrialPanel", () => {
     render(<AgentTrialPanel version={makeVersion()} />);
 
     await runTrial(user);
-    await screen.findByText("What is 2+2?");
+    await screen.findByText("What is 2+2?", { selector: "p" });
     await user.selectOptions(await screen.findByLabelText("Dataset"), "ds-1");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
@@ -379,7 +379,7 @@ describe("AgentTrialPanel", () => {
     render(<AgentTrialPanel version={makeVersion()} />);
 
     await runTrial(user);
-    await screen.findByText("What is 2+2?");
+    await screen.findByText("What is 2+2?", { selector: "p" });
     await user.selectOptions(await screen.findByLabelText("Dataset"), "ds-1");
     await user.click(screen.getByRole("button", { name: "Save" }));
     await screen.findByText("Saved as derivation 7.");
@@ -398,7 +398,7 @@ describe("AgentTrialPanel", () => {
     const { rerender } = render(<AgentTrialPanel version={makeVersion()} />);
 
     await runTrial(user);
-    await screen.findByText("What is 2+2?");
+    await screen.findByText("What is 2+2?", { selector: "p" });
 
     rerender(
       <AgentTrialPanel
@@ -430,11 +430,11 @@ describe("AgentTrialPanel", () => {
     render(<AgentTrialPanel version={makeVersion()} />);
 
     await runTrial(user);
-    await screen.findByText("What is 2+2?");
+    await screen.findByText("What is 2+2?", { selector: "p" });
 
     await user.click(screen.getByRole("button", { name: "Discard" }));
 
-    expect(screen.queryByText("What is 2+2?")).not.toBeInTheDocument();
+    expect(screen.queryByText("What is 2+2?", { selector: "p" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Output answer")).not.toBeInTheDocument();
 
     // unsaved is now false: Run must not ask for confirmation.
@@ -449,7 +449,7 @@ describe("AgentTrialPanel", () => {
     render(<AgentTrialPanel version={makeVersion()} />);
 
     await runTrial(user);
-    await screen.findByText("What is 2+2?");
+    await screen.findByText("What is 2+2?", { selector: "p" });
 
     expect(addSpy).toHaveBeenCalledWith("beforeunload", expect.any(Function));
 

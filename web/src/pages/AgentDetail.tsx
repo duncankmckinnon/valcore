@@ -154,6 +154,10 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
   const [importOpen, setImportOpen] = useState(false);
   const [importContent, setImportContent] = useState("");
   const [runOpen, setRunOpen] = useState(false);
+  const [runMode, setRunMode] = useState<"trial" | "dataset">("trial");
+  const [trialUnsaved, setTrialUnsaved] = useState(false);
+  const [discardRunOpen, setDiscardRunOpen] = useState(false);
+  const [discardAction, setDiscardAction] = useState<"close" | "dataset">("close");
   const [evaluatorOpen, setEvaluatorOpen] = useState(false);
   const [datasetsForRun, setDatasetsForRun] = useState<DatasetSummary[]>([]);
   const [datasetId, setDatasetId] = useState("");
@@ -192,6 +196,8 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
     setValues(null);
     setSelectedId(null);
     setDraft(false);
+    setRunOpen(false);
+    setTrialUnsaved(false);
   }, [agentId]);
 
   useEffect(() => {
@@ -422,19 +428,25 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
   }
 
   async function openRun(): Promise<void> {
+    setRunMode("trial");
+    setRunError(null);
+    setRunOpen(true);
     try {
       const availableDatasets = await datasets.list();
       setDatasetsForRun(availableDatasets);
       setDatasetId(availableDatasets[0]?.id ?? "");
-      setRunError(null);
-      setRunOpen(true);
     } catch (err) {
-      setError(err);
+      setRunError(err);
     }
   }
 
-  async function runOverDataset(): Promise<void> {
+  async function runOverDataset(discardConfirmed = false): Promise<void> {
     if (!selected || !datasetId || runSubmitting) return;
+    if (trialUnsaved && !discardConfirmed) {
+      setDiscardAction("dataset");
+      setDiscardRunOpen(true);
+      return;
+    }
     setRunSubmitting(true);
     setRunError(null);
     try {
@@ -453,6 +465,23 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
 
   function closeRun(): void {
     if (runSubmitting) return;
+    if (trialUnsaved) {
+      setDiscardAction("close");
+      setDiscardRunOpen(true);
+      return;
+    }
+    setRunOpen(false);
+    setRunError(null);
+    setTrialUnsaved(false);
+  }
+
+  function discardAndContinue(): void {
+    setDiscardRunOpen(false);
+    setTrialUnsaved(false);
+    if (discardAction === "dataset") {
+      void runOverDataset(true);
+      return;
+    }
     setRunOpen(false);
     setRunError(null);
   }
@@ -497,6 +526,16 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
         )}
         {selected?.frozen && !draft && <Badge tone="warning">Frozen</Badge>}
         <div className="version-bar-actions">
+          <Button
+            variant="secondary"
+            onClick={() => setEvaluatorOpen(true)}
+            disabled={!selected}
+          >
+            Create evaluator
+          </Button>
+          <Button onClick={() => void openRun()} disabled={!selected}>
+            Run agent
+          </Button>
           {!empty && (
             <Button variant="secondary" onClick={startDraft}>
               New version
@@ -680,30 +719,6 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
           </div>
         )}
       </div>
-      {!specError && selected && (
-        <>
-          <AgentTrialPanel version={selected} />
-          <div className="form-actions">
-            <Button variant="secondary" onClick={() => setEvaluatorOpen(true)}>
-              Create evaluator
-            </Button>
-            <Button
-              variant="secondary"
-              onClick={() => void openRun()}
-              disabled={!selected}
-            >
-              Run over a dataset
-            </Button>
-          </div>
-        </>
-      )}
-      {!selected && (
-        <div className="form-actions">
-          <Button variant="secondary" disabled>
-            Run over a dataset
-          </Button>
-        </div>
-      )}
       <ConfirmDialog
         open={deleteOpen}
         title="Delete version"
@@ -744,41 +759,80 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
       )}
       <Modal
         open={runOpen}
-        title="Run agent over a dataset"
+        title="Run agent"
+        description={selected ? `Using ${selected.version_name}` : undefined}
+        placement="side"
         onClose={closeRun}
         footer={
-          <div className="form-actions">
-            <Button
-              variant="secondary"
-              onClick={closeRun}
+          <Button variant="secondary" onClick={closeRun} disabled={runSubmitting}>
+            Close
+          </Button>
+        }
+      >
+        <div className="agent-run-tabs" role="tablist" aria-label="Run mode">
+          <Button
+            variant="secondary"
+            role="tab"
+            aria-selected={runMode === "trial"}
+            onClick={() => setRunMode("trial")}
+          >
+            Try an input
+          </Button>
+          <Button
+            variant="secondary"
+            role="tab"
+            aria-selected={runMode === "dataset"}
+            onClick={() => setRunMode("dataset")}
+          >
+            Run a dataset
+          </Button>
+        </div>
+        <div role="tabpanel" hidden={runMode !== "trial"}>
+          {selected && (
+            <AgentTrialPanel
+              key={selected.id}
+              version={selected}
+              onUnsavedChange={setTrialUnsaved}
+            />
+          )}
+        </div>
+        <div role="tabpanel" hidden={runMode !== "dataset"}>
+          <ErrorBanner error={runError} onDismiss={() => setRunError(null)} />
+          <label className="field">
+            <span className="field-label">Dataset</span>
+            <Select
+              aria-label="Dataset"
+              value={datasetId}
               disabled={runSubmitting}
-            >
-              Cancel
-            </Button>
+              options={datasetsForRun.map((dataset) => ({
+                value: dataset.id,
+                label: dataset.name,
+              }))}
+              onChange={(event) => setDatasetId(event.target.value)}
+            />
+          </label>
+          <div className="form-actions">
             <Button
               onClick={() => void runOverDataset()}
               disabled={!datasetId || runSubmitting}
             >
-              {runSubmitting ? <Spinner /> : "Run agent"}
+              {runSubmitting ? <Spinner /> : "Run dataset"}
             </Button>
           </div>
-        }
-      >
-        <ErrorBanner error={runError} onDismiss={() => setRunError(null)} />
-        <label className="field">
-          <span className="field-label">Dataset</span>
-          <Select
-            aria-label="Dataset"
-            value={datasetId}
-            disabled={runSubmitting}
-            options={datasetsForRun.map((dataset) => ({
-              value: dataset.id,
-              label: dataset.name,
-            }))}
-            onChange={(event) => setDatasetId(event.target.value)}
-          />
-        </label>
+        </div>
       </Modal>
+      <ConfirmDialog
+        open={discardRunOpen}
+        title="Discard unsaved response?"
+        message={
+          discardAction === "dataset"
+            ? "Running a dataset will discard the unsaved response."
+            : "Closing the run panel will discard the unsaved response."
+        }
+        confirmLabel="Discard response"
+        onClose={() => setDiscardRunOpen(false)}
+        onConfirm={discardAndContinue}
+      />
     </section>
   );
 }
