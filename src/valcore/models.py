@@ -453,6 +453,29 @@ class AgentVersion(SQLModel, table=True):
         return agent_spec.output_column_names(agent_spec.parse_spec(self.spec))
 
 
+class AgentPromptSyncLink(SQLModel, table=True):
+    """Local cursor for the two templates synced to managed variables.
+
+    The version ID is intentionally not a foreign key: historical versions may be
+    deleted without breaking a still-linked agent.
+    """
+
+    __table_args__ = (UniqueConstraint("agent_id", name="uq_agent_prompt_sync_link_agent_id"),)
+
+    id: str = Field(default_factory=lambda: uuid4().hex, primary_key=True)
+    agent_id: str = Field(index=True)
+    key_fingerprint: str
+    agent_version_id: str
+    instructions_variable_name: str
+    input_template_variable_name: str
+    instructions_remote_version: int | None = None
+    input_template_remote_version: int | None = None
+    instructions_base_text: str
+    input_template_base_text: str
+    generation: int = 0
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class DatasetDerivation(SQLModel, table=True):
     """One saved agent run over a dataset, stored as an overlay rather than copied rows.
 

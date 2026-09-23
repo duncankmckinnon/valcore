@@ -7,8 +7,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypeVar
 
-from sqlalchemy import event, or_
+from sqlalchemy import delete, event, or_, update
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, func, select
 from sqlmodel import create_engine as _sqlmodel_create_engine
 
@@ -18,9 +19,11 @@ from valcore.errors import (
     FrozenVersionError,
     NotFoundError,
     ReferencedError,
+    SyncConflictError,
 )
 from valcore.models import (
     Agent,
+    AgentPromptSyncLink,
     AgentResponse,
     AgentVersion,
     Annotation,
@@ -100,6 +103,76 @@ def _require(session: Session, model: type[_Entity], id: str) -> _Entity:
     if entity is None:
         raise NotFoundError(f"{model.__name__} {id!r} does not exist.")
     return entity
+
+
+def _check_prompt_sync_local_state(
+    session: Session,
+    agent: Agent,
+    expected_active_version_id: str | None,
+    expected_local_texts: dict[str, str],
+) -> None:
+    """Reject a stale active version or an in-place edit to either template."""
+    if agent.active_version_id != expected_active_version_id or not agent.active_version_id:
+        raise SyncConflictError("The active agent version changed; inspect sync again.")
+    version = session.get(AgentVersion, agent.active_version_id)
+    if version is None or version.agent_id != agent.id:
+        raise SyncConflictError("The active agent version changed; inspect sync again.")
+    instructions = version.spec.get("instructions") if isinstance(version.spec, dict) else None
+    if (
+        not isinstance(instructions, str)
+        or instructions != expected_local_texts.get("instructions")
+        or version.prompt_template != expected_local_texts.get("input_template")
+    ):
+        raise SyncConflictError("An agent template changed; inspect sync again.")
+
+
+def _prompt_sync_cursor_values(field_updates: dict[str, dict[str, object]]) -> dict[str, object]:
+    """Translate selected template cursor updates into model column values."""
+    values: dict[str, object] = {}
+    for key, fields in field_updates.items():
+        if key not in {"instructions", "input_template"}:
+            raise ValueError(f"Unknown prompt sync template key: {key!r}.")
+        for field, value in fields.items():
+            if field not in {"base_text", "remote_version"}:
+                raise ValueError(f"Unknown prompt sync cursor field: {field!r}.")
+            values[f"{key}_{field}"] = value
+    return values
+
+
+def _advance_prompt_sync_cursor(
+    session: Session,
+    agent_id: str,
+    expected_generation: int,
+    field_updates: dict[str, dict[str, object]],
+    *,
+    agent_version_id: str | None = None,
+) -> AgentPromptSyncLink:
+    """Compare and advance a cursor in the caller's transaction."""
+    values = _prompt_sync_cursor_values(field_updates)
+    values["generation"] = AgentPromptSyncLink.generation + 1
+    values["updated_at"] = datetime.now(UTC)
+    if agent_version_id is not None:
+        values["agent_version_id"] = agent_version_id
+    result = session.exec(
+        update(AgentPromptSyncLink)
+        .where(
+            AgentPromptSyncLink.agent_id == agent_id,
+            AgentPromptSyncLink.generation == expected_generation,
+        )
+        .values(**values)
+    )
+    if result.rowcount != 1:
+        existing = session.exec(
+            select(AgentPromptSyncLink.id).where(AgentPromptSyncLink.agent_id == agent_id)
+        ).first()
+        if existing is None:
+            raise NotFoundError(f"Agent prompt sync link for {agent_id!r} does not exist.")
+        raise SyncConflictError("The prompt sync cursor changed; inspect sync again.")
+    session.expire_all()
+    link = session.exec(
+        select(AgentPromptSyncLink).where(AgentPromptSyncLink.agent_id == agent_id)
+    ).one()
+    return link
 
 
 def _raise_referenced(runs: list[Run], noun: str) -> None:
@@ -390,6 +463,11 @@ class Store:
             )
             if runs:
                 _raise_referenced(runs, "agent")
+            link = session.exec(
+                select(AgentPromptSyncLink).where(AgentPromptSyncLink.agent_id == id)
+            ).first()
+            if link is not None:
+                session.delete(link)
             versions = session.exec(select(AgentVersion).where(AgentVersion.agent_id == id))
             for version in versions:
                 session.delete(version)
@@ -491,6 +569,141 @@ class Store:
             agent.active_version_id = version.id
             session.add(agent)
             return version
+
+    # -- Agent prompt sync links --------------------------------------------
+
+    def get_agent_prompt_sync_link(self, agent_id: str) -> AgentPromptSyncLink | None:
+        """Return the local prompt sync cursor, if the agent is linked."""
+        with session_scope(self.engine) as session:
+            return session.exec(
+                select(AgentPromptSyncLink).where(AgentPromptSyncLink.agent_id == agent_id)
+            ).first()
+
+    def create_agent_prompt_sync_link(
+        self,
+        agent_id: str,
+        *,
+        key_fingerprint: str,
+        instructions_variable_name: str,
+        input_template_variable_name: str,
+        instructions_remote_version: int | None,
+        input_template_remote_version: int | None,
+        instructions_base_text: str,
+        input_template_base_text: str,
+        expected_active_version_id: str | None,
+        expected_local_texts: dict[str, str],
+        initial_version_fields: dict[str, object] | None = None,
+    ) -> AgentPromptSyncLink:
+        """Link an agent, optionally creating its first remotely sourced version atomically."""
+        try:
+            with session_scope(self.engine) as session:
+                agent = _require(session, Agent, agent_id)
+                _check_prompt_sync_local_state(
+                    session, agent, expected_active_version_id, expected_local_texts
+                )
+                if (
+                    session.exec(
+                        select(AgentPromptSyncLink.id).where(
+                            AgentPromptSyncLink.agent_id == agent_id
+                        )
+                    ).first()
+                    is not None
+                ):
+                    raise SyncConflictError("The agent is already linked; inspect sync again.")
+                version_id = agent.active_version_id
+                if initial_version_fields is not None:
+                    version = AgentVersion(agent_id=agent_id, **initial_version_fields)
+                    validate_agent_version(version)
+                    session.add(version)
+                    session.flush()
+                    version_id = version.id
+                    agent.active_version_id = version_id
+                    session.add(agent)
+                link = AgentPromptSyncLink(
+                    agent_id=agent_id,
+                    key_fingerprint=key_fingerprint,
+                    agent_version_id=version_id,
+                    instructions_variable_name=instructions_variable_name,
+                    input_template_variable_name=input_template_variable_name,
+                    instructions_remote_version=instructions_remote_version,
+                    input_template_remote_version=input_template_remote_version,
+                    instructions_base_text=instructions_base_text,
+                    input_template_base_text=input_template_base_text,
+                )
+                session.add(link)
+                session.flush()
+                return link
+        except IntegrityError as exc:
+            raise SyncConflictError("The agent is already linked; inspect sync again.") from exc
+
+    def advance_agent_prompt_sync_link(
+        self,
+        agent_id: str,
+        *,
+        expected_generation: int,
+        field_updates: dict[str, dict[str, object]],
+    ) -> AgentPromptSyncLink:
+        """Advance selected cursor fields if its generation is unchanged."""
+        with session_scope(self.engine) as session:
+            return _advance_prompt_sync_cursor(
+                session, agent_id, expected_generation, field_updates
+            )
+
+    def create_agent_version_and_advance_prompt_sync_link(
+        self,
+        agent_id: str,
+        *,
+        expected_active_version_id: str | None,
+        expected_local_texts: dict[str, str],
+        expected_generation: int,
+        version_fields: dict[str, object],
+        field_updates: dict[str, dict[str, object]],
+    ) -> AgentVersion:
+        """Validate and activate a pulled version with a cursor advance in one transaction."""
+        with session_scope(self.engine) as session:
+            agent = _require(session, Agent, agent_id)
+            if (
+                session.exec(
+                    select(AgentPromptSyncLink.id).where(AgentPromptSyncLink.agent_id == agent_id)
+                ).first()
+                is None
+            ):
+                raise NotFoundError(f"Agent prompt sync link for {agent_id!r} does not exist.")
+            _check_prompt_sync_local_state(
+                session, agent, expected_active_version_id, expected_local_texts
+            )
+            version = AgentVersion(agent_id=agent_id, **version_fields)
+            validate_agent_version(version)
+            session.add(version)
+            session.flush()
+            agent.active_version_id = version.id
+            session.add(agent)
+            _advance_prompt_sync_cursor(
+                session,
+                agent_id,
+                expected_generation,
+                field_updates,
+                agent_version_id=version.id,
+            )
+            session.refresh(version)
+            return version
+
+    def delete_agent_prompt_sync_link(self, agent_id: str, *, expected_generation: int) -> None:
+        """Unlink only if no other request has advanced the cursor."""
+        with session_scope(self.engine) as session:
+            result = session.exec(
+                delete(AgentPromptSyncLink).where(
+                    AgentPromptSyncLink.agent_id == agent_id,
+                    AgentPromptSyncLink.generation == expected_generation,
+                )
+            )
+            if result.rowcount != 1:
+                existing = session.exec(
+                    select(AgentPromptSyncLink.id).where(AgentPromptSyncLink.agent_id == agent_id)
+                ).first()
+                if existing is None:
+                    raise NotFoundError(f"Agent prompt sync link for {agent_id!r} does not exist.")
+                raise SyncConflictError("The prompt sync cursor changed; inspect sync again.")
 
     # -- Derivations ----------------------------------------------------------
 
