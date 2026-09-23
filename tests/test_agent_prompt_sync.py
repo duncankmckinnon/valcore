@@ -59,6 +59,7 @@ class FakeAdapter:
         self.fail_write: Exception | None = None
         self.after_read: Callable[[], None] | None = None
         self.after_write: Callable[[], None] | None = None
+        self.fingerprint: Callable[[], str | None] = lambda: FP
 
     @staticmethod
     def name(agent_id: str, key: str) -> str:
@@ -72,7 +73,9 @@ class FakeAdapter:
             templates[key] = RemoteTemplate(name, version, text)
         return RemoteSnapshot(templates)
 
-    def read(self, agent_id: str) -> RemoteSnapshot:
+    def read(self, agent_id: str, *, expected_fingerprint: str | None = None) -> RemoteSnapshot:
+        if expected_fingerprint is not None and self.fingerprint() != expected_fingerprint:
+            raise SyncConflictError("Logfire key changed; inspect again.")
         self.reads += 1
         snapshot = self._snapshot(agent_id)
         hook, self.after_read = self.after_read, None
@@ -85,7 +88,11 @@ class FakeAdapter:
         agent_id: str,
         changes: dict[str, str],
         expected_versions: dict[str, tuple[int | None, str | None]],
+        *,
+        expected_fingerprint: str | None = None,
     ) -> RemoteSnapshot:
+        if expected_fingerprint is not None and self.fingerprint() != expected_fingerprint:
+            raise SyncConflictError("Logfire key changed; inspect again.")
         if self.fail_write is not None:
             exc, self.fail_write = self.fail_write, None
             raise exc
@@ -218,6 +225,7 @@ def build_env(store: Store, *, with_version: bool = True, **version_overrides: A
         version_id = store.create_agent_version(agent.id, **fields).id
     adapter = FakeAdapter()
     key = Key()
+    adapter.fingerprint = lambda: key.value
     svc = AgentPromptSync(store, adapter, lambda: key.value)
     return Env(store, adapter, key, svc, agent.id, version_id)
 
@@ -417,6 +425,18 @@ def test_inspect_unsupported_remote_input_template(linked: Env) -> None:
     linked.set_remote("input_template", "{{#if question}}Answer {{question}}{{/if}}")
 
     assert linked.state("input_template") == "unsupported"
+
+
+def test_unsupported_remote_template_explains_the_reason(linked: Env) -> None:
+    linked.set_remote("input_template", "Answer {{unknown}}.")
+
+    record = linked.status().templates["input_template"]
+
+    assert record.state == "unsupported"
+    assert record.error is not None
+    assert "unknown" in record.error
+    with pytest.raises(ConfigError, match="unknown"):
+        linked.pull(["input_template"])
 
 
 def test_inspect_remote_template_with_undeclared_column_is_unsupported(linked: Env) -> None:
@@ -733,6 +753,35 @@ def test_link_retry_after_cursor_failure_does_not_write_another_version(
     assert {env.state(key) for key in KEYS} == {"in_sync"}
 
 
+def test_link_local_rejects_key_rotation_between_inspect_and_write(env: Env) -> None:
+    revision = env.rev()
+    env.adapter.after_read = lambda: setattr(env.key, "value", OTHER_FP)
+
+    with pytest.raises(SyncConflictError):
+        env.svc.link(env.agent_id, "local", revision)
+
+    assert env.adapter.writes == []
+    assert env.cursor() is None
+
+
+def test_remote_first_link_rejects_concurrent_non_template_edit(env: Env) -> None:
+    env.set_remote("instructions", "Remote instructions")
+    env.set_remote("input_template", BASE_TMPL_REMOTE)
+    revision = env.rev()
+    original = env.store.create_agent_prompt_sync_link
+
+    def racing_link(*args: Any, **kwargs: Any):
+        env.store.update_agent_version(env.version_id, notes="concurrent notes")
+        return original(*args, **kwargs)
+
+    env.store.create_agent_prompt_sync_link = racing_link  # type: ignore[method-assign]
+    with pytest.raises(SyncConflictError):
+        env.svc.link(env.agent_id, "remote", revision)
+
+    assert env.cursor() is None
+    assert env.active_version().notes == "concurrent notes"
+
+
 def test_link_failed_remote_write_leaves_no_cursor(env: Env) -> None:
     env.adapter.fail_write = ValcoreError("Logfire managed-variable request failed.")
 
@@ -965,6 +1014,36 @@ def test_pull_rejects_same_id_edit_of_unfrozen_version_after_inspect(linked: Env
     assert linked.cursor().generation == 0
 
 
+def test_pull_rejects_concurrent_non_template_edit(linked: Env) -> None:
+    linked.set_remote("instructions", "Remote instructions")
+    revision = linked.rev()
+    original = linked.store.create_agent_version_and_advance_prompt_sync_link
+
+    def racing_pull(*args: Any, **kwargs: Any):
+        linked.store.update_agent_version(linked.version_id, model="gateway/openai:gpt-5")
+        return original(*args, **kwargs)
+
+    linked.store.create_agent_version_and_advance_prompt_sync_link = racing_pull  # type: ignore[method-assign]
+    with pytest.raises(SyncConflictError):
+        linked.svc.pull(linked.agent_id, None, revision)
+
+    assert linked.active_version().model == "gateway/openai:gpt-5"
+    assert len(linked.store.list_agent_versions(linked.agent_id)) == 1
+    assert linked.cursor().generation == 0
+
+
+def test_push_rejects_key_rotation_between_inspect_and_write(linked: Env) -> None:
+    linked.edit_local(instructions="Local instructions")
+    revision = linked.rev()
+    linked.adapter.after_read = lambda: setattr(linked.key, "value", OTHER_FP)
+
+    with pytest.raises(SyncConflictError):
+        linked.svc.push(linked.agent_id, None, revision)
+
+    assert linked.adapter.writes == []
+    assert linked.cursor().generation == 0
+
+
 def test_pull_rejects_when_active_version_deleted_after_inspect(linked: Env) -> None:
     linked.new_local_version(version_name="second")
     linked.set_remote("instructions", "Remote instructions")
@@ -1164,9 +1243,9 @@ def test_push_uses_valcore_sync_semantics_only_via_the_adapter(linked: Env) -> N
     seen: list[dict] = []
     real_write = linked.adapter.write
 
-    def spy(agent_id: str, changes: dict, expected: dict):
+    def spy(agent_id: str, changes: dict, expected: dict, **kwargs: Any):
         seen.append({"changes": dict(changes), "expected": dict(expected)})
-        return real_write(agent_id, changes, expected)
+        return real_write(agent_id, changes, expected, **kwargs)
 
     linked.adapter.write = spy  # type: ignore[method-assign]
     linked.edit_local(template="Local {question}")
@@ -1480,9 +1559,9 @@ def test_resolve_local_recreating_a_deleted_variable_sends_null_expectation(
     seen: list[dict] = []
     real_write = linked.adapter.write
 
-    def spy(agent_id: str, changes: dict, expected: dict):
+    def spy(agent_id: str, changes: dict, expected: dict, **kwargs: Any):
         seen.append(dict(expected))
-        return real_write(agent_id, changes, expected)
+        return real_write(agent_id, changes, expected, **kwargs)
 
     linked.adapter.write = spy  # type: ignore[method-assign]
     linked.delete_remote("input_template")
@@ -1565,6 +1644,19 @@ def test_resolve_local_with_stale_remote_head_raises_and_keeps_cursor(linked: En
     linked.set_remote("instructions", "Remote edit")
     revision = linked.rev()
     linked.adapter.after_read = lambda: linked.set_remote("instructions", "Racing writer")
+
+    with pytest.raises(SyncConflictError):
+        linked.svc.resolve(linked.agent_id, ["instructions"], "local", revision)
+
+    assert linked.adapter.writes == []
+    assert linked.cursor().generation == 0
+
+
+def test_resolve_local_rejects_key_rotation_before_write(linked: Env) -> None:
+    linked.edit_local(instructions="Local edit")
+    linked.set_remote("instructions", "Remote edit")
+    revision = linked.rev()
+    linked.adapter.after_read = lambda: setattr(linked.key, "value", OTHER_FP)
 
     with pytest.raises(SyncConflictError):
         linked.svc.resolve(linked.agent_id, ["instructions"], "local", revision)

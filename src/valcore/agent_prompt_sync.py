@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Literal
 from uuid import uuid4
@@ -41,6 +42,7 @@ class TemplateStatus:
     remote_text: str | None
     remote_version: int | None
     base_remote_version: int | None
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,20 @@ def _version_fields(source: AgentVersion, texts: dict[str, str]) -> dict[str, ob
         "prompt_template": texts["input_template"],
         "required_columns": list(source.required_columns),
         "deps_mapping": dict(source.deps_mapping),
+    }
+
+
+def _source_fields(source: AgentVersion) -> dict[str, object]:
+    """Capture every source field copied into a pulled or remote-first version."""
+    return {
+        "version_name": source.version_name,
+        "notes": source.notes,
+        "frozen": source.frozen,
+        "model": source.model,
+        "spec": deepcopy(source.spec),
+        "prompt_template": source.prompt_template,
+        "required_columns": list(source.required_columns),
+        "deps_mapping": deepcopy(source.deps_mapping),
     }
 
 
@@ -161,7 +177,7 @@ class AgentPromptSync:
         elif link is not None and fingerprint != link.key_fingerprint:
             error = "The configured Logfire key changed; unlink before linking the new project."
         elif read_remote:
-            remote = self.adapter.read(agent_id)
+            remote = self.adapter.read(agent_id, expected_fingerprint=fingerprint)
 
         templates: dict[TemplateKey, TemplateStatus] = {}
         for key in KEYS:
@@ -174,16 +190,21 @@ class AgentPromptSync:
             raw_remote = item.text if item else None
             remote_text: str | None = None
             invalid = version is None
+            template_error: str | None = (
+                "Agent has no active version to sync." if version is None else None
+            )
             if version is not None:
                 try:
                     _validate_local(key, raw_local)
-                except ConfigError:
+                except ConfigError as exc:
                     invalid = True
+                    template_error = str(exc)
             if raw_remote is not None:
                 try:
                     remote_text = _validated_remote(key, raw_remote, version)
-                except ConfigError:
+                except ConfigError as exc:
                     invalid = True
+                    template_error = str(exc)
             state: State = (
                 "unsupported" if invalid or error else _state(local or "", base, remote_text)
             )
@@ -195,6 +216,7 @@ class AgentPromptSync:
                 remote_text=remote_text,
                 remote_version=item.version if item else None,
                 base_remote_version=base_version,
+                error=template_error,
             )
 
         cursor = (
@@ -290,6 +312,7 @@ class AgentPromptSync:
             ):
                 raise ConfigError(
                     f"{field} is {record.state} and is not eligible for this operation."
+                    + (f" {record.error}" if record.error else "")
                 )
             if field not in selected:
                 selected.append(field)  # type: ignore[arg-type]
@@ -326,7 +349,9 @@ class AgentPromptSync:
         records = inspected.status.templates
         for key in KEYS:
             if records[key].state == "unsupported":
-                raise ConfigError(f"{key} cannot be synced; fix the template first.")
+                raise ConfigError(
+                    f"{key} cannot be synced: {records[key].error or 'fix the template first.'}"
+                )
         if initial == "remote":
             for key in KEYS:
                 if records[key].state == "remote_missing":
@@ -358,6 +383,7 @@ class AgentPromptSync:
                         )
                         for key in changes
                     },
+                    expected_fingerprint=inspected.fingerprint,
                 )
                 if any(snapshot.templates[key].text != text for key, text in changes.items()):
                     raise SyncConflictError(
@@ -378,6 +404,7 @@ class AgentPromptSync:
             expected_active_version_id=version.id,
             expected_local_texts=local,
             initial_version_fields=initial_fields,
+            expected_source_fields=_source_fields(version) if initial_fields else None,
         )
         return self.inspect(agent_id)
 
@@ -418,6 +445,7 @@ class AgentPromptSync:
                 expected_generation=link.generation,
                 version_fields=fields,
                 field_updates=updates,
+                expected_source_fields=_source_fields(version),
             )
         return self.inspect(agent_id)
 
@@ -458,6 +486,7 @@ class AgentPromptSync:
                     )
                     for key in changes
                 },
+                expected_fingerprint=inspected.fingerprint,
             )
             if any(snapshot.templates[key].text != text for key, text in changes.items()):
                 raise SyncConflictError("Logfire variable read-back changed; inspect sync again.")

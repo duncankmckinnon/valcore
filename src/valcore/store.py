@@ -125,6 +125,17 @@ def _check_prompt_sync_local_state(
         raise SyncConflictError("An agent template changed; inspect sync again.")
 
 
+def _check_prompt_sync_source(
+    session: Session, version_id: str, expected_fields: dict[str, object]
+) -> None:
+    """Reject in-place edits to any field a new version would copy."""
+    source = session.get(AgentVersion, version_id)
+    if source is None or any(
+        getattr(source, field) != expected for field, expected in expected_fields.items()
+    ):
+        raise SyncConflictError("The active agent version changed; inspect sync again.")
+
+
 def _begin_prompt_sync_write(session: Session) -> None:
     """Serialize SQLite writers before reading the active version or its templates."""
     session.connection().exec_driver_sql("BEGIN IMMEDIATE")
@@ -594,6 +605,7 @@ class Store:
         expected_active_version_id: str | None,
         expected_local_texts: dict[str, str],
         initial_version_fields: dict[str, object] | None = None,
+        expected_source_fields: dict[str, object] | None = None,
     ) -> AgentPromptSyncLink:
         """Link an agent, optionally creating its first remotely sourced version atomically."""
         with session_scope(self.engine) as session:
@@ -602,6 +614,12 @@ class Store:
             _check_prompt_sync_local_state(
                 session, agent, expected_active_version_id, expected_local_texts
             )
+            if initial_version_fields is not None and expected_source_fields is not None:
+                if expected_active_version_id is None:
+                    raise SyncConflictError("The active agent version changed; inspect sync again.")
+                _check_prompt_sync_source(
+                    session, expected_active_version_id, expected_source_fields
+                )
             if (
                 session.exec(
                     select(AgentPromptSyncLink.id).where(AgentPromptSyncLink.agent_id == agent_id)
@@ -676,6 +694,7 @@ class Store:
         expected_generation: int,
         version_fields: dict[str, object],
         field_updates: dict[str, dict[str, object]],
+        expected_source_fields: dict[str, object] | None = None,
     ) -> AgentVersion:
         """Validate and activate a pulled version with a cursor advance in one transaction."""
         with session_scope(self.engine) as session:
@@ -684,6 +703,12 @@ class Store:
             _check_prompt_sync_local_state(
                 session, agent, expected_active_version_id, expected_local_texts
             )
+            if expected_source_fields is not None:
+                if expected_active_version_id is None:
+                    raise SyncConflictError("The active agent version changed; inspect sync again.")
+                _check_prompt_sync_source(
+                    session, expected_active_version_id, expected_source_fields
+                )
             version = AgentVersion(agent_id=agent_id, **version_fields)
             validate_agent_version(version)
             session.add(version)

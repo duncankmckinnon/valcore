@@ -8,6 +8,7 @@ write key. The SDK's latest saved version is the read source; the dedicated
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 from collections.abc import Mapping
@@ -136,12 +137,29 @@ def _check_serving_references(variable: VariableConfig) -> None:
 class PromptVariableAdapter:
     """An injectable boundary for an agent's two ordinary Logfire variables."""
 
-    def read(self, agent_id: str) -> RemoteSnapshot:
-        """Return latest saved raw strings, with absent variables represented by nulls."""
-        names = _names(agent_id)
+    @staticmethod
+    def key_fingerprint() -> str | None:
+        """Fingerprint the configured project key without exposing it to callers."""
+        key = config.resolve_logfire_write_key(config.load_config())
+        return hashlib.sha256(key.encode()).hexdigest() if key else None
+
+    @staticmethod
+    def _key(expected_fingerprint: str | None) -> str:
+        """Resolve once and verify the key used by this exact SDK request."""
         key = config.resolve_logfire_write_key(config.load_config())
         if not key:
             raise ConfigError(f"Logfire variable sync requires an API key with {_REQUIRED_SCOPES}.")
+        if (
+            expected_fingerprint is not None
+            and hashlib.sha256(key.encode()).hexdigest() != expected_fingerprint
+        ):
+            raise SyncConflictError("The configured Logfire key changed; inspect sync again.")
+        return key
+
+    def read(self, agent_id: str, *, expected_fingerprint: str | None = None) -> RemoteSnapshot:
+        """Return latest saved raw strings, with absent variables represented by nulls."""
+        names = _names(agent_id)
+        key = self._key(expected_fingerprint)
         try:
             instance = logfire.configure(
                 local=True, send_to_logfire=False, console=False, api_key=key
@@ -158,6 +176,8 @@ class PromptVariableAdapter:
         agent_id: str,
         changes: Mapping[TemplateKey, str],
         expected_versions: Mapping[TemplateKey, tuple[int | None, str | None]],
+        *,
+        expected_fingerprint: str | None = None,
     ) -> RemoteSnapshot:
         """Publish selected texts after checking their latest remote version and text.
 
@@ -174,9 +194,7 @@ class PromptVariableAdapter:
         if any(not isinstance(value, str) for value in changes.values()):
             raise ValueError("Prompt variable values must be strings")
 
-        key = config.resolve_logfire_write_key(config.load_config())
-        if not key:
-            raise ConfigError(f"Logfire variable sync requires an API key with {_REQUIRED_SCOPES}.")
+        key = self._key(expected_fingerprint)
         try:
             instance = logfire.configure(
                 local=True, send_to_logfire=False, console=False, api_key=key

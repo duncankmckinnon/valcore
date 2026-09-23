@@ -168,6 +168,25 @@ def expected(
     return result
 
 
+def test_configured_key_rotation_is_rejected_before_sdk_request(harness):
+    adapter = PromptVariableAdapter()
+    inspected_fingerprint = adapter.key_fingerprint()
+    assert inspected_fingerprint and KEY not in inspected_fingerprint
+    save_config(FileConfig(logfire_write_key="sk-another-project"))
+
+    with pytest.raises(SyncConflictError):
+        adapter.read(AGENT_ID, expected_fingerprint=inspected_fingerprint)
+    with pytest.raises(SyncConflictError):
+        adapter.write(
+            AGENT_ID,
+            {"instructions": "new"},
+            {"instructions": (None, None)},
+            expected_fingerprint=inspected_fingerprint,
+        )
+
+    assert harness.configure_calls == []
+
+
 # --------------------------------------------------------------------------- read
 
 
