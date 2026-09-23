@@ -31,8 +31,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from valcore.agent_prompt_sync import AgentPromptSync
 
+from valcore.agent_prompt_sync import AgentPromptSync
 from valcore.errors import ConfigError, SyncConflictError, ValcoreError
 from valcore.logfire_prompt_variables import RemoteSnapshot, RemoteTemplate
 from valcore.store import Store, create_engine, init_db
