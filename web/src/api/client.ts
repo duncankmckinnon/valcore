@@ -94,18 +94,11 @@ async function parseError(response: Response): Promise<ApiError> {
     response.statusText || `Request failed with status ${response.status}`;
   let detail: Record<string, unknown> | null = null;
   try {
-    const body = await response.clone().json();
+    const body = await response.json();
     if (body && typeof body === "object" && body.error) {
       type = body.error.type ?? type;
       message = body.error.message ?? message;
       detail = body.error.detail ?? null;
-    } else if (
-      body &&
-      typeof body === "object" &&
-      typeof body.type === "string"
-    ) {
-      type = body.type;
-      if (typeof body.detail === "string") message = body.detail;
     }
   } catch {
     // Non-JSON error body (e.g. an HTML 500 page); fall back to the status text.
@@ -131,9 +124,9 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   }
   const contentType = response.headers.get("Content-Type") ?? "";
   if (contentType.includes("application/json")) {
-    return (await response.clone().json()) as T;
+    return (await response.json()) as T;
   }
-  return (await response.clone().text()) as T;
+  return (await response.text()) as T;
 }
 
 function jsonBody(data: unknown): RequestInit {

@@ -1628,7 +1628,9 @@ describe("agents prompt sync client helpers", () => {
   };
 
   function mockFetch(body: unknown) {
-    return vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(body));
+    return vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => jsonResponse(body));
   }
 
   it("promptSyncStatus GETs /api/agents/{id}/prompt-sync and parses the body", async () => {
@@ -1677,7 +1679,7 @@ describe("agents prompt sync client helpers", () => {
       fields: ["instructions"],
       expected_revision: "rev-1",
     });
-    expect(result.active_version_id).toBe("av2");
+    expect(result).toEqual(pulled);
   });
 
   it("promptSyncPull omits fields when none are given", async () => {
@@ -1752,7 +1754,7 @@ describe("agents prompt sync client helpers", () => {
     expect(JSON.parse(init?.body as string)).toEqual({
       expected_revision: "rev-1",
     });
-    expect(result.linked).toBe(false);
+    expect(result).toEqual(unlinked);
   });
 
   it("never sends a Logfire key in any mutation body", async () => {
@@ -1769,13 +1771,17 @@ describe("agents prompt sync client helpers", () => {
   it("surfaces a stale-revision conflict as an ApiError", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse(
-        { detail: "revision changed", type: "SyncConflictError" },
+        { error: { type: "SyncConflictError", message: "revision changed" } },
         { status: 409 },
       ),
     );
 
     await expect(
       agents.promptSyncPush("a1", { expected: "stale" }),
-    ).rejects.toMatchObject({ status: 409, type: "SyncConflictError" });
+    ).rejects.toMatchObject({
+      status: 409,
+      type: "SyncConflictError",
+      message: "revision changed",
+    });
   });
 });

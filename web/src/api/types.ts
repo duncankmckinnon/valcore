@@ -233,7 +233,7 @@ export type PromptSyncFieldsRequest = PromptSyncRevision & {
   fields?: PromptSyncField[];
 };
 export type PromptSyncResolveRequest = PromptSyncRevision & {
-  fields: PromptSyncField[];
+  fields: [PromptSyncField, ...PromptSyncField[]];
   choice: PromptSyncChoice;
 };
 
