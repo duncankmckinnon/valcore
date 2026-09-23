@@ -211,6 +211,12 @@ source of truth (`scripts/sync_command_table.py --check` fails CI if the two dri
 | `valcore agent derivation list` | List saved and staged response derivations. |
 | `valcore agent derivation save <ref>` | Accept a staged derivation. |
 | `valcore agent derivation discard <ref>` | Discard a derivation. |
+| `valcore agent prompt-sync status <agent>` | Inspect local agent text and the configured Logfire project's latest variable versions. |
+| `valcore agent prompt-sync link <agent> --initial local\|remote` | Link an agent, choosing the initial text source. |
+| `valcore agent prompt-sync pull <agent>` | Pull remote text into a new local agent version, with confirmation. |
+| `valcore agent prompt-sync push <agent>` | Push local text into new Logfire variable versions, with confirmation. |
+| `valcore agent prompt-sync resolve <agent> --choice local\|remote --field FIELD` | Show a three-way diff and explicitly resolve selected conflicts. |
+| `valcore agent prompt-sync unlink <agent>` | Remove the local sync link. |
 | `valcore agent import <file>` | Import a YAML or JSON AgentSpec and its valcore binding. |
 | `valcore agent export <agent>` | Export an agent version as a YAML AgentSpec with its valcore binding. |
 | `valcore config set <key> <value>` | Set any config key, including `model`, `local_cli_default`, `port`, `concurrency`, and `db_path`. |
