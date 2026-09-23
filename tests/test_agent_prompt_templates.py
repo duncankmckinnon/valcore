@@ -7,12 +7,12 @@ instruction string. Conversion must round-trip exactly, and every unsupported fo
 """
 
 import pytest
+
 from valcore.agent_prompt_templates import (
     local_to_remote_input,
     remote_to_local_input,
     validate_instruction_text,
 )
-
 from valcore.errors import ConfigError
 
 # --- local -> remote -------------------------------------------------------------------------
