@@ -3,8 +3,9 @@
 valcore can explicitly sync an agent's two text templates with ordinary Logfire
 **managed variables**, so a prompt can be edited in Logfire and pulled back, or authored in
 valcore and pushed. Sync is an editing convenience only. It is **not** live runtime prompt
-loading: agent trials and dataset runs always use the local agent version and never contact
-Logfire, so every existing agent version stays runnable offline.
+loading: agent trials and dataset runs always use the local agent version and make no
+Logfire prompt-sync calls. Existing agent versions remain executable without Logfire;
+optional Logfire tracing and hosted model calls have their own network behavior.
 
 ## What syncs, and what does not
 

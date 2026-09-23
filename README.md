@@ -390,7 +390,8 @@ disables console capture. See Logfire's
 Logfire-side setup.
 
 Agent `instructions` and input templates can also be synced explicitly with ordinary Logfire
-managed variables (not Prompt Management objects). Runs stay local and offline. See
+managed variables (not Prompt Management objects). Runs use the local agent version and make
+no prompt-sync calls to Logfire. See
 [Agent prompt sync with Logfire](docs/agent-logfire-prompt-sync.md) for the required
 `project:read_variables` and `project:write_variables` key, the conflict flow, and limits.
 
