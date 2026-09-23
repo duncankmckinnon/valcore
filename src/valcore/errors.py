@@ -13,10 +13,6 @@ class ConfigError(ValcoreError):
     """Raised for an invalid evaluator version configuration."""
 
 
-class SyncConflictError(ValcoreError):
-    """Raised when a prompt sync input changed since it was inspected."""
-
-
 class ContractError(ValcoreError):
     """Raised when a dataset and evaluator are incompatible."""
 
