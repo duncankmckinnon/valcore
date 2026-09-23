@@ -389,6 +389,11 @@ disables console capture. See Logfire's
 [frontend observability guide](https://pydantic.dev/logfire/observe/frontend/) for the
 Logfire-side setup.
 
+Agent `instructions` and input templates can also be synced explicitly with ordinary Logfire
+managed variables (not Prompt Management objects). Runs stay local and offline. See
+[Agent prompt sync with Logfire](docs/agent-logfire-prompt-sync.md) for the required
+`project:read_variables` and `project:write_variables` key, the conflict flow, and limits.
+
 `valcore run experiment <evaluator> --dataset <dataset>` runs the same evaluation through
 `pydantic_evals.Dataset.evaluate` instead of the evaluator runner, so it also appears in
 Logfire's experiments view on the valcore tracing project. It persists a run the same way
