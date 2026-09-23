@@ -31,10 +31,10 @@ from logfire.variables.config import (
     VariableConfig,
     VariablesConfig,
 )
-from valcore.logfire_prompt_variables import PromptVariableAdapter
 
 from valcore.config import FileConfig, save_config
 from valcore.errors import ConfigError, SyncConflictError, ValcoreError
+from valcore.logfire_prompt_variables import PromptVariableAdapter
 
 AGENT_ID = "agt123"
 INSTR = f"valcore_agent_{AGENT_ID}_instructions"
@@ -712,3 +712,62 @@ def test_real_sdk_models_serialize_the_pushed_shape():
         "serialized_value": '"x"',
     }
     assert restored.variables[INSTR].json_schema == {"type": "string"}
+
+
+# ------------------------------------------------------------- extra edge cases
+
+
+def test_read_rejects_non_json_stored_value(harness, remote):
+    remote[INSTR] = make_variable(INSTR, "x")
+    remote[INSTR].latest_version = LatestVersion(version=1, serialized_value="not json{")
+
+    with pytest.raises(ConfigError, match="JSON string"):
+        PromptVariableAdapter().read(AGENT_ID)
+    assert [i.shutdowns for i in harness.instances] == [1]
+
+
+def test_configure_failure_is_sanitized(harness, remote):
+    harness.configure_error = RuntimeError(f"boom {KEY}")
+
+    with pytest.raises(ValcoreError) as exc:
+        PromptVariableAdapter().read(AGENT_ID)
+
+    assert KEY not in str(exc.value)
+
+
+def test_write_requires_expected_versions_for_every_change(harness, remote):
+    with pytest.raises(ValueError):
+        PromptVariableAdapter().write(AGENT_ID, {"instructions": "x"}, {})
+
+
+def test_write_rejects_non_string_value(harness, remote):
+    with pytest.raises(ValueError):
+        PromptVariableAdapter().write(AGENT_ID, {"instructions": 5}, {"instructions": None})  # type: ignore[dict-item]
+
+
+def test_rejects_sync_label_ahead_of_latest(harness, remote):
+    remote[INSTR] = make_variable(
+        INSTR,
+        "old",
+        version=1,
+        labels={"valcore_sync": LabeledValue(version=7, serialized_value='"x"')},
+    )
+
+    with pytest.raises(ConfigError):
+        PromptVariableAdapter().write(AGENT_ID, {"instructions": "new"}, {"instructions": 1})
+
+    assert harness.instances[0].pushes == []
+
+
+def test_rejects_sync_label_diverging_from_latest_text(harness, remote):
+    remote[INSTR] = make_variable(
+        INSTR,
+        "old",
+        version=1,
+        labels={"valcore_sync": LabeledValue(version=1, serialized_value='"different"')},
+    )
+
+    with pytest.raises(ConfigError):
+        PromptVariableAdapter().write(AGENT_ID, {"instructions": "new"}, {"instructions": 1})
+
+    assert harness.instances[0].pushes == []
