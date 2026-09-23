@@ -648,8 +648,6 @@ def run_agent(
         row_data: dict[str, Any] = source_row.data
     else:
         row_data = _parse_agent_inputs(inputs)
-        if not row_data:
-            raise ContractError("Provide --dataset with --row, or at least one --input KEY=VALUE.")
 
     if prompt_text is None:
         prompt = render_agent_prompt(version.prompt_template, row_data)
@@ -717,7 +715,7 @@ def agent_import(ctx: click.Context, path: Path, name: str | None) -> None:
         raise ContractError(f"Could not read agent spec {path}: {exc}") from exc
     metadata = spec.metadata if isinstance(spec.metadata, dict) else {}
     binding = metadata.get("valcore")
-    required = ("model", "prompt_template", "required_columns", "deps_mapping")
+    required = ("model",)
     missing = [field for field in required if not isinstance(binding, dict) or field not in binding]
     if missing:
         raise ContractError(f"Agent spec is missing valcore binding fields: {', '.join(missing)}.")
@@ -730,9 +728,9 @@ def agent_import(ctx: click.Context, path: Path, name: str | None) -> None:
         "version_name": "v1",
         "model": binding["model"],
         "spec": stored_spec,
-        "prompt_template": binding["prompt_template"],
-        "required_columns": binding["required_columns"],
-        "deps_mapping": binding["deps_mapping"],
+        "prompt_template": binding.get("prompt_template", ""),
+        "required_columns": binding.get("required_columns", []),
+        "deps_mapping": binding.get("deps_mapping", {}),
     }
     try:
         validate_agent_version(AgentVersion(agent_id="", **version_fields))

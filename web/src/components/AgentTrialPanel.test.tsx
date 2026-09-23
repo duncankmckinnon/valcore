@@ -129,6 +129,18 @@ describe("AgentTrialPanel", () => {
     await waitFor(() => expect(datasetsListMock).toHaveBeenCalled());
   });
 
+  it("accepts optional freeform input when the agent has no mapped fields", async () => {
+    const user = userEvent.setup();
+    render(<AgentTrialPanel version={makeVersion({ required_columns: [] })} />);
+
+    await user.type(screen.getByLabelText("Input (optional)"), "Explain this");
+    await user.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => expect(trialMock).toHaveBeenCalledWith("av-1", {
+      inputs: { input: "Explain this" },
+    }));
+  });
+
   it("runs a trial with the typed inputs and renders the prompt, output, and latency", async () => {
     const user = userEvent.setup();
     render(<AgentTrialPanel version={makeVersion()} />);

@@ -406,6 +406,24 @@ def test_run_agent_prompt_bypasses_the_version_prompt_template(
     assert store.list_runs() == []
 
 
+def test_run_agent_without_input_uses_instruction_only_version(
+    runner: CliRunner, store: Store, db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = store.create_agent("helper")
+    store.create_agent_version(
+        agent.id,
+        version_name="v1",
+        model="local/codex",
+        spec={"instructions": "Help the user."},
+    )
+    monkeypatch.setattr(_cli_main_module(), "build_agent_from_version", _test_agent_builder)
+
+    result = _invoke(runner, db_path, "run", "agent", "helper", "--json")
+
+    assert result.exit_code == 0, result.output + result.stderr
+    assert json.loads(result.stdout)["prompt"] == ""
+
+
 def test_run_agent_prompt_does_not_map_row_dependencies(
     runner: CliRunner, store: Store, db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -603,15 +621,14 @@ def test_agent_export_then_import_round_trips_spec_and_binding(
 def test_agent_import_rejects_spec_without_valcore_binding(
     runner: CliRunner, db_path: Path, tmp_path: Path
 ) -> None:
-    """Import must not invent dataset bindings absent from a portable AgentSpec."""
+    """Import needs a valcore model route even when input bindings are optional."""
     artifact = tmp_path / "unbound.yaml"
     AgentSpec(model="test", name="unbound").to_file(artifact)
 
     result = _invoke(runner, db_path, "agent", "import", str(artifact))
 
     assert result.exit_code == 1
-    assert "prompt_template" in result.stderr
-    assert "required_columns" in result.stderr
+    assert "model" in result.stderr
 
 
 def test_agent_import_invalid_binding_writes_no_orphaned_agent(

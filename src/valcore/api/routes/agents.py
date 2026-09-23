@@ -10,7 +10,7 @@ from typing import Annotated, Any
 
 import yaml
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from valcore import agent_spec, config
 from valcore.agent_spec import AgentSpec
@@ -52,9 +52,9 @@ class AgentVersionCreate(BaseModel):
     notes: str = ""
     model: str
     spec: dict[str, Any]
-    prompt_template: str
-    required_columns: list[str]
-    deps_mapping: dict[str, str] = {}
+    prompt_template: str = ""
+    required_columns: list[str] = Field(default_factory=list)
+    deps_mapping: dict[str, str] = Field(default_factory=dict)
 
 
 class AgentVersionUpdate(BaseModel):

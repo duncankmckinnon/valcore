@@ -6,7 +6,6 @@ import {
   useEffect,
   useRef,
   useState,
-  type KeyboardEvent,
 } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, agents, datasets, runs } from "../api/client";
@@ -15,8 +14,12 @@ import type {
   AgentVersion,
   AgentVersionCreate,
   DatasetSummary,
+  CapabilitySpec,
 } from "../api/types";
 import AgentTrialPanel from "../components/AgentTrialPanel";
+import EvaluatorFromAgent from "../components/EvaluatorFromAgent";
+import { CapabilitiesEditor } from "../components/CapabilitiesEditor";
+import { useSetup } from "../components/useSetup";
 import type { AppConfig } from "../components/VersionEditor";
 import { PageHeader } from "../components/PageHeader";
 import {
@@ -55,16 +58,15 @@ function editorValues(version: AgentVersion): EditorValues {
   };
 }
 
-// A newly created agent has no versions, so its editor opens on a blank draft rather
-// than having nothing to select. The server rejects a version with no required columns,
-// so the draft starts on a single `input` binding that saves without further editing.
+// A new agent needs instructions, but no dataset input contract. Without a template,
+// the runtime forwards the complete input after those instructions.
 function blankValues(): EditorValues {
   return {
     version_name: "v1",
     notes: "",
     model: "",
-    prompt_template: "{input}",
-    required_columns: "input",
+    prompt_template: "",
+    required_columns: "",
     deps_mapping: [["", ""]],
     spec: "{}",
   };
@@ -100,11 +102,48 @@ function mappingObject(rows: [string, string][]): Record<string, string> {
   return Object.fromEntries(rows.filter(([key]) => key.trim() !== ""));
 }
 
+function specObject(source: string): Record<string, unknown> | null {
+  try {
+    const value: unknown = JSON.parse(source);
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function specCapabilities(spec: Record<string, unknown> | null): CapabilitySpec[] {
+  if (!Array.isArray(spec?.capabilities)) return [];
+  return spec.capabilities.flatMap((entry: unknown) => {
+    if (typeof entry === "string") return [{ name: entry, config: {} }];
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const capability = entry as Record<string, unknown>;
+    if (typeof capability.name === "string") {
+      const config = capability.config;
+      return [{
+        name: capability.name,
+        config: config && typeof config === "object" && !Array.isArray(config)
+          ? config as Record<string, unknown>
+          : {},
+      }];
+    }
+    const [name, config] = Object.entries(capability)[0] ?? [];
+    return name ? [{
+      name,
+      config: config && typeof config === "object" && !Array.isArray(config)
+        ? config as Record<string, unknown>
+        : {},
+    }] : [];
+  });
+}
+
 /** Displays, edits, and trials the versions attached to an agent. */
 export default function AgentDetail({ agentId }: AgentDetailProps) {
   const navigate = useNavigate();
   const [detail, setDetail] = useState<AgentDetailData | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
+  const { status: setupStatus } = useSetup();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [values, setValues] = useState<EditorValues | null>(null);
   const [specError, setSpecError] = useState<string | null>(null);
@@ -115,6 +154,7 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
   const [importOpen, setImportOpen] = useState(false);
   const [importContent, setImportContent] = useState("");
   const [runOpen, setRunOpen] = useState(false);
+  const [evaluatorOpen, setEvaluatorOpen] = useState(false);
   const [datasetsForRun, setDatasetsForRun] = useState<DatasetSummary[]>([]);
   const [datasetId, setDatasetId] = useState("");
   const [runError, setRunError] = useState<unknown>(null);
@@ -122,6 +162,7 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
   // React may batch the final keystrokes before a following button click. Keeping the
   // current draft in a ref ensures template braces are not lost in that interaction.
   const valuesRef = useRef<EditorValues | null>(null);
+  const modelEdited = useRef(false);
 
   const load = useCallback(
     async (preferId?: string): Promise<void> => {
@@ -143,6 +184,15 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
     },
     [agentId],
   );
+
+  useEffect(() => {
+    valuesRef.current = null;
+    modelEdited.current = false;
+    setDetail(null);
+    setValues(null);
+    setSelectedId(null);
+    setDraft(false);
+  }, [agentId]);
 
   useEffect(() => {
     void load();
@@ -170,16 +220,17 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
   // Seed the blank draft, then fill its model once the config's default arrives. An
   // already-typed model is left alone, so a late config never overwrites an edit.
   useEffect(() => {
-    if (!empty) return;
+    if (!empty || !config || modelEdited.current) return;
     const current = valuesRef.current;
-    if (current && current.model !== "") return;
     const next = {
       ...(current ?? blankValues()),
-      model: config?.default_model ?? "",
+      model: setupStatus?.keys.find((key) => key.name === "gateway_api_key")?.set === false
+        ? `local/${setupStatus.local_cli_default ?? setupStatus.local_cli_options[0] ?? "claude"}`
+        : config.default_model,
     };
     valuesRef.current = next;
     setValues(next);
-  }, [empty, config]);
+  }, [empty, config, setupStatus]);
 
   function updateValues(change: Partial<EditorValues>): void {
     setValues((current) => {
@@ -203,19 +254,9 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
     }
   }
 
-  function insertTemplateToken(
-    event: KeyboardEvent<HTMLTextAreaElement>,
-  ): void {
-    // Testing-library (and some IMEs) emits an unrecognised braced token as one key.
-    // Treat that as literal template text so Handlebars placeholders remain editable.
-    if (event.key.length <= 1 || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(event.key))
-      return;
-    event.preventDefault();
-    const input = event.currentTarget;
-    const start = input.selectionStart;
-    const end = input.selectionEnd;
-    const next = `${input.value.slice(0, start)}{${event.key}}${input.value.slice(end)}`;
-    updateValues({ prompt_template: next });
+  function updateSpecField(name: string, value: unknown): void {
+    const spec = specObject(valuesRef.current?.spec ?? "");
+    if (spec) updateSpec(JSON.stringify({ ...spec, [name]: value }, null, 2));
   }
 
   function changeMapping(index: number, part: 0 | 1, value: string): void {
@@ -303,6 +344,7 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
       };
       valuesRef.current = next;
       setValues(next);
+      modelEdited.current = true;
       setSpecError(null);
       setImportOpen(false);
       setImportContent("");
@@ -421,6 +463,15 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
   if (!values) return <Spinner />;
   const readOnly = selected !== null && selected.frozen && !showDraft;
   const rows = values.deps_mapping;
+  const parsedSpec = specObject(values.spec);
+  const instructions = parsedSpec?.instructions;
+  const gatewayEnabled = setupStatus?.keys.find((key) => key.name === "gateway_api_key")?.set !== false;
+  const localModels = (setupStatus?.local_cli_options ?? ["claude", "codex", "cursor"]).map((name) => `local/${name}`);
+  const modelOptions = [
+    ...(values.model ? [values.model] : []),
+    ...localModels,
+    ...(gatewayEnabled ? config?.models ?? [] : []),
+  ].filter((model, index, all) => all.indexOf(model) === index);
 
   return (
     <section className="agent-detail">
@@ -507,15 +558,29 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
         </label>
         <label className="field">
           <span className="field-label">Model</span>
-          <input
+          <Select
             aria-label="Model"
-            readOnly={readOnly}
+            disabled={readOnly}
             value={values.model}
-            onChange={(event) => updateValues({ model: event.target.value })}
+            options={[{ value: "", label: "Select a model…" }, ...modelOptions.map((model) => ({ value: model, label: model }))]}
+            onChange={(event) => {
+              modelEdited.current = true;
+              updateValues({ model: event.target.value });
+            }}
           />
         </label>
         <label className="field">
-          <span className="field-label">Prompt template</span>
+          <span className="field-label">Instructions</span>
+          <TextArea
+            aria-label="Instructions"
+            readOnly={readOnly || !parsedSpec}
+            rows={8}
+            value={Array.isArray(instructions) ? instructions.join("\n\n") : String(instructions ?? "")}
+            onChange={(event) => updateSpecField("instructions", event.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span className="field-label">Input template (optional)</span>
           <TextArea
             aria-label="Prompt template"
             readOnly={readOnly}
@@ -523,11 +588,11 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
             onChange={(event) =>
               updateValues({ prompt_template: event.target.value })
             }
-            onKeyDown={insertTemplateToken}
           />
+          <span className="muted">Leave blank to pass all input after the instructions.</span>
         </label>
         <label className="field">
-          <span className="field-label">Required columns</span>
+          <span className="field-label">Input fields (optional)</span>
           <input
             aria-label="Required columns"
             readOnly={readOnly}
@@ -538,7 +603,7 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
           />
         </label>
         <fieldset className="field">
-          <legend className="field-label">Deps mapping</legend>
+          <legend className="field-label">Variables mapping (optional)</legend>
           {rows.map(([key, value], index) => (
             <div key={index}>
               <input
@@ -565,6 +630,16 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
             </Button>
           )}
         </fieldset>
+        <div className="field">
+          <span className="field-label">Harness capabilities</span>
+          <p className="muted">Gateway agents can use multi-step planning, code, files, and shell capabilities. Local CLIs use their own tools.</p>
+          <CapabilitiesEditor
+            available={(config?.capabilities ?? []).filter((name) => name !== "SubAgents")}
+            value={specCapabilities(parsedSpec)}
+            readOnly={readOnly || !parsedSpec || values.model.startsWith("local/")}
+            onChange={(capabilities) => updateSpecField("capabilities", capabilities.map(({ name, config }) => ({ [name]: config })))}
+          />
+        </div>
         <label className="field">
           <span className="field-label">Spec</span>
           <TextArea
@@ -609,6 +684,9 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
         <>
           <AgentTrialPanel version={selected} />
           <div className="form-actions">
+            <Button variant="secondary" onClick={() => setEvaluatorOpen(true)}>
+              Create evaluator
+            </Button>
             <Button
               variant="secondary"
               onClick={() => void openRun()}
@@ -655,6 +733,15 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
           />
         </label>
       </Modal>
+      {selected && (
+        <EvaluatorFromAgent
+          key={selected.id}
+          open={evaluatorOpen}
+          version={selected}
+          onGenerated={(generated) => navigate("/evaluators", { state: { draft: generated } })}
+          onClose={() => setEvaluatorOpen(false)}
+        />
+      )}
       <Modal
         open={runOpen}
         title="Run agent over a dataset"

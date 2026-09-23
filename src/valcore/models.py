@@ -441,7 +441,7 @@ class AgentVersion(SQLModel, table=True):
     frozen: bool = False
     model: str
     spec: dict = Field(default_factory=dict, sa_column=Column(JSON))
-    prompt_template: str
+    prompt_template: str = ""
     required_columns: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     deps_mapping: dict = Field(default_factory=dict, sa_column=Column(JSON))
 

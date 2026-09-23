@@ -154,7 +154,14 @@ def build_agent_from_version(version: AgentVersion) -> PydanticAgent:
     validate_agent_version(version)
     spec = agent_spec.parse_spec(version.spec)
     instructions = agent_spec.runtime_instructions(spec)
-    spec_without_instructions = spec.model_copy(update={"instructions": None})
+    # Local coding CLIs already run their own multi-step tool loops. Their bridge model
+    # does not expose Pydantic AI tool calls, so harness wrappers apply only to gateway runs.
+    spec_without_instructions = spec.model_copy(
+        update={
+            "instructions": None,
+            "capabilities": [] if is_local_cli_model(version.model) else spec.capabilities,
+        }
+    )
     try:
         return PydanticAgent.from_spec(
             spec_without_instructions,

@@ -148,6 +148,9 @@ until accepted with `--save` or `valcore agent derivation save REF`. Use `--data
 --row N` for one existing row, or repeat `--input KEY=VALUE` for an ad-hoc trial; those are
 ephemeral unless `--save` is also paired with `--dataset`. `-p/--prompt TEXT` sends literal
 text directly to the agent, bypassing its prompt template, and cannot be saved.
+An agent may have no input fields or prompt template. In that case ad-hoc `--input input=TEXT`
+is sent as plain text, and dataset rows are sent as JSON after the agent's instructions.
+Running without any inputs sends an empty request. Dependency mappings remain optional.
 
 ### `valcore agent derivation {list|save|discard}`
 

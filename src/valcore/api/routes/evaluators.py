@@ -7,7 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict
 
-from valcore import config, generator
+from valcore import agent_spec, config, generator
 from valcore.api.deps import get_store
 from valcore.config_io import EvalPackage
 from valcore.errors import ContractError, FrozenVersionError
@@ -104,6 +104,7 @@ class GenerateRequest(BaseModel):
     criteria: str
     columns: list[str] | None = None
     dataset_id: str | None = None
+    agent_version_id: str | None = None
     label_set_id: str | None = None
     column_notes: dict[str, str] | None = None
     label_schema: LabelSchema | None = None
@@ -379,7 +380,7 @@ async def export_version_json(
 
 def _resolve_seed(
     body: GenerateRequest, store: Store
-) -> tuple[list[str] | None, LabelSchema | None]:
+) -> tuple[list[str] | None, LabelSchema | None, dict[str, str] | None]:
     """Resolve the column set and label space a generation call should be seeded with.
 
     An explicit ``label_schema`` prescribes the score space and overrides whatever the
@@ -394,6 +395,33 @@ def _resolve_seed(
     """
     columns = body.columns
     label_schema: LabelSchema | None = body.label_schema
+    notes: dict[str, str] = {}
+    if body.agent_version_id is not None:
+        if body.dataset_id is not None or body.label_set_id is not None:
+            raise ContractError(
+                "agent_version_id cannot be combined with dataset_id or label_set_id."
+            )
+        version = store.get_agent_version(body.agent_version_id)
+        spec = agent_spec.parse_spec(version.spec)
+        inputs = version.required_columns or ["input"]
+        outputs = agent_spec.output_column_names(spec)
+        available = list(dict.fromkeys([*inputs, *outputs]))
+        properties = (spec.output_schema or {}).get("properties", {})
+        for name in outputs:
+            description = properties.get(name, {}).get("description")
+            notes[name] = f"Agent output. {description}" if description else "Agent output."
+        for name in inputs:
+            if name not in outputs:
+                notes[name] = "Input supplied to the agent."
+        if body.columns:
+            unknown = [name for name in body.columns if name not in available]
+            if unknown:
+                raise ContractError(
+                    f"column(s) {unknown} are not in the agent contract {available}."
+                )
+            columns = [name for name in available if name in set(body.columns)]
+        else:
+            columns = available
     if body.dataset_id is not None:
         dataset = store.get_dataset(body.dataset_id)
         label_set = None
@@ -446,7 +474,12 @@ def _resolve_seed(
                 f"column_notes key(s) {unknown} are not in the resolved column set {columns}."
             )
 
-    return columns, label_schema
+    notes.update(body.column_notes or {})
+    return (
+        columns,
+        label_schema,
+        {name: notes[name] for name in columns or [] if name in notes} or None,
+    )
 
 
 @router.post("/generate", response_model=GeneratedConfig)
@@ -459,11 +492,11 @@ async def generate(body: GenerateRequest, store: StoreDep) -> GeneratedConfig:
     editable draft saved as a version separately.
     """
     _require_gateway_key_unless_local()
-    columns, label_schema = _resolve_seed(body, store)
+    columns, label_schema, column_notes = _resolve_seed(body, store)
     return await generator.generate_config(
         body.criteria,
         columns=columns,
-        column_notes=body.column_notes,
+        column_notes=column_notes,
         label_schema=label_schema,
     )
 
@@ -478,11 +511,11 @@ async def generate_version(id: str, body: GenerateRequest, store: StoreDep) -> G
     """
     _require_gateway_key_unless_local()
     store.get_evaluator(id)
-    columns, label_schema = _resolve_seed(body, store)
+    columns, label_schema, column_notes = _resolve_seed(body, store)
     return await generator.generate_config(
         body.criteria,
         columns=columns,
-        column_notes=body.column_notes,
+        column_notes=column_notes,
         label_schema=label_schema,
     )
 

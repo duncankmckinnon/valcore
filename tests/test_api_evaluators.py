@@ -651,6 +651,72 @@ def _recording_generate(calls: list[dict]):
 
 
 @pytest.mark.anyio
+async def test_generate_from_agent_uses_input_and_output_contract(
+    app, store: Store, monkeypatch
+) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    agent = store.create_agent("Support agent")
+    version = store.create_agent_version(
+        agent.id,
+        version_name="v1",
+        model="gateway/anthropic:claude-sonnet-5",
+        spec={
+            "instructions": "Answer the user.",
+            "output_schema": {
+                "type": "object",
+                "properties": {"answer": {"type": "string", "description": "Final reply"}},
+            },
+        },
+        prompt_template="",
+        required_columns=["question", "context"],
+        deps_mapping={},
+    )
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={
+                "criteria": "Score helpfulness",
+                "agent_version_id": version.id,
+                "column_notes": {"context": "Use only when relevant"},
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert calls[0]["columns"] == ["question", "context", "answer"]
+    assert calls[0]["column_notes"] == {
+        "question": "Input supplied to the agent.",
+        "context": "Use only when relevant",
+        "answer": "Agent output. Final reply",
+    }
+
+
+@pytest.mark.anyio
+async def test_generate_from_unmapped_agent_uses_freeform_input_and_response(
+    app, store: Store, monkeypatch
+) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    agent = store.create_agent("Assistant")
+    version = store.create_agent_version(
+        agent.id,
+        version_name="v1",
+        model="gateway/anthropic:claude-sonnet-5",
+        spec={"instructions": "Help the user."},
+    )
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/evaluators/generate",
+            json={"criteria": "Score quality", "agent_version_id": version.id},
+        )
+
+    assert response.status_code == 200, response.text
+    assert calls[0]["columns"] == ["input", "response"]
+
+
+@pytest.mark.anyio
 async def test_generate_dataset_id_fills_columns(app, store: Store, monkeypatch) -> None:
     calls: list[dict] = []
     monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))

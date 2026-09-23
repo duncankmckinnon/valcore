@@ -6,6 +6,7 @@ API validate it identically, and lets it be tested without a database or model
 call.
 """
 
+import json
 import re
 import string
 from collections.abc import Callable, Mapping
@@ -117,9 +118,6 @@ def validate_binding(
     deps_mapping: dict[str, str],
 ) -> None:
     """Ensure a valcore binding can satisfy an agent spec from a dataset row."""
-    if not required_columns:
-        raise ConfigError("Agent version must define at least one required column.")
-
     template_columns = {
         field_name
         for _, field_name, _, _ in string.Formatter().parse(prompt_template)
@@ -168,6 +166,10 @@ def build_deps(deps_mapping: dict[str, str], row_data: dict[str, Any]) -> dict[s
 
 def render_agent_prompt(prompt_template: str, row_data: dict[str, Any]) -> str:
     """Format an agent user prompt from a row, stringifying its values."""
+    if not prompt_template:
+        if set(row_data) == {"input"}:
+            return str(row_data["input"])
+        return json.dumps(row_data, ensure_ascii=False, indent=2) if row_data else ""
     values = {key: str(value) for key, value in row_data.items()}
     try:
         return prompt_template.format(**values)

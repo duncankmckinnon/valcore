@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { agents, datasets } from "../api/client";
 import type { AgentVersion, DatasetSummary, TrialResult } from "../api/types";
-import { Button, ConfirmDialog, ErrorBanner, Select, Spinner } from "./ui";
+import { Button, ConfirmDialog, ErrorBanner, Select, Spinner, TextArea } from "./ui";
 
 /** Props for a scratch trial bound to one immutable agent version. */
 export type AgentTrialPanelProps = {
@@ -33,6 +33,7 @@ export default function AgentTrialPanel({ version }: AgentTrialPanelProps) {
   const [inputs, setInputs] = useState<Record<string, string>>(() =>
     emptyInputs(version.required_columns),
   );
+  const [freeformInput, setFreeformInput] = useState("");
   const [trial, setTrial] = useState<PendingTrial | null>(null);
   const [unsaved, setUnsaved] = useState(false);
   const [rerunConfirmOpen, setRerunConfirmOpen] = useState(false);
@@ -47,6 +48,7 @@ export default function AgentTrialPanel({ version }: AgentTrialPanelProps) {
 
   useEffect(() => {
     setInputs(emptyInputs(version.required_columns));
+    setFreeformInput("");
     setTrial(null);
     setUnsaved(false);
     setRerunConfirmOpen(false);
@@ -92,7 +94,9 @@ export default function AgentTrialPanel({ version }: AgentTrialPanelProps) {
 
   async function runTrial(): Promise<void> {
     const trialVersionId = version.id;
-    const trialInputs: Record<string, unknown> = { ...inputs };
+    const trialInputs: Record<string, unknown> = version.required_columns.length
+      ? { ...inputs }
+      : freeformInput ? { input: freeformInput } : {};
     setRunning(true);
     setError(null);
     try {
@@ -165,6 +169,16 @@ export default function AgentTrialPanel({ version }: AgentTrialPanelProps) {
           />
         </label>
       ))}
+      {version.required_columns.length === 0 && (
+        <label className="field">
+          <span className="field-label">Input (optional)</span>
+          <TextArea
+            aria-label="Input (optional)"
+            value={freeformInput}
+            onChange={(event) => setFreeformInput(event.target.value)}
+          />
+        </label>
+      )}
 
       <div className="form-actions">
         <Button onClick={requestRun} disabled={running}>

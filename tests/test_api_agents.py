@@ -80,6 +80,19 @@ async def _create_agent_and_version(client: httpx.AsyncClient) -> tuple[dict, di
     return agent, version_response.json()
 
 
+@pytest.mark.anyio
+async def test_version_without_input_binding_uses_optional_defaults(store: Store) -> None:
+    async with _client(store) as client:
+        agent = (await client.post("/api/agents", json={"name": "Helper"})).json()
+        response = await client.post(
+            f"/api/agents/{agent['id']}/versions",
+            json={"version_name": "v1", "model": MODEL, "spec": SPEC},
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["prompt_template"] == ""
+    assert response.json()["required_columns"] == []
+
+
 # -- Agent and version lifecycle ---------------------------------------------
 
 
