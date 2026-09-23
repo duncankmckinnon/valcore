@@ -47,16 +47,18 @@ vi.mock("../components/AgentPromptSync", () => ({
     open,
     onClose,
     onPulled,
+    beforeLocalReplace,
   }: {
     agentId: string;
     open: boolean;
     onClose: () => void;
     onPulled: (activeVersionId: string | null) => void;
+    beforeLocalReplace?: () => Promise<boolean>;
   }) =>
     open ? (
       <div role="dialog" aria-label="Logfire sync">
         Prompt sync for {agentId}
-        <button onClick={() => onPulled("av-2")}>Simulate pull</button>
+        <button onClick={() => void (async () => { if (!beforeLocalReplace || await beforeLocalReplace()) onPulled("av-2"); })()}>Simulate pull</button>
         <button onClick={onClose}>Close sync</button>
       </div>
     ) : null,
@@ -853,6 +855,43 @@ describe("AgentDetail", () => {
     await user.click(screen.getByRole("button", { name: "Simulate pull" }));
 
     await waitFor(() => expect(agents.get).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByLabelText("Version")).toHaveValue("av-2"));
+    expect(screen.getByLabelText("Prompt template")).toHaveValue("Remote: {question}");
+  });
+
+  it("keeps unsaved editor changes when a remote replacement is cancelled", async () => {
+    vi.mocked(agents.get).mockResolvedValue(makeDetail());
+    const user = userEvent.setup();
+    renderDetail();
+    const prompt = await screen.findByLabelText("Prompt template");
+    await user.clear(prompt);
+    fireEvent.change(prompt, { target: { value: "Unsaved: {question}" } });
+    await user.click(screen.getByRole("button", { name: "Logfire sync" }));
+    await user.click(screen.getByRole("button", { name: "Simulate pull" }));
+    const confirm = await screen.findByRole("dialog", { name: "Discard unsaved agent edits?" });
+    expect(screen.getByLabelText("Prompt template")).toHaveValue("Unsaved: {question}");
+    await user.click(within(confirm).getByRole("button", { name: "Cancel" }));
+    expect(agents.get).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("Prompt template")).toHaveValue("Unsaved: {question}");
+  });
+
+  it("replaces unsaved editor changes only after explicit discard confirmation", async () => {
+    const pulled = makeVersion({ id: "av-2", prompt_template: "Remote: {question}" });
+    vi.mocked(agents.get).mockResolvedValueOnce(makeDetail()).mockResolvedValue(
+      makeDetail({
+        agent: { ...makeDetail().agent, active_version_id: "av-2", version_count: 2 },
+        versions: [makeVersion(), pulled],
+      }),
+    );
+    const user = userEvent.setup();
+    renderDetail();
+    const prompt = await screen.findByLabelText("Prompt template");
+    fireEvent.change(prompt, { target: { value: "Unsaved: {question}" } });
+    await user.click(screen.getByRole("button", { name: "Logfire sync" }));
+    await user.click(screen.getByRole("button", { name: "Simulate pull" }));
+    const confirm = await screen.findByRole("dialog", { name: "Discard unsaved agent edits?" });
+    expect(agents.get).toHaveBeenCalledTimes(1);
+    await user.click(within(confirm).getByRole("button", { name: "Discard edits" }));
     await waitFor(() => expect(screen.getByLabelText("Version")).toHaveValue("av-2"));
     expect(screen.getByLabelText("Prompt template")).toHaveValue("Remote: {question}");
   });

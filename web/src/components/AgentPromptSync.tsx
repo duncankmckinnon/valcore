@@ -14,6 +14,7 @@ type Props = {
   open: boolean;
   onClose: () => void;
   onPulled: (activeVersionId: string | null) => void;
+  beforeLocalReplace?: () => Promise<boolean>;
 };
 
 const fields: PromptSyncField[] = ["instructions", "input_template"];
@@ -39,18 +40,18 @@ function messageOf(error: unknown): string {
 }
 
 /** Shows the inspected three-way diff and performs only user-initiated sync actions. */
-export default function AgentPromptSync({ agentId, open, onClose, onPulled }: Props) {
+export default function AgentPromptSync({ agentId, open, onClose, onPulled, beforeLocalReplace }: Props) {
   const [status, setStatus] = useState<PromptSyncStatus | null>(null);
   const [keyPresent, setKeyPresent] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [awaitingEditorDecision, setAwaitingEditorDecision] = useState(false);
   const [selected, setSelected] = useState<Record<PromptSyncField, boolean>>({
     instructions: true,
     input_template: true,
   });
   const [choices, setChoices] = useState<Partial<Record<PromptSyncField, PromptSyncChoice>>>({});
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
-  const [showLinkOptions, setShowLinkOptions] = useState(true);
 
   useEffect(() => {
     if (!open) return;
@@ -61,7 +62,6 @@ export default function AgentPromptSync({ agentId, open, onClose, onPulled }: Pr
     setSelected({ instructions: true, input_template: true });
     setChoices({});
     setConfirmation(null);
-    setShowLinkOptions(true);
     void setup.get().then((result) => {
       if (live) setKeyPresent(result.keys.some((key) => key.name === "logfire_write_key" && key.set));
     }).catch((err: unknown) => {
@@ -81,6 +81,28 @@ export default function AgentPromptSync({ agentId, open, onClose, onPulled }: Pr
     return fresh;
   }
 
+  async function refresh() {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try { await inspect(); } catch (err) { setError(messageOf(err)); }
+    finally { setBusy(false); }
+  }
+
+  function requireReviewedRevision(fresh: PromptSyncStatus, reviewed: PromptSyncStatus): boolean {
+    if (fresh.revision === reviewed.revision) return true;
+    setChoices({});
+    setError("Sync state changed. Review the refreshed diff and confirm again.");
+    return false;
+  }
+
+  async function allowLocalReplace(): Promise<boolean> {
+    if (!beforeLocalReplace) return true;
+    setAwaitingEditorDecision(true);
+    try { return await beforeLocalReplace(); }
+    finally { setAwaitingEditorDecision(false); }
+  }
+
   function eligible(current: PromptSyncStatus, field: PromptSyncField, action: "pull" | "push") {
     return current.templates[field].state === (action === "pull" ? "remote_changed" : "local_changed");
   }
@@ -91,11 +113,13 @@ export default function AgentPromptSync({ agentId, open, onClose, onPulled }: Pr
     setError(null);
     try {
       const fresh = await inspect();
+      if (!requireReviewedRevision(fresh, status)) return;
       if (fresh.error) return;
       if (action === "link-local" || action === "link-remote") {
         if (fresh.linked || !fresh.local_version_id ||
             fields.some((field) => fresh.templates[field].state === "unsupported") ||
             (action === "link-remote" && fields.some((field) => fresh.templates[field].remote_version === null))) return;
+        if (action === "link-remote" && !await allowLocalReplace()) return;
         const result = await agents.promptSyncLink(agentId, {
           initial: action === "link-local" ? "local" : "remote",
           expected: fresh.revision,
@@ -106,6 +130,7 @@ export default function AgentPromptSync({ agentId, open, onClose, onPulled }: Pr
         const chosen = fields.filter((field) => selected[field] && eligible(status, field, action));
         if (!fresh.linked || chosen.length === 0 || chosen.some((field) => !eligible(fresh, field, action))) return;
         if (action === "pull") {
+          if (!await allowLocalReplace()) return;
           const result = await agents.promptSyncPull(agentId, { fields: chosen, expected: fresh.revision });
           setStatus(result);
           onPulled(result.active_version_id);
@@ -131,23 +156,21 @@ export default function AgentPromptSync({ agentId, open, onClose, onPulled }: Pr
     setError(null);
     try {
       // A changed key has a local-only revision that is valid only for Unlink.
-      const fresh = pending.kind === "unlink" && status.error
-        ? status
-        : await inspect();
+      const fresh = await inspect();
+      if (!requireReviewedRevision(fresh, status)) return;
       if (pending.kind === "unlink") {
         if (!fresh.linked) return;
-        setStatus(await agents.promptSyncUnlink(agentId, { expected: fresh.revision }));
-        setShowLinkOptions(false);
+        await agents.promptSyncUnlink(agentId, { expected: fresh.revision });
+        // Unlink's response can be local-only after key rotation. Preview the new
+        // key's project before any new Link option can be used.
+        setStatus(null);
+        await inspect();
       } else {
-        if (fresh.revision !== status.revision) {
-          setChoices({});
-          setError("Sync state changed. Review the refreshed diff and confirm again.");
-          return;
-        }
         if (fresh.error || !fresh.linked || pending.fields.some((field) => {
           const state = fresh.templates[field].state;
           return state !== "conflict" && !(state === "remote_missing" && pending.choice === "local");
         })) return;
+        if (pending.choice === "remote" && !await allowLocalReplace()) return;
         const result = await agents.promptSyncResolve(agentId, {
           fields: pending.fields,
           choice: pending.choice,
@@ -173,16 +196,14 @@ export default function AgentPromptSync({ agentId, open, onClose, onPulled }: Pr
   const pushable = status?.linked && fields.some((field) => eligible(status, field, "push"));
   const pullFields = status ? fields.filter((field) => selected[field] && eligible(status, field, "pull")) : [];
   const pushFields = status ? fields.filter((field) => selected[field] && eligible(status, field, "push")) : [];
-  const resolved = status ? fields.filter((field) => status.templates[field].state === "conflict" && choices[field]) : [];
-  const resolveChoice = resolved.length ? choices[resolved[0]] : undefined;
-  const canResolve = resolved.length > 0 && resolved.every((field) => choices[field] === resolveChoice);
 
   return (
     <>
-      <Modal open title="Logfire sync" size="lg" onClose={onClose} footer={<Button variant="secondary" onClick={onClose}>Close</Button>}>
+      <Modal open title="Logfire sync" size="lg" escapeEnabled={!confirmation && !awaitingEditorDecision} onClose={onClose} footer={<Button variant="secondary" onClick={onClose}>Close</Button>}>
         <div className="prompt-sync">
           {keyPresent === false && <p>Configure the Logfire sync key in Settings to enable writes.</p>}
           <ErrorBanner error={error || status?.error} />
+          <Button variant="secondary" disabled={busy} onClick={() => void refresh()}>Inspect</Button>
           {!status && !error && <Spinner />}
           {status && <>
             <p>{status.linked ? "Linked" : "Not linked"} · Local version {status.local_version_id ?? "none"}</p>
@@ -204,12 +225,12 @@ export default function AgentPromptSync({ agentId, open, onClose, onPulled }: Pr
                   {status.linked && !status.error && item.state === "conflict" && <div className="prompt-sync-choices">
                     <label><input type="radio" name={`resolve-${field}`} checked={choices[field] === "local"} onChange={() => setChoices((old) => ({ ...old, [field]: "local" }))} /> Keep local text for {field === "instructions" ? "instructions" : "input template"}</label>
                     <label><input type="radio" name={`resolve-${field}`} checked={choices[field] === "remote"} onChange={() => setChoices((old) => ({ ...old, [field]: "remote" }))} /> Use remote text for {field === "instructions" ? "instructions" : "input template"}</label>
+                    <Button disabled={!canWrite || !choices[field]} onClick={() => setConfirmation({ kind: "resolve", fields: [field], choice: choices[field]! })}>Resolve</Button>
                   </div>}
                 </fieldset>;
               })}
             </div>
-            {!status.linked && !showLinkOptions && <Button onClick={() => setShowLinkOptions(true)}>Link</Button>}
-            {!status.linked && showLinkOptions && <div className="prompt-sync-actions">
+            {!status.linked && <div className="prompt-sync-actions">
               <div><Button disabled={!canWrite || !status.local_version_id || fields.some((field) => status.templates[field].state === "unsupported")} onClick={() => void mutate("link-local")}>Link with local text</Button><p>Creates missing Logfire variables and publishes local text to new variable versions.</p></div>
               <div><Button variant="secondary" disabled={!canWrite || !status.local_version_id || fields.some((field) => status.templates[field].remote_version === null || status.templates[field].state === "unsupported")} onClick={() => void mutate("link-remote")}>Link with remote text</Button><p>Creates a new local agent version from the remote text.</p></div>
             </div>}
@@ -217,7 +238,6 @@ export default function AgentPromptSync({ agentId, open, onClose, onPulled }: Pr
               {!status.error && <>
                 {pullable && <div><Button disabled={!canWrite || pullFields.length === 0} onClick={() => void mutate("pull")}>Pull</Button><p>Pull selected remote text into a new local agent version.</p></div>}
                 {pushable && <div><Button disabled={!canWrite || pushFields.length === 0} onClick={() => void mutate("push")}>Push</Button><p>Push selected local text as a new Logfire variable version. The production label and other serving labels stay unchanged.</p></div>}
-                {fields.some((field) => status.templates[field].state === "conflict") && <Button disabled={!canWrite || !canResolve} onClick={() => setConfirmation({ kind: "resolve", fields: resolved as [PromptSyncField, ...PromptSyncField[]], choice: resolveChoice! })}>Resolve</Button>}
                 {fields.filter((field) => status.templates[field].state === "remote_missing").map((field) => <Button key={field} disabled={!canWrite} onClick={() => setConfirmation({ kind: "resolve", fields: [field], choice: "local" })}>Recreate on Logfire</Button>)}
               </>}
               <Button variant="secondary" disabled={busy} onClick={() => setConfirmation({ kind: "unlink" })}>Unlink</Button>

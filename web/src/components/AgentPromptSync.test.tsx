@@ -611,7 +611,7 @@ describe("AgentPromptSync", () => {
   });
 
   describe("refresh and stale revisions", () => {
-    it("refreshes status immediately before applying and uses the fresh revision", async () => {
+    it("requires another action when the pre-apply revision changed", async () => {
       pushMock.mockResolvedValue(makeStatus({ revision: "rev-3" }));
       const user = userEvent.setup();
       await renderOpen(
@@ -634,15 +634,51 @@ describe("AgentPromptSync", () => {
 
       await user.click(screen.getByRole("button", { name: "Push" }));
 
-      await waitFor(() =>
-        expect(pushMock).toHaveBeenCalledWith("agent-1", {
-          fields: ["instructions"],
-          expected: "rev-2",
-        }),
-      );
-      expect(statusMock.mock.invocationCallOrder[1]).toBeLessThan(
-        pushMock.mock.invocationCallOrder[0],
-      );
+      await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Review the refreshed diff"));
+      expect(pushMock).not.toHaveBeenCalled();
+      await user.click(screen.getByRole("button", { name: "Push" }));
+      await waitFor(() => expect(pushMock).toHaveBeenCalledWith("agent-1", {
+        fields: ["instructions"], expected: "rev-2",
+      }));
+    });
+
+    it("does not link newly changed remote text without another review", async () => {
+      const user = userEvent.setup();
+      await renderOpen(unlinkedPreview());
+      statusMock.mockResolvedValue(makeStatus({ ...unlinkedPreview(), revision: "rev-2",
+        templates: { ...unlinkedPreview().templates,
+          instructions: template("instructions", { state: "remote_changed", local_text: "Local instructions", base_text: null, remote_text: "New remote instructions", remote_version: 3, base_remote_version: null }),
+        },
+      }));
+      await user.click(screen.getByRole("button", { name: "Link with remote text" }));
+      await waitFor(() => expect(group("Instructions")).toHaveTextContent("New remote instructions"));
+      expect(linkMock).not.toHaveBeenCalled();
+    });
+
+    it("does not pull a remote edit made after the displayed inspection", async () => {
+      const user = userEvent.setup();
+      await renderOpen(makeStatus({ templates: {
+        instructions: remoteChanged("instructions"), input_template: inSync("input_template", "Q"),
+      } }));
+      statusMock.mockResolvedValue(makeStatus({ revision: "rev-2", templates: {
+        instructions: template("instructions", { ...remoteChanged("instructions"), remote_text: "New remote edit", remote_version: 5 }),
+        input_template: inSync("input_template", "Q"),
+      } }));
+      await user.click(screen.getByRole("button", { name: "Pull" }));
+      await waitFor(() => expect(group("Instructions")).toHaveTextContent("New remote edit"));
+      expect(pullMock).not.toHaveBeenCalled();
+    });
+
+    it("offers a read-only Inspect action while the dialog stays open", async () => {
+      const user = userEvent.setup();
+      await renderOpen(makeStatus());
+      statusMock.mockResolvedValue(makeStatus({ revision: "rev-2", templates: {
+        instructions: remoteChanged("instructions"), input_template: inSync("input_template", "Q"),
+      } }));
+      await user.click(screen.getByRole("button", { name: "Inspect" }));
+      await waitFor(() => expect(group("Instructions")).toHaveTextContent("REMOTE edit"));
+      expect(statusMock).toHaveBeenCalledTimes(2);
+      expect(pullMock).not.toHaveBeenCalled();
     });
 
     it("does not write when the pre-apply refresh shows the field is no longer eligible", async () => {
@@ -751,6 +787,41 @@ describe("AgentPromptSync", () => {
     it("keeps Resolve disabled until a side is chosen", async () => {
       await openConflict();
       expect(screen.getByRole("button", { name: "Resolve" })).toBeDisabled();
+    });
+
+    it("resolves two conflicts in opposite directions one field at a time", async () => {
+      const afterFirst = makeStatus({ revision: "rev-2", templates: {
+        instructions: inSync("instructions", "LOCAL edit", 5), input_template: conflict("input_template"),
+      } });
+      resolveMock.mockResolvedValueOnce(afterFirst).mockResolvedValue(makeStatus({ revision: "rev-3" }));
+      const user = userEvent.setup();
+      await renderOpen(makeStatus({ templates: {
+        instructions: conflict("instructions"), input_template: conflict("input_template"),
+      } }));
+      await user.click(screen.getByRole("radio", { name: "Keep local text for instructions" }));
+      await user.click(screen.getByRole("radio", { name: "Use remote text for input template" }));
+      await user.click(within(group("Instructions")).getByRole("button", { name: "Resolve" }));
+      await user.click(within(screen.getByRole("dialog", { name: "Confirm resolve" })).getByRole("button", { name: "Confirm" }));
+      await waitFor(() => expect(resolveMock).toHaveBeenCalledWith("agent-1", {
+        fields: ["instructions"], choice: "local", expected: "rev-1",
+      }));
+      statusMock.mockResolvedValue(afterFirst);
+      await user.click(screen.getByRole("radio", { name: "Use remote text for input template" }));
+      await user.click(within(group("Input template")).getByRole("button", { name: "Resolve" }));
+      await user.click(within(screen.getByRole("dialog", { name: "Confirm resolve" })).getByRole("button", { name: "Confirm" }));
+      await waitFor(() => expect(resolveMock).toHaveBeenCalledWith("agent-1", {
+        fields: ["input_template"], choice: "remote", expected: "rev-2",
+      }));
+    });
+
+    it("Escape cancels confirmation without closing the sync dialog", async () => {
+      const user = await openConflict();
+      await user.click(screen.getByRole("radio", { name: "Keep local text for instructions" }));
+      await user.click(screen.getByRole("button", { name: "Resolve" }));
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("dialog", { name: "Confirm resolve" })).not.toBeInTheDocument();
+      expect(screen.getByRole("dialog", { name: "Logfire sync" })).toBeInTheDocument();
+      expect(resolveMock).not.toHaveBeenCalled();
     });
 
     it("resolves with local text only after confirmation", async () => {
@@ -901,10 +972,21 @@ describe("AgentPromptSync", () => {
   });
 
   describe("unlink and key rotation", () => {
+
+    it("does not unlink a replacement link after the confirmed revision changes", async () => {
+      const user = userEvent.setup();
+      await renderOpen(makeStatus());
+      await user.click(screen.getByRole("button", { name: "Unlink" }));
+      statusMock.mockResolvedValue(makeStatus({ revision: "replacement" }));
+      await user.click(within(screen.getByRole("dialog", { name: "Unlink Logfire sync?" })).getByRole("button", { name: "Unlink" }));
+      await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Review the refreshed diff"));
+      expect(unlinkMock).not.toHaveBeenCalled();
+    });
     it("unlinks only after confirmation and explains only the local link is removed", async () => {
       unlinkMock.mockResolvedValue(makeStatus({ linked: false, revision: "rev-2" }));
       const user = userEvent.setup();
       await renderOpen(makeStatus());
+      statusMock.mockResolvedValueOnce(makeStatus()).mockResolvedValue(unlinkedPreview());
 
       await user.click(screen.getByRole("button", { name: "Unlink" }));
       const confirm = screen.getByRole("dialog", { name: "Unlink Logfire sync?" });
@@ -915,7 +997,7 @@ describe("AgentPromptSync", () => {
       await waitFor(() =>
         expect(unlinkMock).toHaveBeenCalledWith("agent-1", { expected: "rev-1" }),
       );
-      expect(await screen.findByRole("button", { name: /^Link/ })).toBeInTheDocument();
+      expect(await screen.findByRole("button", { name: "Link with local text" })).toBeInTheDocument();
     });
 
     it("makes no request when the unlink confirmation is cancelled", async () => {
@@ -962,6 +1044,20 @@ describe("AgentPromptSync", () => {
       await waitFor(() =>
         expect(unlinkMock).toHaveBeenCalledWith("agent-1", { expected: "local-only" }),
       );
+    });
+
+    it("previews the new key's project after rebind unlink before offering Link", async () => {
+      const rotated = makeStatus({ revision: "local-only", error: "The Logfire key changed. Unlink first." });
+      unlinkMock.mockResolvedValue(makeStatus({ linked: false, revision: "unused" }));
+      const user = userEvent.setup();
+      await renderOpen(rotated);
+      statusMock.mockResolvedValueOnce(rotated).mockResolvedValue(unlinkedPreview());
+      await user.click(screen.getByRole("button", { name: "Unlink" }));
+      await user.click(within(screen.getByRole("dialog", { name: "Unlink Logfire sync?" })).getByRole("button", { name: "Unlink" }));
+      await waitFor(() => expect(group("Instructions")).toHaveTextContent("Remote instructions"));
+      expect(screen.getByRole("button", { name: "Link with local text" })).not.toBeDisabled();
+      expect(statusMock).toHaveBeenCalledTimes(3);
+      expect(linkMock).not.toHaveBeenCalled();
     });
   });
 

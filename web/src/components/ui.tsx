@@ -118,6 +118,7 @@ type ModalProps = {
   footer?: ReactNode;
   size?: "sm" | "md" | "lg";
   placement?: "center" | "side";
+  escapeEnabled?: boolean;
   onClose: () => void;
   children: ReactNode;
 };
@@ -129,6 +130,7 @@ export function Modal({
   footer,
   size = "md",
   placement = "center",
+  escapeEnabled = true,
   onClose,
   children,
 }: ModalProps) {
@@ -142,13 +144,13 @@ export function Modal({
       return;
     }
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (escapeEnabled && event.key === "Escape") {
         onClose();
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [open, onClose]);
+  }, [open, onClose, escapeEnabled]);
 
   if (!open) {
     return null;
