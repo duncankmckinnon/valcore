@@ -17,6 +17,7 @@ import type {
   CapabilitySpec,
 } from "../api/types";
 import AgentTrialPanel from "../components/AgentTrialPanel";
+import AgentPromptSync from "../components/AgentPromptSync";
 import EvaluatorFromAgent from "../components/EvaluatorFromAgent";
 import { CapabilitiesEditor } from "../components/CapabilitiesEditor";
 import { useSetup } from "../components/useSetup";
@@ -159,6 +160,7 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
   const [discardRunOpen, setDiscardRunOpen] = useState(false);
   const [discardAction, setDiscardAction] = useState<"close" | "dataset">("close");
   const [evaluatorOpen, setEvaluatorOpen] = useState(false);
+  const [promptSyncOpen, setPromptSyncOpen] = useState(false);
   const [datasetsForRun, setDatasetsForRun] = useState<DatasetSummary[]>([]);
   const [datasetId, setDatasetId] = useState("");
   const [runError, setRunError] = useState<unknown>(null);
@@ -197,6 +199,7 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
     setSelectedId(null);
     setDraft(false);
     setRunOpen(false);
+    setPromptSyncOpen(false);
     setTrialUnsaved(false);
   }, [agentId]);
 
@@ -536,6 +539,9 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
           <Button onClick={() => void openRun()} disabled={!selected}>
             Run agent
           </Button>
+          <Button variant="secondary" onClick={() => setPromptSyncOpen(true)}>
+            Logfire sync
+          </Button>
           {!empty && (
             <Button variant="secondary" onClick={startDraft}>
               New version
@@ -832,6 +838,12 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
         confirmLabel="Discard response"
         onClose={() => setDiscardRunOpen(false)}
         onConfirm={discardAndContinue}
+      />
+      <AgentPromptSync
+        agentId={agentId}
+        open={promptSyncOpen}
+        onClose={() => setPromptSyncOpen(false)}
+        onPulled={(activeVersionId) => void load(activeVersionId ?? undefined)}
       />
     </section>
   );

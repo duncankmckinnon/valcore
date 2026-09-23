@@ -1439,6 +1439,82 @@ kbd {
   flex-wrap: wrap;
 }
 
+/* Keep the sync diff readable while the dialog narrows to a phone viewport. */
+.prompt-sync {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.prompt-sync-fields {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.prompt-sync-field {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+}
+
+.prompt-sync-field legend {
+  font-weight: 600;
+}
+
+.prompt-sync-variable {
+  overflow-wrap: anywhere;
+  font-family: monospace;
+}
+
+.prompt-sync-diff {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.prompt-sync-diff > div {
+  min-width: 0;
+}
+
+.prompt-sync-diff pre {
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  min-height: 4rem;
+}
+
+.prompt-sync-actions,
+.prompt-sync-choices {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  gap: var(--space-3);
+}
+
+.prompt-sync-actions > div {
+  flex: 1 1 14rem;
+}
+
+.prompt-sync-choices label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+@media (max-width: 640px) {
+  .prompt-sync-diff {
+    grid-template-columns: 1fr;
+  }
+
+  .prompt-sync-actions {
+    flex-direction: column;
+  }
+}
+
 /* -- Config diff ------------------------------------------------------------ */
 
 .config-diff {
