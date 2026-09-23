@@ -180,8 +180,10 @@ do not contact Logfire for prompt sync.
 | `resolve AGENT` | Required `--choice local\|remote` and at least one `--field`; `--yes` skips the confirmation after the choice; optional `--json`. |
 | `unlink AGENT` | Removes only the local link; `--yes` skips confirmation; optional `--json`. |
 
-`pull` and `push` preview the affected fields and require confirmation. A conflict
-needs `resolve`; it shows the baseline, local text, and remote text before applying
+`pull` and `push` preview the affected fields and require confirmation. With `--json`,
+the preview and confirmation go to stderr so stdout contains only the JSON result.
+An unselected conflict does not block other eligible fields. A conflict needs
+`resolve`; it shows line changes from the baseline to each side before applying
 the chosen direction. If the configured key changes, unlink and then link again.
 
 ### `valcore export [EVALUATOR]`

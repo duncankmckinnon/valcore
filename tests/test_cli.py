@@ -1697,6 +1697,7 @@ def _template(
     remote: str | None = "remote text",
     remote_version: int | None = 4,
     base_remote_version: int | None = 3,
+    error: str | None = None,
 ) -> TemplateStatus:
     return TemplateStatus(
         variable_name=f"valcore_agent_AGENT_{key}",
@@ -1706,6 +1707,7 @@ def _template(
         remote_text=remote,
         remote_version=remote_version,
         base_remote_version=base_remote_version,
+        error=error,
     )
 
 
@@ -1716,6 +1718,7 @@ def _sync_status(
     linked: bool = True,
     revision: str = "rev",
     error: str | None = None,
+    field_error: str | None = None,
     **texts,
 ) -> SyncStatus:
     return SyncStatus(
@@ -1724,8 +1727,10 @@ def _sync_status(
         revision=revision,
         error=error,
         templates={
-            "instructions": _template("instructions", instructions, **texts),
-            "input_template": _template("input_template", input_template, **texts),
+            "instructions": _template("instructions", instructions, error=field_error, **texts),
+            "input_template": _template(
+                "input_template", input_template, error=field_error, **texts
+            ),
         },
     )
 
@@ -1806,6 +1811,15 @@ def test_prompt_sync_status_table_shows_variables_and_states(runner, db_path, sy
     assert "remote_missing" in result.output
     assert "valcore_agent_AGENT_instructions" in result.output
     assert fake.mutations() == []
+
+
+def test_prompt_sync_status_table_shows_unsupported_field_error(runner, db_path, sync_agent):
+    _, install = sync_agent
+    install(_sync_status("unsupported", "in_sync", field_error="Save instructions as a string."))
+    result = _sync(runner, db_path, "status", "writer")
+    assert result.exit_code == 0, result.output
+    assert "instructions" in result.output
+    assert "Save instructions as a string." in result.output
 
 
 def test_prompt_sync_status_resolves_agent_ref_to_agent_id(runner, db_path, sync_agent):
@@ -2010,7 +2024,68 @@ def test_prompt_sync_pull_json_output(runner, db_path, sync_agent):
     install(_sync_status("remote_changed", "in_sync"))
     result = _sync(runner, db_path, "pull", "writer", "--yes", "--json")
     assert result.exit_code == 0, result.output
-    assert set(json.loads(result.output)["templates"]) == {"instructions", "input_template"}
+    assert set(json.loads(result.stdout)["templates"]) == {"instructions", "input_template"}
+
+
+@pytest.mark.parametrize("command", ["pull", "push"])
+def test_prompt_sync_interactive_json_previews_on_stderr(runner, db_path, sync_agent, command):
+    _, install = sync_agent
+    state = "remote_changed" if command == "pull" else "local_changed"
+    install(_sync_status(state, "in_sync", local="LOCAL-PROPOSAL", remote="REMOTE-PROPOSAL"))
+    result = _sync(runner, db_path, command, "writer", "--json", input="y\n")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["linked"] is True
+    assert "instructions" in result.stderr
+    assert ("REMOTE-PROPOSAL" if command == "pull" else "LOCAL-PROPOSAL") in result.stderr
+
+
+@pytest.mark.parametrize("command", ["pull", "push"])
+def test_prompt_sync_default_skips_conflict_when_another_field_is_eligible(
+    runner, db_path, sync_agent, command
+):
+    agent, install = sync_agent
+    state = "remote_changed" if command == "pull" else "local_changed"
+    fake = install(_sync_status("conflict", state))
+    result = _sync(runner, db_path, command, "writer", "--yes")
+    assert result.exit_code == 0, result.output
+    assert fake.mutations() == [(command, agent.id, None, fake.last_revision)]
+
+
+@pytest.mark.parametrize("command", ["pull", "push"])
+def test_prompt_sync_explicit_conflict_fails_even_if_another_field_is_eligible(
+    runner, db_path, sync_agent, command
+):
+    _, install = sync_agent
+    state = "remote_changed" if command == "pull" else "local_changed"
+    fake = install(_sync_status("conflict", state, remote_version=7))
+    result = _sync(runner, db_path, command, "writer", "--field", "instructions", "--yes")
+    assert result.exit_code == 1
+    assert LOCAL_VERSION_ID in result.output
+    assert "remote version 7" in result.output
+    assert fake.mutations() == []
+
+
+@pytest.mark.parametrize(
+    ("command", "field", "message"),
+    [
+        ("push", "instructions", "Save instructions as a string."),
+        ("pull", "input_template", "Remove Logfire composition blocks."),
+    ],
+)
+def test_prompt_sync_unsupported_field_fails_with_reason(
+    runner, db_path, sync_agent, command, field, message
+):
+    _, install = sync_agent
+    states = {"instructions": "in_sync", "input_template": "in_sync"}
+    states[field] = "unsupported"
+    fake = install(
+        _sync_status(states["instructions"], states["input_template"], field_error=message)
+    )
+    result = _sync(runner, db_path, command, "writer", "--yes")
+    assert result.exit_code == 1
+    assert field in result.output
+    assert message in result.output
+    assert fake.mutations() == []
 
 
 def test_prompt_sync_resolve_requires_choice_and_field_even_with_yes(runner, db_path, sync_agent):
@@ -2065,6 +2140,59 @@ def test_prompt_sync_resolve_shows_three_way_diff_then_calls_service(
     for text in ("LOCAL-SIDE", "BASE-SIDE", "REMOTE-SIDE"):
         assert text in result.output
     assert fake.mutations() == [("resolve", agent.id, ["instructions"], choice, fake.last_revision)]
+
+
+def test_prompt_sync_resolve_shows_line_level_diffs(runner, db_path, sync_agent):
+    _, install = sync_agent
+    install(
+        _sync_status(
+            "conflict",
+            "in_sync",
+            base="shared\nold line\nunchanged",
+            local="shared\nlocal line\nunchanged",
+            remote="shared\nremote line\nunchanged",
+        )
+    )
+    result = _sync(
+        runner,
+        db_path,
+        "resolve",
+        "writer",
+        "--choice",
+        "local",
+        "--field",
+        "instructions",
+        "--yes",
+    )
+    assert result.exit_code == 0, result.output
+    assert "--- base" in result.output
+    assert "+++ local" in result.output
+    assert "+++ remote" in result.output
+    assert "-old line" in result.output
+    assert "+local line" in result.output
+    assert "+remote line" in result.output
+
+
+def test_prompt_sync_resolve_interactive_json_shows_diff_on_stderr(runner, db_path, sync_agent):
+    _, install = sync_agent
+    install(_sync_status("conflict", "in_sync", base="old", local="local", remote="remote"))
+    result = _sync(
+        runner,
+        db_path,
+        "resolve",
+        "writer",
+        "--choice",
+        "remote",
+        "--field",
+        "instructions",
+        "--json",
+        input="y\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["linked"] is True
+    assert "+++ local" in result.stderr
+    assert "+++ remote" in result.stderr
+    assert "+remote" in result.stderr
 
 
 def test_prompt_sync_resolve_cancelled_confirmation_mutates_nothing(runner, db_path, sync_agent):
@@ -2142,7 +2270,7 @@ def test_prompt_sync_resolve_json_output(runner, db_path, sync_agent):
         "--json",
     )
     assert result.exit_code == 0, result.output
-    assert "templates" in json.loads(result.output)
+    assert "templates" in json.loads(result.stdout)
 
 
 def test_prompt_sync_unlink_uses_fresh_revision(runner, db_path, sync_agent):

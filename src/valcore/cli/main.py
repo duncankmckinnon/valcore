@@ -8,6 +8,7 @@ unexpected exceptions traceback normally so bugs stay reportable.
 """
 
 import asyncio
+import difflib
 import re
 import sys
 import threading
@@ -530,11 +531,19 @@ def _sync_output(status: SyncStatus, as_json: bool) -> None:
                 "state": record.state,
                 "remote_version": record.remote_version,
                 "base_remote_version": record.base_remote_version,
+                "error": record.error,
             }
             for key, record in status.templates.items()
         ],
         False,
-        columns=["field", "variable_name", "state", "remote_version", "base_remote_version"],
+        columns=[
+            "field",
+            "variable_name",
+            "state",
+            "remote_version",
+            "base_remote_version",
+            "error",
+        ],
     )
 
 
@@ -558,6 +567,34 @@ def _sync_confirmed_revision(
 def _sync_fields(fields: tuple[str, ...]) -> tuple[str, ...] | None:
     """Preserve explicit field selections; None means all eligible fields."""
     return fields or None
+
+
+def _sync_conflict_error(status: SyncStatus, fields: list[str]) -> SyncConflictError:
+    """Describe conflicts with both version identifiers for the chosen fields."""
+    details = ", ".join(
+        f"{key} (local version {status.local_version_id}, "
+        f"remote version {status.templates[key].remote_version})"
+        for key in fields
+    )
+    return SyncConflictError(f"Conflict in {details}; use prompt-sync resolve.")
+
+
+def _sync_unsupported_error(status: SyncStatus, key: str) -> ConfigError:
+    """Explain why a template cannot be synchronized."""
+    record = status.templates[key]
+    return ConfigError(f"{key} is unsupported: {record.error or 'fix the template first.'}")
+
+
+def _sync_diff(base: str | None, other: str | None, side: str) -> str:
+    """Render line changes from the shared baseline to one side."""
+    lines = difflib.unified_diff(
+        (base or "").splitlines(),
+        (other or "").splitlines(),
+        fromfile="base" if base is not None else "base (missing)",
+        tofile=side if other is not None else f"{side} (missing)",
+        lineterm="",
+    )
+    return "\n".join(lines) or "(no line changes)"
 
 
 @agent_group.group("prompt-sync")
@@ -598,14 +635,6 @@ def _sync_change(
     agent_id, service, status = _sync_inspection(ctx, agent_ref)
     selected = _sync_fields(fields)
     considered = selected or KEYS
-    conflicts = [key for key in considered if status.templates[key].state == "conflict"]
-    if conflicts:
-        details = ", ".join(
-            f"{key} (local version {status.local_version_id}, "
-            f"remote version {status.templates[key].remote_version})"
-            for key in conflicts
-        )
-        raise SyncConflictError(f"Conflict in {details}; use prompt-sync resolve.")
     eligible_state = "remote_changed" if operation == "pull" else "local_changed"
     eligible = [
         key
@@ -621,6 +650,12 @@ def _sync_change(
         )
     ]
     if selected:
+        conflicts = [key for key in selected if status.templates[key].state == "conflict"]
+        if conflicts:
+            raise _sync_conflict_error(status, conflicts)
+        unsupported = [key for key in selected if status.templates[key].state == "unsupported"]
+        if unsupported:
+            raise _sync_unsupported_error(status, unsupported[0])
         ineligible = [key for key in selected if key not in eligible]
         if ineligible:
             key = ineligible[0]
@@ -628,6 +663,12 @@ def _sync_change(
                 f"{key} is {status.templates[key].state} and cannot be {operation}ed."
             )
     if not eligible:
+        conflicts = [key for key in considered if status.templates[key].state == "conflict"]
+        if conflicts:
+            raise _sync_conflict_error(status, conflicts)
+        unsupported = [key for key in considered if status.templates[key].state == "unsupported"]
+        if unsupported:
+            raise _sync_unsupported_error(status, unsupported[0])
         if as_json:
             _sync_output(status, True)
         else:
@@ -639,11 +680,11 @@ def _sync_change(
             "new local agent version" if operation == "pull" else "new Logfire variable version"
         )
         source = record.remote_text if operation == "pull" else record.local_text
-        if not as_json:
-            click.echo(
-                f"{operation} {key}: local version {status.local_version_id or '-'}, "
-                f"remote version {record.remote_version or '-'} -> {destination}\n{source}"
-            )
+        click.echo(
+            f"{operation} {key}: local version {status.local_version_id or '-'}, "
+            f"remote version {record.remote_version or '-'} -> {destination}\n{source}",
+            err=as_json,
+        )
     if not yes:
         click.confirm(f"{operation.capitalize()} these templates?", abort=True, err=as_json)
     result = (service.pull if operation == "pull" else service.push)(
@@ -701,13 +742,13 @@ def agent_prompt_sync_resolve(
             record.state == "remote_missing" and choice == "remote"
         ):
             raise ConfigError(f"{key} is {record.state} and cannot be resolved with {choice}.")
-        if not as_json:
-            click.echo(
-                f"{key} (local version {status.local_version_id or '-'}, "
-                f"remote version {record.remote_version or '-'}):\n"
-                f"base:\n{record.base_text}\nlocal:\n{record.local_text}\n"
-                f"remote:\n{record.remote_text}"
-            )
+        click.echo(
+            f"{key} (local version {status.local_version_id or '-'}, "
+            f"remote version {record.remote_version or '-'}):\n"
+            f"base -> local:\n{_sync_diff(record.base_text, record.local_text, 'local')}\n"
+            f"base -> remote:\n{_sync_diff(record.base_text, record.remote_text, 'remote')}",
+            err=as_json,
+        )
     if not yes:
         click.confirm(f"Resolve these templates with {choice} text?", abort=True, err=as_json)
     _sync_output(
