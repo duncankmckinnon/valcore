@@ -8,12 +8,13 @@ unexpected exceptions traceback normally so bugs stay reportable.
 """
 
 import asyncio
+import difflib
 import re
 import sys
 import threading
 import webbrowser
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
@@ -26,6 +27,7 @@ import yaml
 
 from valcore import config as config_module
 from valcore import experiment, logfire_io, logfire_pull, tracing
+from valcore.agent_prompt_sync import KEYS, AgentPromptSync, SyncStatus
 from valcore.agent_spec import (
     AgentSpec,
     build_deps,
@@ -45,9 +47,10 @@ from valcore.cli.resolve import (
 from valcore.cli.skills import skills
 from valcore.config import apply_gateway_key, load_config, save_config, set_key
 from valcore.config_io import EvalPackage
-from valcore.errors import ConfigError, ContractError, ValcoreError
+from valcore.errors import ConfigError, ContractError, SyncConflictError, ValcoreError
 from valcore.export import render_dataset_module, render_judge_module, render_script
 from valcore.factory import agent_response_data, build_agent_from_version
+from valcore.logfire_prompt_variables import PromptVariableAdapter
 from valcore.models import (
     AgentVersion,
     Annotation,
@@ -492,6 +495,288 @@ def _usage_data(usage: object) -> dict[str, Any]:
 @cli.group(name="agent")
 def agent_group() -> None:
     """Import, export, and manage versioned agents under test."""
+
+
+def _prompt_sync_service(store: Store) -> AgentPromptSync:
+    """Build prompt sync with the configured, server-side Logfire key."""
+    adapter = PromptVariableAdapter()
+    return AgentPromptSync(store, adapter, adapter.key_fingerprint)
+
+
+def _sync_inspection(
+    ctx: click.Context, agent_ref: str, *, allow_rebind_error: bool = False
+) -> tuple[str, AgentPromptSync, SyncStatus]:
+    """Resolve an agent and inspect its local and remote prompt heads."""
+    store = _store(ctx)
+    agent = resolve_agent(store, agent_ref)
+    service = main._prompt_sync_service(store)
+    status = service.inspect(agent.id)
+    if status.error and not (allow_rebind_error and status.linked):
+        raise ConfigError(status.error)
+    return agent.id, service, status
+
+
+def _sync_output(status: SyncStatus, as_json: bool) -> None:
+    """Print only the browser-safe sync status and template records."""
+    data = asdict(status)
+    if as_json:
+        emit(data, True)
+        return
+    click.echo(f"linked: {status.linked}  local version: {status.local_version_id or '-'}")
+    emit(
+        [
+            {
+                "field": key,
+                "variable_name": record.variable_name,
+                "state": record.state,
+                "remote_version": record.remote_version,
+                "base_remote_version": record.base_remote_version,
+                "error": record.error,
+            }
+            for key, record in status.templates.items()
+        ],
+        False,
+        columns=[
+            "field",
+            "variable_name",
+            "state",
+            "remote_version",
+            "base_remote_version",
+            "error",
+        ],
+    )
+
+
+def _sync_revision(service: AgentPromptSync, status: SyncStatus) -> str:
+    """Use the revision supplied by the immediate inspection."""
+    return getattr(service, "last_revision", status.revision)
+
+
+def _sync_confirmed_revision(
+    service: AgentPromptSync, agent_id: str, preview: SyncStatus, *, unlink: bool = False
+) -> str:
+    """Reinspect after a confirmation so a changed preview cannot be applied."""
+    current = service.inspect(agent_id)
+    if current.error and not (unlink and current.linked):
+        raise ConfigError(current.error)
+    if current.revision != preview.revision:
+        raise SyncConflictError("Prompt sync state changed; inspect sync again.")
+    return _sync_revision(service, current)
+
+
+def _sync_fields(fields: tuple[str, ...]) -> tuple[str, ...] | None:
+    """Preserve explicit field selections; None means all eligible fields."""
+    return fields or None
+
+
+def _sync_conflict_error(status: SyncStatus, fields: list[str]) -> SyncConflictError:
+    """Describe conflicts with both version identifiers for the chosen fields."""
+    details = ", ".join(
+        f"{key} (local version {status.local_version_id}, "
+        f"remote version {status.templates[key].remote_version})"
+        for key in fields
+    )
+    return SyncConflictError(f"Conflict in {details}; use prompt-sync resolve.")
+
+
+def _sync_unsupported_error(status: SyncStatus, key: str) -> ConfigError:
+    """Explain why a template cannot be synchronized."""
+    record = status.templates[key]
+    return ConfigError(f"{key} is unsupported: {record.error or 'fix the template first.'}")
+
+
+def _sync_diff(base: str | None, other: str | None, side: str) -> str:
+    """Render line changes, including a missing final newline, from the baseline."""
+    lines = difflib.unified_diff(
+        (base or "").splitlines(keepends=True),
+        (other or "").splitlines(keepends=True),
+        fromfile="base" if base is not None else "base (missing)",
+        tofile=side if other is not None else f"{side} (missing)",
+        lineterm="\n",
+    )
+    rendered = "".join(
+        line if line.endswith("\n") else f"{line}\n\\ No newline at end of file\n"
+        for line in lines
+    )
+    return rendered.rstrip("\n") or "(no line changes)"
+
+
+@agent_group.group("prompt-sync")
+def agent_prompt_sync_group() -> None:
+    """Explicitly synchronize agent text templates with Logfire variables."""
+
+
+@agent_prompt_sync_group.command("status")
+@click.argument("agent_ref")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of a table.")
+@click.pass_context
+def agent_prompt_sync_status(ctx: click.Context, agent_ref: str, as_json: bool) -> None:
+    """Inspect the configured project's latest saved variable versions."""
+    _, _, status = _sync_inspection(ctx, agent_ref)
+    _sync_output(status, as_json)
+
+
+@agent_prompt_sync_group.command("link")
+@click.argument("agent_ref")
+@click.option("--initial", type=click.Choice(["local", "remote"]), required=True)
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of a table.")
+@click.pass_context
+def agent_prompt_sync_link(ctx: click.Context, agent_ref: str, initial: str, as_json: bool) -> None:
+    """Link an agent, choosing its local or remote starting text."""
+    agent_id, service, status = _sync_inspection(ctx, agent_ref)
+    _sync_output(service.link(agent_id, initial, _sync_revision(service, status)), as_json)
+
+
+def _sync_change(
+    ctx: click.Context,
+    agent_ref: str,
+    operation: str,
+    fields: tuple[str, ...],
+    yes: bool,
+    as_json: bool,
+) -> None:
+    """Preview and confirm a pull or push using the inspected revision."""
+    agent_id, service, status = _sync_inspection(ctx, agent_ref)
+    selected = _sync_fields(fields)
+    considered = selected or KEYS
+    eligible_state = "remote_changed" if operation == "pull" else "local_changed"
+    eligible = [
+        key
+        for key in considered
+        if status.templates[key].state == eligible_state
+        or (
+            status.templates[key].state == "in_sync"
+            and status.templates[key].local_text == status.templates[key].remote_text
+            and (
+                status.templates[key].base_text != status.templates[key].local_text
+                or status.templates[key].base_remote_version != status.templates[key].remote_version
+            )
+        )
+    ]
+    if selected:
+        conflicts = [key for key in selected if status.templates[key].state == "conflict"]
+        if conflicts:
+            raise _sync_conflict_error(status, conflicts)
+        unsupported = [key for key in selected if status.templates[key].state == "unsupported"]
+        if unsupported:
+            raise _sync_unsupported_error(status, unsupported[0])
+        ineligible = [key for key in selected if key not in eligible]
+        if ineligible:
+            key = ineligible[0]
+            raise ConfigError(
+                f"{key} is {status.templates[key].state} and cannot be {operation}ed."
+            )
+    if not eligible:
+        conflicts = [key for key in considered if status.templates[key].state == "conflict"]
+        if conflicts:
+            raise _sync_conflict_error(status, conflicts)
+        unsupported = [key for key in considered if status.templates[key].state == "unsupported"]
+        if unsupported:
+            raise _sync_unsupported_error(status, unsupported[0])
+        if as_json:
+            _sync_output(status, True)
+        else:
+            click.echo(f"No templates eligible to {operation}.")
+        return
+    for key in eligible:
+        record = status.templates[key]
+        destination = (
+            "new local agent version" if operation == "pull" else "new Logfire variable version"
+        )
+        source = record.remote_text if operation == "pull" else record.local_text
+        click.echo(
+            f"{operation} {key}: local version {status.local_version_id or '-'}, "
+            f"remote version {record.remote_version or '-'} -> {destination}\n{source}",
+            err=as_json,
+        )
+    if not yes:
+        click.confirm(f"{operation.capitalize()} these templates?", abort=True, err=as_json)
+    result = (service.pull if operation == "pull" else service.push)(
+        agent_id, selected, _sync_confirmed_revision(service, agent_id, status)
+    )
+    _sync_output(result, as_json)
+
+
+@agent_prompt_sync_group.command("pull")
+@click.argument("agent_ref")
+@click.option("--field", "fields", multiple=True, type=click.Choice(KEYS))
+@click.option("--yes", is_flag=True, help="Apply without an interactive confirmation.")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON status after applying.")
+@click.pass_context
+def agent_prompt_sync_pull(
+    ctx: click.Context, agent_ref: str, fields: tuple[str, ...], yes: bool, as_json: bool
+) -> None:
+    """Copy remote changes into a new active local agent version."""
+    _sync_change(ctx, agent_ref, "pull", fields, yes, as_json)
+
+
+@agent_prompt_sync_group.command("push")
+@click.argument("agent_ref")
+@click.option("--field", "fields", multiple=True, type=click.Choice(KEYS))
+@click.option("--yes", is_flag=True, help="Apply without an interactive confirmation.")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON status after applying.")
+@click.pass_context
+def agent_prompt_sync_push(
+    ctx: click.Context, agent_ref: str, fields: tuple[str, ...], yes: bool, as_json: bool
+) -> None:
+    """Publish local changes as new Logfire variable versions."""
+    _sync_change(ctx, agent_ref, "push", fields, yes, as_json)
+
+
+@agent_prompt_sync_group.command("resolve")
+@click.argument("agent_ref")
+@click.option("--choice", type=click.Choice(["local", "remote"]), required=True)
+@click.option("--field", "fields", multiple=True, required=True, type=click.Choice(KEYS))
+@click.option("--yes", is_flag=True, help="Apply without an interactive confirmation.")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON status after applying.")
+@click.pass_context
+def agent_prompt_sync_resolve(
+    ctx: click.Context,
+    agent_ref: str,
+    choice: str,
+    fields: tuple[str, ...],
+    yes: bool,
+    as_json: bool,
+) -> None:
+    """Choose a winner for selected conflicts after showing all three texts."""
+    agent_id, service, status = _sync_inspection(ctx, agent_ref)
+    for key in fields:
+        record = status.templates[key]
+        if record.state not in ("conflict", "remote_missing") or (
+            record.state == "remote_missing" and choice == "remote"
+        ):
+            raise ConfigError(f"{key} is {record.state} and cannot be resolved with {choice}.")
+        click.echo(
+            f"{key} (local version {status.local_version_id or '-'}, "
+            f"remote version {record.remote_version or '-'}):\n"
+            f"base -> local:\n{_sync_diff(record.base_text, record.local_text, 'local')}\n"
+            f"base -> remote:\n{_sync_diff(record.base_text, record.remote_text, 'remote')}",
+            err=as_json,
+        )
+    if not yes:
+        click.confirm(f"Resolve these templates with {choice} text?", abort=True, err=as_json)
+    _sync_output(
+        service.resolve(
+            agent_id, fields, choice, _sync_confirmed_revision(service, agent_id, status)
+        ),
+        as_json,
+    )
+
+
+@agent_prompt_sync_group.command("unlink")
+@click.argument("agent_ref")
+@click.option("--yes", is_flag=True, help="Unlink without an interactive confirmation.")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON status after unlinking.")
+@click.pass_context
+def agent_prompt_sync_unlink(ctx: click.Context, agent_ref: str, yes: bool, as_json: bool) -> None:
+    """Remove only the local sync cursor, leaving Logfire variables intact."""
+    agent_id, service, status = _sync_inspection(ctx, agent_ref, allow_rebind_error=True)
+    if not yes:
+        click.confirm(f"Unlink prompt sync for {agent_ref}?", abort=True, err=as_json)
+    _sync_output(
+        service.unlink(agent_id, _sync_confirmed_revision(service, agent_id, status, unlink=True)),
+        as_json,
+    )
 
 
 @agent_group.group("derivation")
@@ -1400,6 +1685,12 @@ def logfire_fetch(ctx: click.Context, source_name: str, name: str | None, descri
 def main() -> None:
     """Console-script entry point."""
     cli()
+
+
+# ``valcore.cli`` exports ``main`` as the console entry point. Its attribute is
+# also an injectable seam for callers that resolve ``valcore.cli.main`` via the
+# package, as opposed to importing the implementation module directly.
+main._prompt_sync_service = _prompt_sync_service  # type: ignore[attr-defined]
 
 
 if __name__ == "__main__":

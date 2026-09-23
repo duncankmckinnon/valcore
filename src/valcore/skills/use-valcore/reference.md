@@ -18,6 +18,7 @@ command here first, then regenerate with `scripts/sync_command_table.py`.
 - [`valcore export`](#valcore-export-evaluator) — standalone judge script or portable eval package
 - [`valcore import`](#valcore-import-path) — load a portable eval package back in
 - [`valcore config`](#valcore-config) — gateway key and defaults
+- [`valcore agent prompt-sync`](#valcore-agent-prompt-sync) — explicit agent template sync
 - [`valcore skills`](#valcore-skills) — install these skills into agent directories
 - [`valcore logfire`](#valcore-logfire) — pull from a query or hosted dataset; push to hosted store
 - [Not in the CLI](#not-in-the-cli) — seeded generation is API and web only
@@ -39,6 +40,12 @@ command here first, then regenerate with `scripts/sync_command_table.py`.
 | `valcore agent derivation list` | List saved and staged response derivations. |
 | `valcore agent derivation save <ref>` | Accept a staged derivation. |
 | `valcore agent derivation discard <ref>` | Discard a derivation. |
+| `valcore agent prompt-sync status <agent>` | Inspect local agent text and the configured Logfire project's latest variable versions. |
+| `valcore agent prompt-sync link <agent> --initial local\|remote` | Link an agent, choosing the initial text source. |
+| `valcore agent prompt-sync pull <agent>` | Pull remote text into a new local agent version, with confirmation. |
+| `valcore agent prompt-sync push <agent>` | Push local text into new Logfire variable versions, with confirmation. |
+| `valcore agent prompt-sync resolve <agent> --choice local\|remote --field FIELD` | Show a three-way diff and explicitly resolve selected conflicts. |
+| `valcore agent prompt-sync unlink <agent>` | Remove the local sync link. |
 | `valcore agent import <file>` | Import a YAML or JSON AgentSpec and its valcore binding. |
 | `valcore agent export <agent>` | Export an agent version as a YAML AgentSpec with its valcore binding. |
 | `valcore config set <key> <value>` | Set any config key, including `model`, `local_cli_default`, `port`, `concurrency`, and `db_path`. |
@@ -156,6 +163,28 @@ Running without any inputs sends an empty request. Dependency mappings remain op
 
 `list` includes staged entries and marks their state. Saved derivations can also be listed with
 `valcore list derivations`; references accept an id prefix or `agent/version/ordinal`.
+
+### `valcore agent prompt-sync`
+
+Syncs only `instructions` and `input_template` with two ordinary Logfire managed
+variables in the project selected by the configured write key. The key needs both
+`project:read_variables` and `project:write_variables`. Agent runs remain local and
+do not contact Logfire for prompt sync.
+
+| Command | Options |
+|---|---|
+| `status AGENT` | `--json` for the full template status and revision. |
+| `link AGENT` | Required `--initial local\|remote`; optional `--json`. |
+| `pull AGENT` | Repeat `--field instructions\|input_template` to select fields; `--yes` confirms without prompting; optional `--json`. |
+| `push AGENT` | The same field, confirmation, and JSON options as `pull`. |
+| `resolve AGENT` | Required `--choice local\|remote` and at least one `--field`; `--yes` skips the confirmation after the choice; optional `--json`. |
+| `unlink AGENT` | Removes only the local link; `--yes` skips confirmation; optional `--json`. |
+
+`pull` and `push` preview the affected fields and require confirmation. With `--json`,
+the preview and confirmation go to stderr so stdout contains only the JSON result.
+An unselected conflict does not block other eligible fields. A conflict needs
+`resolve`; it shows line changes from the baseline to each side before applying
+the chosen direction. If the configured key changes, unlink and then link again.
 
 ### `valcore export [EVALUATOR]`
 
