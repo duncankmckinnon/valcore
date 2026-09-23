@@ -58,17 +58,20 @@ Every step is explicit; nothing syncs in the background. Use the agent page's sy
 
 - **Inspect** (`status`): read-only. Shows each field as `in_sync`, `local_changed`,
   `remote_changed`, `conflict`, `remote_missing`, or `unsupported`.
-- **Link**: pick an initial source, `local` (creates missing remote variables) or `remote`
-  (creates a new local version; requires both variables to exist). If both sides already match,
-  link just records a baseline. Retrying a partly failed link reconciles matching text instead
-  of writing a duplicate version.
+- **Link**: pick an initial source. `local` creates missing remote variables and publishes
+  new latest versions for existing variables whose text differs from local text. `remote`
+  creates a new local version and requires both remote variables to exist. If both sides
+  already match, link just records a baseline. Retrying a partly failed link reconciles
+  matching text instead of writing a duplicate version.
 - **Pull**: creates a new active valcore agent version with the remote text. Frozen and
   historical versions are never modified.
 - **Push**: creates a new Logfire variable version for each changed field.
 - **Resolve**: settles a conflict, or recreates a remotely deleted variable (`local` only).
 - **Unlink**: removes only the local link; remote variables are left alone.
 
-Pull, push and resolve show what will change and ask for confirmation first.
+The agent dialog shows the text before each action. Pull and Push run when clicked; Resolve
+opens a confirmation dialog with the three-way diff. The CLI previews Pull, Push and Resolve
+and prompts for confirmation by default; `--yes` skips that prompt.
 
 ### Latest-version behavior and labels
 
@@ -95,9 +98,11 @@ is refused before any read or write of the new project. Unlink, then link again.
 ## Supported template subset
 
 Logfire variables use `{{column}}` placeholders, while valcore's input template uses
-`{column}`. valcore converts simple placeholders at the boundary and checks that the
-conversion round-trips exactly before linking, pulling or pushing. It rejects, with an
-actionable error, rather than flattening or partially rendering:
+`{column}`. Placeholder names must be simple identifiers such as `column_name`; dotted
+paths (`user.name`), hyphenated names (`user-name`) and reserved Logfire words (such as
+`if` or `each`) are rejected. valcore converts supported placeholders at the boundary and
+checks that the conversion round-trips exactly before linking, pulling or pushing. It
+rejects, with an actionable error, rather than flattening or partially rendering:
 
 - Python format specs and conversions (for example `{x:>10}` or `{x!r}`) and literal brace
   escapes that cannot be represented on both sides;
