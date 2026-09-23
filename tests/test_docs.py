@@ -21,3 +21,9 @@ def test_readme_command_table_matches_reference_md() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_reference_documents_every_prompt_sync_command() -> None:
+    reference = (ROOT / "src" / "valcore" / "skills" / "use-valcore" / "reference.md").read_text()
+    for name in ("status", "link", "pull", "push", "resolve", "unlink"):
+        assert f"valcore agent prompt-sync {name}" in reference
