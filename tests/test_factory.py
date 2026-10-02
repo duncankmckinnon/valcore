@@ -14,6 +14,7 @@ from valcore.factory import (
     build_agent_from_version,
     build_capabilities,
     build_output_model,
+    execute_agent_version,
     extract_score,
     render_prompt,
 )
@@ -347,6 +348,37 @@ def test_build_agent_from_version_unknown_capability_is_config_error() -> None:
         build_agent_from_version(version)
 
     assert "NotARealCapability" in str(exc.value)
+
+
+@pytest.mark.anyio
+async def test_execute_agent_version_runs_a_text_output_agent_on_a_local_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A text-output agent bound to local/<cli> must run, not fail for lacking an output_type."""
+    import sys
+
+    from pydantic_ai.usage import RequestUsage
+
+    from valcore.local_cli import ADAPTERS
+
+    class FakeClaude:
+        cli_name = "claude"
+
+        def build_invocation(self, **_kwargs: object) -> list[str]:
+            return [sys.executable, "-c", "import sys; sys.stdout.write('Paris.')"]
+
+        def parse_output(self, stdout: str) -> tuple[str, RequestUsage]:
+            return stdout, RequestUsage()
+
+    monkeypatch.setitem(ADAPTERS, "claude", FakeClaude())
+    version = make_agent_version(model="local/claude")
+
+    execution = await execute_agent_version(
+        version, build_agent_from_version(version), {"question": "the capital of France"}
+    )
+
+    assert execution.error is None
+    assert execution.output == {"response": "Paris."}
 
 
 def test_build_agent_from_version_invalid_model_fails_before_model_resolution(

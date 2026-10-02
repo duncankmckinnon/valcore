@@ -2,7 +2,7 @@
 
 See docs/superpowers/specs/2026-09-04-local-cli-model-design.md for the design this
 implements: every Agent turn is exactly one non-interactive CLI subprocess call, prompt
-in, JSON out -- no tool-call round-tripping.
+in, JSON out (or plain text, for a text-output agent) -- no tool-call round-tripping.
 """
 
 import asyncio
@@ -18,6 +18,7 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     RetryPromptPart,
+    TextPart,
     ToolCallPart,
     UserPromptPart,
 )
@@ -119,7 +120,7 @@ def _extract_json_object(text: str) -> dict[str, Any]:
 
 
 class CliBridgeModel(Model):
-    """Delegates a single Agent turn to a non-interactive agent CLI: prompt in, JSON out."""
+    """Delegates a single Agent turn to a non-interactive agent CLI: prompt in, JSON or text out."""
 
     def __init__(self, adapter: CliAdapter) -> None:
         self._adapter = adapter
@@ -140,27 +141,43 @@ class CliBridgeModel(Model):
         model_request_parameters: ModelRequestParameters,
     ) -> ModelResponse:
         _model_settings, params = self.prepare_request(model_settings, model_request_parameters)
-        if not params.output_tools:
-            raise ValueError("CliBridgeModel requires an Agent with output_type set.")
-        output_tool = params.output_tools[0]
+        # Structured output arrives as an output tool whose schema the CLI is told to answer
+        # in; a plain-text agent (a subject agent with no output_schema) has none, and its
+        # CLI answer is the result as-is.
+        if params.output_tools:
+            output_tool = params.output_tools[0]
+        elif params.output_mode == "text":
+            output_tool = None
+        else:
+            raise ValueError(
+                f"CliBridgeModel supports tool or text output, not {params.output_mode!r} output."
+            )
 
         instruction_parts = self._get_instruction_parts(messages, params)
-        instructions = (
+        full_instructions = (
             "\n\n".join(p.content for p in instruction_parts) if instruction_parts else ""
         )
-        schema_directive = (
-            "Respond with ONLY a single JSON object matching this JSON Schema, and nothing "
-            "else (no markdown fences, no explanation):\n"
-            f"{json.dumps(output_tool.parameters_json_schema)}"
-        )
-        full_instructions = (
-            f"{instructions}\n\n{schema_directive}" if instructions else schema_directive
-        )
+        if output_tool is not None:
+            schema_directive = (
+                "Respond with ONLY a single JSON object matching this JSON Schema, and nothing "
+                "else (no markdown fences, no explanation):\n"
+                f"{json.dumps(output_tool.parameters_json_schema)}"
+            )
+            full_instructions = (
+                f"{full_instructions}\n\n{schema_directive}"
+                if full_instructions
+                else schema_directive
+            )
 
         # If there's a retry, incorporate the retry content into the instructions
         retry_content = _extract_retry_content(messages)
         if retry_content:
-            full_instructions = f"{full_instructions}\n\nYour previous response was invalid:\n{retry_content}\n\nPlease correct it and respond again with only the JSON object."
+            correction = (
+                "Please correct it and respond again with only the JSON object."
+                if output_tool is not None
+                else "Please correct it and respond again."
+            )
+            full_instructions = f"{full_instructions}\n\nYour previous response was invalid:\n{retry_content}\n\n{correction}"
 
         prompt = _render_user_prompt(messages)
 
@@ -197,6 +214,10 @@ class CliBridgeModel(Model):
                 )
 
         text, usage = self._adapter.parse_output(stdout.decode(errors="replace"))
+        if output_tool is None:
+            return ModelResponse(
+                parts=[TextPart(content=text)], usage=usage, model_name=self.model_name
+            )
         result_args = _extract_json_object(text)
 
         return ModelResponse(
