@@ -66,6 +66,25 @@ async def test_cli_bridge_model_parses_output_into_structured_result_and_usage()
 
 
 @pytest.mark.anyio
+async def test_cli_bridge_model_returns_cli_text_verbatim_for_a_text_output_agent() -> None:
+    """A subject agent with no output_schema has plain-text output and no output tool, so the
+    CLI answer is the result as-is -- no JSON Schema directive and no JSON parsing."""
+    adapter = FakeCliAdapter(
+        stdout_text="Plain answer, not JSON.", usage=RequestUsage(input_tokens=3, output_tokens=4)
+    )
+    agent = Agent(CliBridgeModel(adapter), instructions="answer it")
+
+    result = await agent.run("question")
+
+    assert result.output == "Plain answer, not JSON."
+    assert result.usage.input_tokens == 3
+    assert result.usage.output_tokens == 4
+    assert adapter.last_invocation is not None
+    assert adapter.last_invocation["instructions"] == "answer it"
+    assert "JSON Schema" not in adapter.last_invocation["instructions"]
+
+
+@pytest.mark.anyio
 async def test_cli_bridge_model_tolerates_a_markdown_code_fence() -> None:
     fenced = '```json\n{"verdict": "pass"}\n```'
     adapter = FakeCliAdapter(stdout_text=fenced, usage=RequestUsage())
