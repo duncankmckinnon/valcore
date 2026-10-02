@@ -106,6 +106,42 @@ def test_valid_numeric_version_passes() -> None:
     validate_version(make_numeric_version())
 
 
+def test_evaluator_version_validate_output_fields_rejects_malformed_entry() -> None:
+    version = make_version(output_fields=[{"name": "bad name", "type": "str", "description": "d"}])
+    with pytest.raises(ConfigError, match="not a valid Python identifier"):
+        version.validate_output_fields()
+
+
+def test_evaluator_version_validate_output_fields_rejects_empty_when_required() -> None:
+    version = make_version(output_fields=[])
+    with pytest.raises(ConfigError, match="at least one output field"):
+        version.validate_output_fields()
+
+
+def test_evaluator_version_validate_output_fields_rejects_duplicate_names() -> None:
+    version = make_version(
+        output_fields=[
+            {"name": "verdict", "type": "str", "description": "a"},
+            {"name": "verdict", "type": "str", "description": "b"},
+        ]
+    )
+    with pytest.raises(ConfigError, match="must be unique"):
+        version.validate_output_fields()
+
+
+def test_evaluator_version_validate_output_fields_accepts_valid_fields() -> None:
+    make_version().validate_output_fields()
+
+
+def test_evaluator_version_output_fields_required_is_true() -> None:
+    assert EvaluatorVersion.output_fields_required is True
+
+
+def test_parse_output_fields_delegates_to_mixin_method() -> None:
+    version = make_version()
+    assert parse_output_fields(version) == version.parsed_output_fields()
+
+
 VALIDATE_VERSION_REJECTIONS = [
     pytest.param(
         {"model": "openai:gpt-5"},
@@ -819,6 +855,59 @@ def test_agent_dataset_compatibility_accepts_satisfied_columns() -> None:
 def test_agent_dataset_compatibility_rejects_missing_column() -> None:
     with pytest.raises(ContractError, match="question"):
         check_agent_dataset_compatibility(make_agent_version(), make_dataset(columns=["answer"]))
+
+
+def test_agent_version_output_fields_defaults_to_empty_list() -> None:
+    assert make_agent_version().output_fields == []
+
+
+def test_agent_version_output_fields_required_is_false() -> None:
+    assert AgentVersion.output_fields_required is False
+
+
+def test_agent_version_empty_output_fields_passes_validation() -> None:
+    validate_agent_version(make_agent_version(output_fields=[]))
+
+
+def test_agent_version_malformed_output_field_raises() -> None:
+    version = make_agent_version(
+        output_fields=[{"name": "bad name", "type": "str", "description": "d"}]
+    )
+    with pytest.raises(ConfigError, match="not a valid Python identifier"):
+        validate_agent_version(version)
+
+
+def test_agent_version_duplicate_output_field_names_raises() -> None:
+    version = make_agent_version(
+        output_fields=[
+            {"name": "verdict", "type": "str", "description": "a"},
+            {"name": "verdict", "type": "str", "description": "b"},
+        ]
+    )
+    with pytest.raises(ConfigError, match="must be unique"):
+        validate_agent_version(version)
+
+
+def test_agent_version_valid_structured_output_fields_passes() -> None:
+    version = make_agent_version(
+        output_fields=[{"name": "verdict", "type": "str", "description": "The verdict."}]
+    )
+    validate_agent_version(version)
+
+
+def test_agent_version_response_columns_prefers_output_fields_over_spec_output_schema() -> None:
+    version = make_agent_version(
+        spec={
+            "instructions": "hi",
+            "output_schema": {"type": "object", "properties": {"old": {"type": "string"}}},
+        },
+        output_fields=[{"name": "verdict", "type": "str", "description": "d"}],
+    )
+    assert version.response_columns == ["verdict"]
+
+
+def test_agent_version_response_columns_falls_back_to_free_text() -> None:
+    assert make_agent_version().response_columns == ["response"]
 
 
 # -- Agent / AgentVersion / DatasetDerivation defaults -------------------------
