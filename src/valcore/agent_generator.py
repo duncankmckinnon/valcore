@@ -180,9 +180,15 @@ def _check_agent_prompt_rules(version: AgentVersion) -> None:
     """
     instructions = version.spec.get("instructions")
     if isinstance(instructions, str):
-        instruction_fields = _placeholders(instructions, label="instructions")
-        if instruction_fields:
-            names = [name for name, _, _ in instruction_fields]
+        # Formatter treats every {...} span as a field, so literal brace text such as
+        # JSON is a field whose name is not a column. Only a simple {column} name
+        # (letters, digits, and underscores) is a placeholder the agent rules forbid.
+        names = [
+            name
+            for name, _, _ in _placeholders(instructions, label="instructions")
+            if _SIMPLE_COLUMN.fullmatch(name)
+        ]
+        if names:
             raise ConfigError(
                 f"instructions must not contain {{column}} placeholders; found {names}."
             )

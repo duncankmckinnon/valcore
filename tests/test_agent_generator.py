@@ -166,6 +166,13 @@ def test_validate_config_rejects_instruction_placeholders() -> None:
         _generator().validate_config(config)
 
 
+def test_validate_config_allows_literal_json_in_instructions() -> None:
+    """Literal JSON braces are not a {column} placeholder and stay a valid draft."""
+    config = _config(instructions='Return JSON like {"answer": "ok"}.')
+
+    _generator().validate_config(config)
+
+
 def test_validate_config_rejects_prompt_without_placeholder() -> None:
     """A prompt with no {column} placeholder fails even when columns are listed."""
     config = _config(prompt_template="Answer plainly.", required_columns=["question"])
