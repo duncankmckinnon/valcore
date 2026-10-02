@@ -13,10 +13,11 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from valcore import agent_spec, config
+from valcore import agent_generator, agent_spec, config
+from valcore.agent_generator import AgentDraft
 from valcore.agent_prompt_sync import AgentPromptSync, SyncStatus, TemplateStatus
 from valcore.agent_spec import AgentSpec
-from valcore.api.deps import get_prompt_sync, get_store
+from valcore.api.deps import get_prompt_sync, get_store, require_gateway_key_unless_local
 from valcore.errors import ContractError, NotFoundError
 from valcore.factory import build_agent_from_version, execute_agent_version
 from valcore.models import Agent, AgentVersion, DatasetDerivation, DerivationState
@@ -39,6 +40,15 @@ class AgentCreate(BaseModel):
 
     name: str
     description: str = ""
+
+
+class AgentGenerateRequest(BaseModel):
+    """The free-text description a new agent's first version is drafted from.
+
+    It steers generation only and is never stored.
+    """
+
+    prompt: str
 
 
 class AgentUpdate(BaseModel):
@@ -475,6 +485,17 @@ async def import_spec(body: AgentSpecImportRequest) -> AgentSpecImport:
         )
     except ValidationError as exc:
         raise ContractError(f"Invalid valcore binding metadata: {exc}") from exc
+
+
+@router.post("/generate", response_model=AgentDraft)
+async def generate_agent(body: AgentGenerateRequest) -> AgentDraft:
+    """Draft an agent version from a description without persisting anything.
+
+    Used by the 'new agent' flow before any version exists. Calls an LLM and can take
+    tens of seconds; the UI fills an unsaved draft editor from the result.
+    """
+    require_gateway_key_unless_local()
+    return await agent_generator.generate_agent_draft(body.prompt)
 
 
 @router.post("/versions/{vid}/trial", response_model=TrialResult)
