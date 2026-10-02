@@ -11,6 +11,7 @@ import { useNavigate } from "react-router-dom";
 import { api, agents, datasets, runs } from "../api/client";
 import type {
   AgentDetail as AgentDetailData,
+  AgentDraft,
   AgentVersion,
   AgentVersionCreate,
   DatasetSummary,
@@ -35,7 +36,7 @@ import {
 } from "../components/ui";
 
 /** Props for the detail view belonging to one stored agent. */
-export type AgentDetailProps = { agentId: string };
+export type AgentDetailProps = { agentId: string; initialDraft?: AgentDraft };
 
 type EditorValues = {
   version_name: string;
@@ -70,6 +71,19 @@ function blankValues(): EditorValues {
     required_columns: "",
     deps_mapping: [["", ""]],
     spec: "{}",
+  };
+}
+
+// A generated draft fills every editable field; its rationale becomes the notes.
+function draftValues(draft: AgentDraft): EditorValues {
+  return {
+    version_name: draft.version_name,
+    notes: draft.rationale,
+    model: "",
+    prompt_template: draft.prompt_template,
+    required_columns: draft.required_columns.join(", "),
+    deps_mapping: mappingRows(draft.deps_mapping),
+    spec: JSON.stringify(draft.spec, null, 2),
   };
 }
 
@@ -140,7 +154,7 @@ function specCapabilities(spec: Record<string, unknown> | null): CapabilitySpec[
 }
 
 /** Displays, edits, and trials the versions attached to an agent. */
-export default function AgentDetail({ agentId }: AgentDetailProps) {
+export default function AgentDetail({ agentId, initialDraft }: AgentDetailProps) {
   const navigate = useNavigate();
   const [detail, setDetail] = useState<AgentDetailData | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -149,6 +163,7 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
   const [values, setValues] = useState<EditorValues | null>(null);
   const [specError, setSpecError] = useState<string | null>(null);
   const [draft, setDraft] = useState(false);
+  const [generatedUnsaved, setGeneratedUnsaved] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -200,6 +215,7 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
     setValues(null);
     setSelectedId(null);
     setDraft(false);
+    setGeneratedUnsaved(false);
     setRunOpen(false);
     setPromptSyncOpen(false);
     setDiscardSyncEditsOpen(false);
@@ -236,15 +252,16 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
   useEffect(() => {
     if (!empty || !config || modelEdited.current) return;
     const current = valuesRef.current;
+    if (!current && initialDraft) setGeneratedUnsaved(true);
     const next = {
-      ...(current ?? blankValues()),
+      ...(current ?? (initialDraft ? draftValues(initialDraft) : blankValues())),
       model: setupStatus?.keys.find((key) => key.name === "gateway_api_key")?.set === false
         ? `local/${setupStatus.local_cli_default ?? setupStatus.local_cli_options[0] ?? "claude"}`
         : config.default_model,
     };
     valuesRef.current = next;
     setValues(next);
-  }, [empty, config, setupStatus]);
+  }, [empty, config, setupStatus, initialDraft]);
 
   function updateValues(change: Partial<EditorValues>): void {
     setValues((current) => {
@@ -302,6 +319,7 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
           createPayload(currentValues, spec),
         );
         setDraft(false);
+        setGeneratedUnsaved(false);
         await load(created.id);
         return;
       }
@@ -601,6 +619,12 @@ export default function AgentDetail({ agentId }: AgentDetailProps) {
         </div>
       </div>
       <div className="version-editor">
+        {generatedUnsaved && showDraft && (
+          <p className="destructive-warning" role="status">
+            This generated version isn't saved yet. Review the draft, then click Create
+            version to save it.
+          </p>
+        )}
         <label className="field">
           <span className="field-label">Version name</span>
           <input

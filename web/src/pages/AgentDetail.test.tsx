@@ -15,6 +15,7 @@ import AgentDetail from "./AgentDetail";
 import { ApiError, agents, api, datasets, evaluators, runs, setup } from "../api/client";
 import type {
   AgentDetail as AgentDetailData,
+  AgentDraft,
   AgentVersion,
   DatasetSummary,
   GeneratedConfig,
@@ -904,5 +905,52 @@ describe("AgentDetail", () => {
     await user.click(await screen.findByRole("button", { name: "Run agent" }));
     expect(screen.getByRole("dialog", { name: "Run agent" }).classList.contains("modal-side")).toBe(true);
     expect(screen.getByTestId("trial-panel")).toHaveTextContent("av-1");
+  });
+
+  it("opens a generated draft pre-filled in the editor and clears the warning once saved", async () => {
+    vi.mocked(agents.get)
+      .mockResolvedValueOnce(makeDetail({ versions: [] }))
+      .mockResolvedValueOnce(makeDetail());
+    vi.mocked(agents.createVersion).mockResolvedValue(makeVersion());
+    const draft: AgentDraft = {
+      version_name: "v1",
+      spec: { instructions: "You answer billing questions." },
+      prompt_template: "Answer {question}.",
+      required_columns: ["question"],
+      deps_mapping: {},
+      rationale: "Plain text suits this.",
+    };
+    const user = userEvent.setup();
+    render(<AgentDetail agentId="agent-1" initialDraft={draft} />);
+
+    expect(await screen.findByLabelText("Version name")).toHaveValue("v1");
+    expect(screen.getByLabelText("Instructions")).toHaveValue(
+      "You answer billing questions.",
+    );
+    expect(screen.getByLabelText("Prompt template")).toHaveValue(
+      "Answer {question}.",
+    );
+    expect(screen.getByLabelText("Required columns")).toHaveValue("question");
+    expect(screen.getByLabelText("Notes")).toHaveValue("Plain text suits this.");
+    const warning = screen.getByRole("status");
+    expect(warning).toHaveTextContent("isn't saved yet");
+
+    await user.click(screen.getByRole("button", { name: "Create version" }));
+
+    await waitFor(() =>
+      expect(agents.createVersion).toHaveBeenCalledWith(
+        "agent-1",
+        expect.objectContaining({
+          version_name: "v1",
+          model: "gateway/openai:gpt-4o",
+          prompt_template: "Answer {question}.",
+          required_columns: ["question"],
+          spec: { instructions: "You answer billing questions." },
+        }),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText(/isn't saved yet/)).not.toBeInTheDocument(),
+    );
   });
 });
