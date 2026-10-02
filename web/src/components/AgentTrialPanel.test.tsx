@@ -49,6 +49,7 @@ function makeVersion(overrides: Partial<AgentVersion> = {}): AgentVersion {
     prompt_template: "{question}",
     required_columns: ["question"],
     deps_mapping: {},
+    output_fields: [],
     response_columns: ["answer"],
     ...overrides,
   };

@@ -211,6 +211,7 @@ async def test_export_and_import_round_trip_spec_and_binding(store: Store) -> No
             "prompt_template": "Answer: {question}",
             "required_columns": ["question"],
             "deps_mapping": {},
+            "output_fields": [],
         }
 
         imported = await client.post(
@@ -223,6 +224,7 @@ async def test_export_and_import_round_trip_spec_and_binding(store: Store) -> No
             "prompt_template": "Answer: {question}",
             "required_columns": ["question"],
             "deps_mapping": {},
+            "output_fields": [],
         }
 
 
@@ -252,6 +254,7 @@ async def test_import_rejects_invalid_documents_and_ignores_non_mapping_binding(
             "prompt_template": None,
             "required_columns": [],
             "deps_mapping": {},
+            "output_fields": [],
         }
 
 
@@ -280,6 +283,70 @@ async def test_import_rejects_malformed_binding_fields(store: Store, binding: di
 
     assert imported.status_code == 422, imported.text
     assert imported.json()["error"]["type"] == "ContractError"
+
+
+@pytest.mark.anyio
+async def test_export_and_import_round_trip_structured_output_fields(store: Store) -> None:
+    """Structured export carries output_fields and a derived schema; import restores them."""
+    async with _client(store) as client:
+        agent = (await client.post("/api/agents", json={"name": "Extractor"})).json()
+        created = await client.post(
+            f"/api/agents/{agent['id']}/versions",
+            json=_version_body(
+                spec={"instructions": "Extract fields."},
+                output_fields=[{"name": "summary", "type": "str", "description": "A summary."}],
+            ),
+        )
+        assert created.status_code == 200, created.text
+        version = created.json()
+        stored_spec = store.get_agent_version(version["id"]).spec
+
+        exported = await client.get(f"/api/agents/versions/{version['id']}/export")
+        assert exported.status_code == 200, exported.text
+        assert store.get_agent_version(version["id"]).spec == stored_spec
+        assert "output_schema" not in stored_spec
+
+        parsed = AgentSpec.from_text(exported.json()["content"], "yaml")
+        assert parsed.metadata["valcore"]["output_fields"] == version["output_fields"]
+        assert parsed.output_schema == {
+            "type": "object",
+            "properties": {"summary": {"type": "string", "description": "A summary."}},
+            "required": ["summary"],
+        }
+
+        imported = await client.post(
+            "/api/agents/import",
+            json={"content": exported.json()["content"], "format": "yaml"},
+        )
+        assert imported.status_code == 200, imported.text
+        body = imported.json()
+        assert body["output_fields"] == [
+            {
+                "name": "summary",
+                "type": "str",
+                "description": "A summary.",
+                "required": True,
+                "enum_values": None,
+                "minimum": None,
+                "maximum": None,
+            }
+        ]
+
+        recreated = await client.post(
+            f"/api/agents/{agent['id']}/versions",
+            json={
+                "version_name": "imported",
+                "model": body["model"],
+                "spec": body["spec"],
+                "prompt_template": body["prompt_template"] or "",
+                "required_columns": body["required_columns"],
+                "deps_mapping": body["deps_mapping"],
+                "output_fields": body["output_fields"],
+            },
+        )
+        assert recreated.status_code == 200, recreated.text
+        assert recreated.json()["response_columns"] == ["summary"]
+        assert recreated.json()["output_fields"][0]["name"] == "summary"
 
 
 # -- Generation -----------------------------------------------------------------
@@ -446,6 +513,41 @@ async def test_save_derivations_append_adhoc_rows_and_derived_rows_merge_columns
                 "error": None,
             }
         ]
+
+
+@pytest.mark.anyio
+async def test_save_derivation_records_output_field_columns(store: Store) -> None:
+    """A structured trial response is stored under one column per output field."""
+    dataset = store.create_dataset("questions", "", ["question"])
+    row = store.add_rows(dataset.id, [{"question": "What happened?"}])[0]
+    async with _client(store) as client:
+        agent = (await client.post("/api/agents", json={"name": "Extractor"})).json()
+        version = (
+            await client.post(
+                f"/api/agents/{agent['id']}/versions",
+                json=_version_body(
+                    spec={"instructions": "Extract fields."},
+                    output_fields=[
+                        {"name": "summary", "type": "str", "description": "A summary."},
+                        {"name": "rating", "type": "int", "description": "1-5."},
+                    ],
+                ),
+            )
+        ).json()
+        saved = await client.post(
+            f"/api/agents/versions/{version['id']}/derivations",
+            json={
+                "dataset_id": dataset.id,
+                "entries": [{"row_id": row.id, "data": {"summary": "ok", "rating": 4}}],
+            },
+        )
+
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["response_columns"] == ["summary", "rating"]
+    derivation = store.get_derivation(saved.json()["id"])
+    response = store.list_agent_responses(derivation.id)[0]
+    assert derivation.response_columns == list(response.data)
+    assert set(response.data) == {"summary", "rating"}
 
 
 @pytest.mark.anyio

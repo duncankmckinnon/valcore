@@ -15,6 +15,7 @@ from starlette.concurrency import run_in_threadpool
 
 from valcore import agent_generator, agent_spec, config
 from valcore.agent_generator import AgentDraft
+from valcore.agent_generator import output_schema as derive_output_schema
 from valcore.agent_prompt_sync import AgentPromptSync, SyncStatus, TemplateStatus
 from valcore.agent_spec import AgentSpec
 from valcore.api.deps import get_prompt_sync, get_store, require_gateway_key_unless_local
@@ -255,6 +256,7 @@ class AgentSpecImport(BaseModel):
     prompt_template: str | None
     required_columns: list[str]
     deps_mapping: dict[str, str]
+    output_fields: list[OutputField] = Field(default_factory=list)
 
 
 class SyncTemplateRead(BaseModel):
@@ -451,16 +453,24 @@ async def delete_version(vid: str, store: StoreDep) -> None:
 async def export_version(vid: str, store: StoreDep) -> AgentSpecExport:
     """Export a version's spec to YAML with its valcore binding in metadata."""
     version = store.get_agent_version(vid)
-    spec = agent_spec.parse_spec(version.spec)
-    document = spec.model_dump(mode="json", exclude_none=True, context={"use_short_form": True})
-    metadata = dict(document.get("metadata") or {})
+    # Copy before deriving output_schema so the stored spec blob stays unchanged.
+    spec_data = dict(version.spec)
+    metadata = dict(spec_data.get("metadata") or {})
     metadata["valcore"] = {
         "model": version.model,
         "prompt_template": version.prompt_template,
         "required_columns": version.required_columns,
         "deps_mapping": version.deps_mapping,
+        "output_fields": version.output_fields,
     }
-    document["metadata"] = metadata
+    spec_data["metadata"] = metadata
+    if version.output_fields:
+        spec_data["output_schema"] = derive_output_schema(
+            [OutputField.model_validate(field) for field in version.output_fields]
+        )
+    document = agent_spec.parse_spec(spec_data).model_dump(
+        mode="json", exclude_none=True, context={"use_short_form": True}
+    )
     agent = store.get_agent(version.agent_id)
     return AgentSpecExport(
         filename=f"{_slug(agent.name)}-{_slug(version.version_name)}.yaml",
@@ -486,6 +496,7 @@ async def import_spec(body: AgentSpecImportRequest) -> AgentSpecImport:
             prompt_template=binding.get("prompt_template"),
             required_columns=binding.get("required_columns") or [],
             deps_mapping=binding.get("deps_mapping") or {},
+            output_fields=binding.get("output_fields") or [],
         )
     except ValidationError as exc:
         raise ContractError(f"Invalid valcore binding metadata: {exc}") from exc
@@ -548,7 +559,9 @@ async def save_derivation(vid: str, body: DerivationSave, store: StoreDep) -> De
                 f"{body.dataset_id!r}: {[row_id]}."
             )
 
-    response_columns = agent_spec.output_column_names(agent_spec.parse_spec(version.spec))
+    response_columns = agent_spec.output_column_names(
+        agent_spec.parse_spec(version.spec), output_fields=version.output_fields
+    )
     ad_hoc_entries = [entry for entry in body.entries if entry.row_id is None]
     added_rows = iter(
         store.add_rows(body.dataset_id, [entry.inputs or {} for entry in ad_hoc_entries])
