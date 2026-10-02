@@ -20,7 +20,7 @@ from valcore.agent_spec import AgentSpec
 from valcore.api.deps import get_prompt_sync, get_store, require_gateway_key_unless_local
 from valcore.errors import ContractError, NotFoundError
 from valcore.factory import build_agent_from_version, execute_agent_version
-from valcore.models import Agent, AgentVersion, DatasetDerivation, DerivationState
+from valcore.models import Agent, AgentVersion, DatasetDerivation, DerivationState, OutputField
 from valcore.settings import is_local_cli_model
 from valcore.store import DerivedRow, Store
 
@@ -70,6 +70,7 @@ class AgentVersionCreate(BaseModel):
     prompt_template: str = ""
     required_columns: list[str] = Field(default_factory=list)
     deps_mapping: dict[str, str] = Field(default_factory=dict)
+    output_fields: list[OutputField] = Field(default_factory=list)
 
 
 class AgentVersionUpdate(BaseModel):
@@ -84,6 +85,7 @@ class AgentVersionUpdate(BaseModel):
     prompt_template: str | None = None
     required_columns: list[str] | None = None
     deps_mapping: dict[str, str] | None = None
+    output_fields: list[OutputField] | None = None
 
 
 class VersionCopy(BaseModel):
@@ -180,6 +182,7 @@ class AgentVersionRead(BaseModel):
     prompt_template: str
     required_columns: list[str]
     deps_mapping: dict[str, str]
+    output_fields: list[dict]
     response_columns: list[str]
 
 
@@ -340,7 +343,8 @@ def _version_read(version: AgentVersion) -> AgentVersionRead:
         prompt_template=version.prompt_template,
         required_columns=version.required_columns,
         deps_mapping=version.deps_mapping,
-        response_columns=agent_spec.output_column_names(spec),
+        output_fields=version.output_fields,
+        response_columns=agent_spec.output_column_names(spec, output_fields=version.output_fields),
     )
 
 
