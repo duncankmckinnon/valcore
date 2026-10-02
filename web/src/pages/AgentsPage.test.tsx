@@ -1,10 +1,12 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import AgentsPage from "./AgentsPage";
 import { agents, ApiError } from "../api/client";
-import type { AgentSummary } from "../api/types";
+import { GATEWAY_BLOCKER, useSetup } from "../components/useSetup";
+import type { UseSetupResult } from "../components/useSetup";
+import type { AgentDraft, AgentSummary } from "../api/types";
 
 const navigate = vi.fn();
 
@@ -21,12 +23,45 @@ vi.mock("../api/client", async () => {
       list: vi.fn(),
       create: vi.fn(),
       remove: vi.fn(),
+      generate: vi.fn(),
     },
   };
 });
 
+// Only Generate (prompt mode) calls a model through the gateway; scratch-mode Create
+// must stay usable regardless. The hook is mocked directly so each test can set
+// gatewayReady without re-exercising useSetup's own fetch machinery.
+vi.mock("../components/useSetup", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../components/useSetup")>();
+  return { ...actual, useSetup: vi.fn() };
+});
+
+const useSetupMock = vi.mocked(useSetup);
+
+function makeSetupResult(overrides: Partial<UseSetupResult> = {}): UseSetupResult {
+  return {
+    status: null,
+    gatewayReady: true,
+    loading: false,
+    error: null,
+    refetch: vi.fn(),
+    ...overrides,
+  };
+}
+
 vi.mock("./AgentDetail", () => ({
-  default: ({ agentId }: { agentId: string }) => <div>Agent detail: {agentId}</div>,
+  default: ({
+    agentId,
+    initialDraft,
+  }: {
+    agentId: string;
+    initialDraft?: { version_name: string };
+  }) => (
+    <div>
+      Agent detail: {agentId}
+      {initialDraft ? ` (draft ${initialDraft.version_name})` : ""}
+    </div>
+  ),
 }));
 
 function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
@@ -41,7 +76,19 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
   };
 }
 
-function renderPage(path = "/agents") {
+function makeDraft(overrides: Partial<AgentDraft> = {}): AgentDraft {
+  return {
+    version_name: "v1",
+    spec: { instructions: "Do the thing." },
+    prompt_template: "{input}",
+    required_columns: ["input"],
+    deps_mapping: {},
+    rationale: "because",
+    ...overrides,
+  };
+}
+
+function renderPage(path: string | { pathname: string; state: unknown } = "/agents") {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
@@ -55,6 +102,10 @@ function renderPage(path = "/agents") {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+});
+
+beforeEach(() => {
+  useSetupMock.mockReturnValue(makeSetupResult());
 });
 
 describe("AgentsPage", () => {
@@ -150,10 +201,79 @@ describe("AgentsPage", () => {
   });
 
   it("renders the detail page only when the route has an id", () => {
-    renderPage("/agents/agent-42");
+    renderPage({ pathname: "/agents/agent-42", state: { draft: { version_name: "v1" } } });
 
-    expect(screen.getByText("Agent detail: agent-42")).toBeTruthy();
+    expect(screen.getByText("Agent detail: agent-42 (draft v1)")).toBeTruthy();
     expect(agents.list).not.toHaveBeenCalled();
     expect(screen.queryByRole("heading", { name: "Agents" })).toBeNull();
+  });
+
+  it("generates a draft from a prompt, then creates the agent, and navigates with the draft", async () => {
+    vi.mocked(agents.list).mockResolvedValue([]);
+    const draft = makeDraft();
+    vi.mocked(agents.generate).mockResolvedValue(draft);
+    vi.mocked(agents.create).mockResolvedValue(makeAgent({ id: "new-agent" }));
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "New agent" }));
+    await user.click(screen.getByRole("tab", { name: "From prompt" }));
+
+    await user.type(screen.getByLabelText("Agent name"), "Triage agent");
+    await user.type(screen.getByLabelText("Description"), "Routes incoming requests.");
+    await user.type(screen.getByLabelText("Prompt"), "Classify the ticket and route it.");
+    await user.click(screen.getByRole("button", { name: "Generate" }));
+
+    await waitFor(() =>
+      expect(agents.create).toHaveBeenCalledWith({
+        name: "Triage agent",
+        description: "Routes incoming requests.",
+      }),
+    );
+    expect(agents.generate).toHaveBeenCalledWith({
+      prompt: "Classify the ticket and route it.",
+    });
+
+    const generateOrder = vi.mocked(agents.generate).mock.invocationCallOrder[0];
+    const createOrder = vi.mocked(agents.create).mock.invocationCallOrder[0];
+    expect(generateOrder).toBeLessThan(createOrder);
+
+    expect(navigate).toHaveBeenCalledWith("/agents/new-agent", { state: { draft } });
+  });
+
+  it("shows the generation error and leaves no agent behind when generate fails", async () => {
+    vi.mocked(agents.list).mockResolvedValue([]);
+    vi.mocked(agents.generate).mockRejectedValue(new Error("model unavailable"));
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "New agent" }));
+    await user.click(screen.getByRole("tab", { name: "From prompt" }));
+
+    await user.type(screen.getByLabelText("Agent name"), "Triage agent");
+    await user.type(screen.getByLabelText("Description"), "Routes incoming requests.");
+    await user.type(screen.getByLabelText("Prompt"), "Classify the ticket and route it.");
+    await user.click(screen.getByRole("button", { name: "Generate" }));
+
+    expect(await screen.findByText("model unavailable")).toBeTruthy();
+    expect(agents.create).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("disables Generate and shows the shared gateway blocker in prompt mode when not ready", async () => {
+    useSetupMock.mockReturnValue(makeSetupResult({ gatewayReady: false }));
+    vi.mocked(agents.list).mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "New agent" }));
+    await user.click(screen.getByRole("tab", { name: "From prompt" }));
+
+    await user.type(screen.getByLabelText("Agent name"), "Triage agent");
+    await user.type(screen.getByLabelText("Prompt"), "Classify the ticket and route it.");
+
+    expect(screen.getByText(GATEWAY_BLOCKER)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled();
+    expect(agents.generate).not.toHaveBeenCalled();
   });
 });
