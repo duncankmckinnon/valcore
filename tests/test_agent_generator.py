@@ -112,27 +112,29 @@ async def test_structured_draft() -> None:
         "Help with billing", model="gateway/anthropic:claude-sonnet-5", agent=agent
     )
 
-    assert draft.spec["capabilities"] == [{"Planning": {}}]
-    assert draft.spec["output_schema"] == {
-        "type": "object",
-        "properties": {
-            "answer": {"type": "string", "description": "The answer."},
-            "confidence": {
-                "type": "integer",
-                "description": "Confidence 1-5.",
-                "minimum": 1,
-                "maximum": 5,
-            },
-            "score": {"type": "number", "description": "A float score."},
-            "escalate": {"type": "boolean", "description": "Whether to escalate."},
-            "topic": {
-                "type": "string",
-                "description": "The topic.",
-                "enum": ["billing", "other"],
-            },
-        },
-        "required": ["answer", "confidence", "score", "escalate"],
+    assert draft.spec == {
+        "instructions": "You answer billing questions.",
+        "capabilities": [{"Planning": {}}],
     }
+    assert draft.output_fields == [
+        OutputField(name="answer", type=FieldType.STR, description="The answer."),
+        OutputField(
+            name="confidence",
+            type=FieldType.INT,
+            description="Confidence 1-5.",
+            minimum=1,
+            maximum=5,
+        ),
+        OutputField(name="score", type=FieldType.FLOAT, description="A float score."),
+        OutputField(name="escalate", type=FieldType.BOOL, description="Whether to escalate."),
+        OutputField(
+            name="topic",
+            type=FieldType.ENUM,
+            description="The topic.",
+            enum_values=["billing", "other"],
+            required=False,
+        ),
+    ]
 
 
 def test_output_schema_rejects_duplicate_field_names() -> None:
@@ -146,6 +148,38 @@ def test_output_schema_rejects_duplicate_field_names() -> None:
                 OutputField(name="answer", type=FieldType.STR, description="b"),
             ]
         )
+
+
+def test_to_version_sets_output_fields_directly_and_omits_output_schema() -> None:
+    config = GeneratedAgentConfig(
+        **{
+            **BASE_PAYLOAD,
+            "output_fields": [{"name": "answer", "type": "str", "description": "d"}],
+        }
+    )
+    version = config.to_version("gateway/anthropic:claude-sonnet-5")
+    assert [OutputField.model_validate(f) for f in version.output_fields] == [
+        OutputField(name="answer", type=FieldType.STR, description="d")
+    ]
+    assert "output_schema" not in version.spec
+
+
+def test_check_version_still_rejects_duplicate_output_field_names() -> None:
+    """Duplicate-name protection must survive moving off spec()'s old output_schema() call."""
+    from valcore.errors import ConfigError
+    from valcore.models import validate_agent_version
+
+    config = GeneratedAgentConfig(
+        **{
+            **BASE_PAYLOAD,
+            "output_fields": [
+                {"name": "answer", "type": "str", "description": "a"},
+                {"name": "answer", "type": "str", "description": "b"},
+            ],
+        }
+    )
+    with pytest.raises(ConfigError, match="must be unique"):
+        validate_agent_version(config.to_version("gateway/anthropic:claude-sonnet-5"))
 
 
 def _generator() -> AgentGenerator:
