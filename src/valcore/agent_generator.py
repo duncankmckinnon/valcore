@@ -134,7 +134,7 @@ class AgentGenerator(ConfigGenerator[GeneratedAgentConfig]):
             + "\n"
             + (
                 "- `instructions` is the agent's system prompt: its role, behavior, and "
-                "constraints. Do not put `{column}` placeholders in it.\n"
+                "constraints.\n"
                 "- `prompt_template` must contain at least one placeholder, and placeholders "
                 "are simple `{column}` names made of letters, digits, and underscores, with no "
                 "format specifiers.\n"
@@ -152,8 +152,8 @@ class AgentGenerator(ConfigGenerator[GeneratedAgentConfig]):
         validate_agent_version(version)
 
 
-def _placeholders(template: str, *, label: str) -> list[tuple[str, str, str | None]]:
-    """Return each ``{field}`` as ``(name, format_spec, conversion)``.
+def _placeholders(template: str) -> list[tuple[str, str, str | None]]:
+    """Return each prompt-template ``{field}`` as ``(name, format_spec, conversion)``.
 
     A template whose braces do not parse raises ConfigError so the generator's
     single validation retry can ask for a corrected draft.
@@ -162,7 +162,7 @@ def _placeholders(template: str, *, label: str) -> list[tuple[str, str, str | No
         # ValueError is raised while iterating, not when parse() is called.
         parsed = list(string.Formatter().parse(template))
     except ValueError as exc:
-        raise ConfigError(f"{label} has malformed placeholders: {exc}.") from exc
+        raise ConfigError(f"prompt_template has malformed placeholders: {exc}.") from exc
     found: list[tuple[str, str, str | None]] = []
     for _, field_name, format_spec, conversion in parsed:
         if field_name:
@@ -171,28 +171,17 @@ def _placeholders(template: str, *, label: str) -> list[tuple[str, str, str | No
 
 
 def _check_agent_prompt_rules(version: AgentVersion) -> None:
-    """Enforce the agent instruction, prompt-template, and required-column rules.
+    """Enforce the prompt-template and required-column rules for a generated draft.
 
-    Store validation accepts instructions that contain ``{column}`` placeholders,
-    a prompt with no placeholder, format specifiers such as ``{question:>10}``,
-    and an empty ``required_columns`` list. Those drafts violate the agent rules,
-    so they are rejected here before the store check.
+    Store validation accepts a prompt with no placeholder, format specifiers such as
+    ``{question:>10}``, and an empty ``required_columns`` list. A generated draft must
+    bind to at least one dataset column through simple placeholders, so those are
+    rejected here before the store check.
+
+    Instructions are deliberately not checked: they are never formatted with row
+    columns, so any brace text in them (a JSON example, say) reaches the agent as-is.
     """
-    instructions = version.spec.get("instructions")
-    if isinstance(instructions, str):
-        # Formatter treats every {...} span as a field, so literal brace text such as
-        # JSON is a field whose name is not a column. Only a simple {column} name
-        # (letters, digits, and underscores) is a placeholder the agent rules forbid.
-        names = [
-            name
-            for name, _, _ in _placeholders(instructions, label="instructions")
-            if _SIMPLE_COLUMN.fullmatch(name)
-        ]
-        if names:
-            raise ConfigError(
-                f"instructions must not contain {{column}} placeholders; found {names}."
-            )
-    prompt_fields = _placeholders(version.prompt_template, label="prompt_template")
+    prompt_fields = _placeholders(version.prompt_template)
     if not prompt_fields:
         raise ConfigError("prompt_template must contain at least one simple {column} placeholder.")
     for name, format_spec, conversion in prompt_fields:
