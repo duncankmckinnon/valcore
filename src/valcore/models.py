@@ -4,6 +4,7 @@ import keyword
 import string
 from datetime import UTC, datetime
 from enum import Enum
+from typing import ClassVar
 from uuid import uuid4
 
 from pydantic import BaseModel, ValidationError, model_validator
@@ -130,6 +131,41 @@ class OutputField(BaseModel):
                     f"maximum {self.maximum}."
                 )
         return self
+
+
+class OutputFieldsVersion:
+    """Shared parse/validate contract for a version's structured-output field list.
+
+    Both EvaluatorVersion and AgentVersion store ``output_fields`` in the same shape and
+    need the same OutputField parse path; this mixin is the one place that path lives.
+    Each subclass still declares its own ``output_fields`` column directly (matching every
+    other field on these tables) and only overrides whether an empty list is allowed.
+    ``SQLModel.metadata.create_all`` adds missing tables but never missing columns, so
+    ``AgentVersion.output_fields`` — new on databases that predate it — is added by an
+    idempotent upgrade in ``init_db`` that backfills ``[]``. This is a plain mixin, not a
+    SQLModel/BaseModel subclass, so it contributes no pydantic field of its own.
+    """
+
+    output_fields_required: ClassVar[bool] = False
+
+    def parsed_output_fields(self) -> list[OutputField]:
+        """Parse and validate this version's serialized output fields into OutputField specs."""
+        if not isinstance(self.output_fields, list):
+            raise ConfigError("output_fields must be a list.")
+        return [OutputField.model_validate(f) for f in self.output_fields]
+
+    def validate_output_fields(self) -> None:
+        """Raise ConfigError for a non-list, malformed, missing, or duplicate output field list."""
+        try:
+            fields = self.parsed_output_fields()
+        except ValidationError as exc:
+            raise ConfigError(f"Invalid output field: {exc}") from exc
+        if self.output_fields_required and not fields:
+            raise ConfigError(f"{type(self).__name__} must define at least one output field.")
+        names = [f.name for f in fields]
+        duplicates = sorted({n for n in names if names.count(n) > 1})
+        if duplicates:
+            raise ConfigError(f"Output field names must be unique; duplicates: {duplicates}.")
 
 
 class CapabilitySpec(BaseModel):
@@ -386,7 +422,7 @@ class Evaluator(SQLModel, table=True):
     active_version_id: str | None = None
 
 
-class EvaluatorVersion(SQLModel, table=True):
+class EvaluatorVersion(OutputFieldsVersion, SQLModel, table=True):
     """An immutable-once-frozen configuration snapshot of an evaluator."""
 
     id: str = Field(default_factory=lambda: uuid4().hex, primary_key=True)
@@ -400,6 +436,7 @@ class EvaluatorVersion(SQLModel, table=True):
     prompt_template: str
     required_columns: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     output_fields: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    output_fields_required: ClassVar[bool] = True
     score_field: str
     score_kind: ScoreKind
     score_labels: list[str] | None = Field(default=None, sa_column=Column(JSON))
@@ -423,7 +460,7 @@ class Agent(SQLModel, table=True):
     active_version_id: str | None = None
 
 
-class AgentVersion(SQLModel, table=True):
+class AgentVersion(OutputFieldsVersion, SQLModel, table=True):
     """An immutable-once-frozen agent definition and its binding to dataset columns.
 
     ``spec`` remains an opaque pydantic-ai serialization blob because it round-trips exactly;
@@ -444,13 +481,16 @@ class AgentVersion(SQLModel, table=True):
     prompt_template: str = ""
     required_columns: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     deps_mapping: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    output_fields: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
 
     @property
     def response_columns(self) -> list[str]:
         """Return the output columns implied by this version's serialized agent spec."""
         from valcore import agent_spec
 
-        return agent_spec.output_column_names(agent_spec.parse_spec(self.spec))
+        return agent_spec.output_column_names(
+            agent_spec.parse_spec(self.spec), output_fields=self.output_fields
+        )
 
 
 class AgentPromptSyncLink(SQLModel, table=True):
@@ -674,9 +714,9 @@ def _template_columns(template: str) -> set[str]:
     return names
 
 
-def parse_output_fields(version: EvaluatorVersion) -> list[OutputField]:
+def parse_output_fields(version: OutputFieldsVersion) -> list[OutputField]:
     """Parse and validate a version's serialized output fields into OutputField specs."""
-    return [OutputField.model_validate(f) for f in version.output_fields]
+    return version.parsed_output_fields()
 
 
 def validate_version(version: EvaluatorVersion) -> None:
@@ -690,19 +730,8 @@ def validate_version(version: EvaluatorVersion) -> None:
             "drop tools for this version."
         )
 
-    if not version.output_fields:
-        raise ConfigError("Evaluator version must define at least one output field.")
-
-    try:
-        fields = parse_output_fields(version)
-    except ValueError as exc:
-        raise ConfigError(str(exc)) from exc
-
-    names = [f.name for f in fields]
-    duplicates = sorted({n for n in names if names.count(n) > 1})
-    if duplicates:
-        raise ConfigError(f"Output field names must be unique; duplicates: {duplicates}.")
-
+    version.validate_output_fields()
+    fields = version.parsed_output_fields()
     by_name = {f.name: f for f in fields}
     if version.score_field not in by_name:
         raise ConfigError(
@@ -766,6 +795,7 @@ def validate_agent_version(version: AgentVersion) -> None:
     ):
         raise ConfigError("Agent version deps_mapping must be an object of string values.")
 
+    version.validate_output_fields()
     settings.validate_model_string(version.model)
     spec = agent_spec.parse_spec(version.spec)
 

@@ -595,6 +595,7 @@ def test_agent_export_then_import_round_trips_spec_and_binding(
         "prompt_template": version.prompt_template,
         "required_columns": version.required_columns,
         "deps_mapping": version.deps_mapping,
+        "output_fields": version.output_fields,
     }
 
     imported_db = tmp_path / "imported.db"
@@ -681,3 +682,79 @@ metadata:
     assert "Invalid valcore binding" in result.stderr
     assert "required_columns must be a list of strings" in result.stderr
     assert store.list_agents() == []
+
+
+def test_agent_export_then_import_round_trips_output_fields(
+    runner: CliRunner, store: Store, db_path: Path, tmp_path: Path
+) -> None:
+    """A structured agent's output_fields round-trip, and the export derives output_schema."""
+    agent = store.create_agent("extractor")
+    version = store.create_agent_version(
+        agent.id,
+        version_name="v1",
+        model="local/codex",
+        spec=_spec(),
+        prompt_template="Extract from: {input}",
+        required_columns=["input"],
+        deps_mapping={},
+        output_fields=[{"name": "summary", "type": "str", "description": "A summary."}],
+    )
+    artifact = tmp_path / "extractor-v1.yaml"
+
+    exported = _invoke(runner, db_path, "agent", "export", "extractor", "--out", str(artifact))
+    assert exported.exit_code == 0, exported.output + exported.stderr
+
+    exported_spec = AgentSpec.from_file(artifact)
+    assert exported_spec.metadata["valcore"]["output_fields"] == version.output_fields
+    assert exported_spec.output_schema == {
+        "type": "object",
+        "properties": {"summary": {"type": "string", "description": "A summary."}},
+        "required": ["summary"],
+    }
+
+    imported_db = tmp_path / "imported.db"
+    imported = _invoke(
+        runner, imported_db, "agent", "import", str(artifact), "--name", "extractor copy"
+    )
+    assert imported.exit_code == 0, imported.output + imported.stderr
+
+    engine = create_engine(imported_db)
+    try:
+        imported_store = Store(engine)
+        imported_agent = imported_store.list_agents()[0]
+        imported_version = imported_store.list_agent_versions(imported_agent.id)[0]
+        assert imported_version.output_fields == version.output_fields
+    finally:
+        engine.dispose()
+
+
+def test_run_agent_dataset_save_explodes_structured_output_into_columns(
+    runner: CliRunner, store: Store, db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dataset run with output_fields must write one AgentResponse.data key per field,
+    matching DatasetDerivation.response_columns -- never a single stringified blob."""
+    monkeypatch.setattr("valcore.factory.resolve_model", lambda model: TestModel())
+    agent = store.create_agent("extractor")
+    store.create_agent_version(
+        agent.id,
+        version_name="v1",
+        model="gateway/anthropic:claude-sonnet-5",
+        spec={"instructions": "Extract fields."},
+        prompt_template="Extract from: {input}",
+        required_columns=["input"],
+        deps_mapping={},
+        output_fields=[
+            {"name": "summary", "type": "str", "description": "A summary."},
+            {"name": "rating", "type": "int", "description": "1-5."},
+        ],
+    )
+    dataset = store.create_dataset("inputs", "", ["input"])
+    store.add_rows(dataset.id, [{"input": "hello"}])
+
+    result = _invoke(runner, db_path, "run", "agent", "extractor", "--dataset", "inputs", "--save")
+
+    assert result.exit_code == 0, result.output + result.stderr
+    derivation = store.list_derivations(dataset_id=dataset.id)[0]
+    assert derivation.response_columns == ["summary", "rating"]
+    response = store.list_agent_responses(derivation.id)[0]
+    assert set(response.data) == {"summary", "rating"}

@@ -326,6 +326,18 @@ def test_copy_agent_version_copies_binding_unfrozen_and_makes_copy_active(store:
     assert store.get_agent(agent.id).active_version_id == copied.id
 
 
+def test_copy_agent_version_preserves_output_fields(store: Store) -> None:
+    fields = [{"name": "verdict", "type": "str", "description": "The verdict."}]
+    agent = store.create_agent("subject")
+    original = store.create_agent_version(agent.id, **agent_version_fields(output_fields=fields))
+
+    copied = store.copy_agent_version(original.id, "v2")
+
+    assert copied.output_fields == fields
+    assert store.get_agent_version(original.id).output_fields == fields
+    assert store.get_agent_version(copied.id).output_fields == fields
+
+
 def test_delete_agent_version_repoints_active_pointer(store: Store) -> None:
     agent = store.create_agent("subject")
     first = store.create_agent_version(agent.id, **agent_version_fields(version_name="v1"))
@@ -2743,13 +2755,41 @@ def test_deleting_the_last_synced_version_does_not_strand_the_link(store: Store)
     assert store.get_agent_prompt_sync_link(agent.id) is None
 
 
+def test_init_db_adds_output_fields_to_an_existing_agent_version_table(
+    tmp_path, make_engine
+) -> None:
+    """A database written before ``output_fields`` existed gains the column on the next start.
+
+    ``create_all`` adds missing tables but never missing columns, so ``init_db`` alters
+    ``agentversion`` itself. Existing rows backfill to ``[]`` — free text, same as before
+    the column existed — and a second call is a no-op.
+    """
+    engine = make_engine(tmp_path / "existing.db")
+    init_db(engine)
+    store = Store(engine)
+    agent = store.create_agent("from-before")
+    version = store.create_agent_version(agent.id, **agent_version_fields())
+
+    with engine.begin() as conn:
+        conn.exec_driver_sql("ALTER TABLE agentversion DROP COLUMN output_fields")
+
+    init_db(engine)
+
+    restored = store.get_agent_version(version.id)
+    assert restored.output_fields == []
+    assert store.list_agent_versions(agent.id)[0].output_fields == []
+
+    init_db(engine)
+    assert store.get_agent_version(version.id).output_fields == []
+
+
 def test_init_db_adds_the_prompt_sync_link_table_to_an_existing_database(
     tmp_path, make_engine
 ) -> None:
     """A database written before the sync link existed gains its table on the next start.
 
-    The link is a new table because ``init_db`` is a bare ``create_all``: it creates missing
-    tables but never adds columns to ``Agent`` or ``AgentVersion``.
+    The link is a new table because ``create_all`` creates missing tables but never adds
+    columns. ``AgentVersion.output_fields`` is the one column ``init_db`` adds explicitly.
     """
     engine = make_engine(tmp_path / "existing.db")
     init_db(engine)

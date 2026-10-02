@@ -89,6 +89,7 @@ def _version_fields(source: AgentVersion, texts: dict[str, str]) -> dict[str, ob
         "prompt_template": texts["input_template"],
         "required_columns": list(source.required_columns),
         "deps_mapping": dict(source.deps_mapping),
+        "output_fields": deepcopy(source.output_fields),
     }
 
 
@@ -103,6 +104,7 @@ def _source_fields(source: AgentVersion) -> dict[str, object]:
         "prompt_template": source.prompt_template,
         "required_columns": list(source.required_columns),
         "deps_mapping": deepcopy(source.deps_mapping),
+        "output_fields": deepcopy(source.output_fields),
     }
 
 

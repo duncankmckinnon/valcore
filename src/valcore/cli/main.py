@@ -28,6 +28,7 @@ import yaml
 
 from valcore import config as config_module
 from valcore import experiment, logfire_io, logfire_pull, tracing
+from valcore.agent_generator import output_schema as derive_output_schema
 from valcore.agent_prompt_sync import KEYS, AgentPromptSync, SyncStatus
 from valcore.agent_spec import (
     AgentSpec,
@@ -64,6 +65,7 @@ from valcore.models import (
     EvaluatorVersion,
     LabelSchema,
     LabelSet,
+    OutputField,
     Run,
     RunKind,
     RunStatus,
@@ -913,7 +915,9 @@ def run_agent(
         derivation = store.create_staged_derivation(
             dataset_id=dataset.id,
             agent_version_id=version.id,
-            response_columns=output_column_names(parse_spec(version.spec)),
+            response_columns=output_column_names(
+                parse_spec(version.spec), output_fields=version.output_fields
+            ),
         )
         workers = concurrency if concurrency is not None else get_settings().default_concurrency
         created = store.create_run(RunKind.DERIVE, version.id, dataset.id, workers)
@@ -959,7 +963,7 @@ def run_agent(
     except Exception as exc:
         raise ContractError(str(exc)) from exc
     latency_ms = round((perf_counter() - started) * 1000)
-    output = agent_response_data(spec, result.output)
+    output = agent_response_data(spec, result.output, output_fields=version.output_fields)
     usage = _usage_data(result.usage)
     payload = {
         "prompt": prompt,
@@ -977,7 +981,7 @@ def run_agent(
         derivation = store.save_derivation(
             dataset_id=dataset.id,
             agent_version_id=version.id,
-            response_columns=output_column_names(spec),
+            response_columns=output_column_names(spec, output_fields=version.output_fields),
             responses=[
                 {
                     "row_id": source_row.id,
@@ -1027,6 +1031,7 @@ def agent_import(ctx: click.Context, path: Path, name: str | None) -> None:
         "prompt_template": binding.get("prompt_template", ""),
         "required_columns": binding.get("required_columns", []),
         "deps_mapping": binding.get("deps_mapping", {}),
+        "output_fields": binding.get("output_fields", []),
     }
     try:
         validate_agent_version(AgentVersion(agent_id="", **version_fields))
@@ -1063,8 +1068,13 @@ def agent_export(
         "prompt_template": version.prompt_template,
         "required_columns": version.required_columns,
         "deps_mapping": version.deps_mapping,
+        "output_fields": version.output_fields,
     }
     spec_data["metadata"] = metadata
+    if version.output_fields:
+        spec_data["output_schema"] = derive_output_schema(
+            [OutputField.model_validate(field) for field in version.output_fields]
+        )
     spec = AgentSpec.from_dict(spec_data)
     destination = output or Path(f"{_slug(agent.name)}-{version.version_name}.yaml")
     content = yaml.safe_dump(

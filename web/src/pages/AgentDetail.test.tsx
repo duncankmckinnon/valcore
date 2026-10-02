@@ -139,6 +139,7 @@ function makeVersion(overrides: Partial<AgentVersion> = {}): AgentVersion {
     prompt_template: "Question: {question}",
     required_columns: ["question", "context"],
     deps_mapping: { account_id: "account" },
+    output_fields: [],
     response_columns: ["answer", "confidence"],
     ...overrides,
   };
@@ -562,6 +563,7 @@ describe("AgentDetail", () => {
         required_columns: ["question", "context"],
         deps_mapping: { account_id: "account" },
         spec: { name: "support-agent", instructions: ["Help the user."] },
+        output_fields: [],
       }),
     );
     expect(agents.updateVersion).not.toHaveBeenCalled();
@@ -617,6 +619,7 @@ describe("AgentDetail", () => {
       prompt_template: "Imported: {input}",
       required_columns: ["input"],
       deps_mapping: { user: "customer" },
+      output_fields: [],
     });
     const user = userEvent.setup();
     renderDetail();
@@ -918,6 +921,7 @@ describe("AgentDetail", () => {
       prompt_template: "Answer {question}.",
       required_columns: ["question"],
       deps_mapping: {},
+      output_fields: [],
       rationale: "Plain text suits this.",
     };
     const user = userEvent.setup();
@@ -951,6 +955,146 @@ describe("AgentDetail", () => {
     );
     await waitFor(() =>
       expect(screen.queryByText(/isn't saved yet/)).not.toBeInTheDocument(),
+    );
+  });
+
+  it("shows a generated structured draft's output fields and saves them", async () => {
+    const fields = [
+      {
+        name: "summary",
+        type: "str" as const,
+        description: "A summary.",
+        required: true,
+        enum_values: null,
+        minimum: null,
+        maximum: null,
+      },
+      {
+        name: "rating",
+        type: "int" as const,
+        description: "1-5.",
+        required: true,
+        enum_values: null,
+        minimum: 1,
+        maximum: 5,
+      },
+    ];
+    vi.mocked(agents.get)
+      .mockResolvedValueOnce(
+        makeDetail({
+          versions: [],
+          agent: {
+            ...makeDetail().agent,
+            active_version_id: null,
+            version_count: 0,
+          },
+        }),
+      )
+      .mockResolvedValueOnce(makeDetail());
+    vi.mocked(agents.createVersion).mockResolvedValue(
+      makeVersion({ output_fields: fields, response_columns: ["summary", "rating"] }),
+    );
+    const draft: AgentDraft = {
+      version_name: "v1",
+      spec: {
+        instructions: "You answer billing questions.",
+        capabilities: [{ Planning: {} }],
+      },
+      prompt_template: "Answer {question}.",
+      required_columns: ["question"],
+      deps_mapping: {},
+      output_fields: fields,
+      rationale: "Return a summary and a rating.",
+    };
+    const user = userEvent.setup();
+    render(<AgentDetail agentId="agent-1" initialDraft={draft} />);
+
+    expect(await screen.findByLabelText("Field 0 name")).toHaveValue("summary");
+    expect(screen.getByLabelText("Field 1 name")).toHaveValue("rating");
+    expect(screen.getByLabelText("Field 1 minimum")).toHaveValue(1);
+    expect(screen.getByText("summary")).toBeInTheDocument();
+    expect(screen.getByText("rating")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Field 0 description"), {
+      target: { value: "A short summary." },
+    });
+    await user.click(screen.getByRole("button", { name: "Create version" }));
+
+    await waitFor(() =>
+      expect(agents.createVersion).toHaveBeenCalledWith(
+        "agent-1",
+        expect.objectContaining({
+          spec: {
+            instructions: "You answer billing questions.",
+            capabilities: [{ Planning: {} }],
+          },
+          output_fields: [
+            expect.objectContaining({
+              name: "summary",
+              description: "A short summary.",
+            }),
+            expect.objectContaining({ name: "rating", minimum: 1, maximum: 5 }),
+          ],
+        }),
+      ),
+    );
+    const payload = vi.mocked(agents.createVersion).mock.calls[0][1];
+    expect(payload.spec).not.toHaveProperty("output_schema");
+  });
+
+  it("carries imported output fields into the created version", async () => {
+    const fields = [
+      {
+        name: "summary",
+        type: "str" as const,
+        description: "A summary.",
+        required: true,
+        enum_values: null,
+        minimum: null,
+        maximum: null,
+      },
+    ];
+    vi.mocked(agents.get).mockResolvedValue(
+      makeDetail({
+        versions: [],
+        agent: {
+          ...makeDetail().agent,
+          active_version_id: null,
+          version_count: 0,
+        },
+      }),
+    );
+    vi.mocked(agents.importSpec).mockResolvedValue({
+      spec: { instructions: "Extract." },
+      model: "local/codex",
+      prompt_template: "Extract {input}",
+      required_columns: ["input"],
+      deps_mapping: {},
+      output_fields: fields,
+    });
+    vi.mocked(agents.createVersion).mockResolvedValue(
+      makeVersion({ output_fields: fields, response_columns: ["summary"] }),
+    );
+    const user = userEvent.setup();
+    renderDetail();
+
+    await screen.findByLabelText("Version name");
+    await user.click(screen.getByRole("button", { name: "Import" }));
+    await user.type(screen.getByLabelText("Import spec"), "name: imported");
+    await user.click(screen.getByRole("button", { name: "Import spec" }));
+
+    expect(await screen.findByLabelText("Field 0 name")).toHaveValue("summary");
+    await user.click(screen.getByRole("button", { name: "Create version" }));
+
+    await waitFor(() =>
+      expect(agents.createVersion).toHaveBeenCalledWith(
+        "agent-1",
+        expect.objectContaining({
+          model: "local/codex",
+          prompt_template: "Extract {input}",
+          spec: { instructions: "Extract." },
+          output_fields: [expect.objectContaining({ name: "summary", type: "str" })],
+        }),
+      ),
     );
   });
 });

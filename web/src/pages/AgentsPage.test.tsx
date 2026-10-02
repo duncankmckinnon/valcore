@@ -83,6 +83,7 @@ function makeDraft(overrides: Partial<AgentDraft> = {}): AgentDraft {
     prompt_template: "{input}",
     required_columns: ["input"],
     deps_mapping: {},
+    output_fields: [],
     rationale: "because",
     ...overrides,
   };

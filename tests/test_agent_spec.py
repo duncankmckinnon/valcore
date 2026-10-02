@@ -184,6 +184,20 @@ class TestOutputColumnNames:
         spec = parse_spec(full_blob(output_schema={"type": "object"}))
         assert output_column_names(spec, text_column="answer") == ["answer"]
 
+    def test_output_fields_take_priority_over_output_schema(self) -> None:
+        spec = parse_spec(full_blob())
+        assert output_column_names(spec, output_fields=[{"name": "topic", "type": "str"}]) == [
+            "topic"
+        ]
+
+    def test_empty_output_fields_falls_back_to_output_schema(self) -> None:
+        spec = parse_spec(full_blob())
+        assert output_column_names(spec, output_fields=[]) == ["verdict", "confidence"]
+
+    def test_none_output_fields_falls_back_to_output_schema(self) -> None:
+        spec = parse_spec(full_blob())
+        assert output_column_names(spec, output_fields=None) == ["verdict", "confidence"]
+
 
 # --- validate_binding ---------------------------------------------------------
 

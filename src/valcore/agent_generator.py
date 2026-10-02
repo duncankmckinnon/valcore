@@ -4,7 +4,7 @@ import re
 import string
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_ai import Agent as PydanticAgent
 
 from valcore.capabilities import spec_capability_names
@@ -57,12 +57,16 @@ class GeneratedAgentConfig(GeneratedConfigBase):
     rationale: str
 
     def spec(self) -> dict[str, Any]:
-        """Return the pydantic-ai spec blob this draft stores, omitting empty sections."""
+        """Return the pydantic-ai spec blob this draft stores, omitting empty sections.
+
+        output_fields is stored on the AgentVersion directly (see to_version()), not baked
+        into this blob as a raw output_schema -- the agent-building and column-naming paths
+        both read output_fields directly, and the exported YAML derives output_schema from
+        it on demand (see cli/main.py's agent_export).
+        """
         spec: dict[str, Any] = {"instructions": self.instructions}
         if self.capabilities:
             spec["capabilities"] = [{c.name: c.config} for c in self.capabilities]
-        if self.output_fields:
-            spec["output_schema"] = output_schema(self.output_fields)
         return spec
 
     def to_version(self, model: str) -> AgentVersion:
@@ -75,6 +79,7 @@ class GeneratedAgentConfig(GeneratedConfigBase):
             prompt_template=self.prompt_template,
             required_columns=self.required_columns,
             deps_mapping={},
+            output_fields=[f.model_dump(mode="json") for f in self.output_fields],
         )
 
 
@@ -90,6 +95,7 @@ class AgentDraft(BaseModel):
     prompt_template: str
     required_columns: list[str]
     deps_mapping: dict[str, str]
+    output_fields: list[OutputField] = Field(default_factory=list)
     rationale: str
 
     @classmethod
@@ -101,6 +107,7 @@ class AgentDraft(BaseModel):
             prompt_template=config.prompt_template,
             required_columns=config.required_columns,
             deps_mapping={},
+            output_fields=config.output_fields,
             rationale=config.rationale,
         )
 

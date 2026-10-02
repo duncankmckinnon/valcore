@@ -1123,6 +1123,7 @@ describe("agents client helpers", () => {
     prompt_template: "{{ input }}",
     required_columns: ["input"],
     deps_mapping: {},
+    output_fields: [],
     response_columns: ["output"],
   };
 
@@ -1177,6 +1178,7 @@ describe("agents client helpers", () => {
       prompt_template: "Answer {question}.",
       required_columns: ["question"],
       deps_mapping: {},
+      output_fields: [],
       rationale: "Why this draft looks the way it does.",
     };
     const fetchMock = vi
@@ -1371,6 +1373,7 @@ describe("agents client helpers", () => {
       prompt_template: "{{ input }}",
       required_columns: ["input"],
       deps_mapping: {},
+      output_fields: [],
     };
     const fetchMock = vi
       .spyOn(globalThis, "fetch")

@@ -160,7 +160,9 @@ export type AgentVersion = {
   prompt_template: string;
   required_columns: string[];
   deps_mapping: Record<string, string>;
-  // Read-only: the server derives these columns from the spec's output schema.
+  output_fields: OutputField[];
+  // Read-only: the server derives these columns from output_fields, falling
+  // back to the spec's output schema when that list is empty.
   response_columns: string[];
 };
 
@@ -172,6 +174,7 @@ export type AgentUpdate = { name?: string; description?: string };
 
 // Creation sends the AgentSpec and valcore binding together. `response_columns` is
 // intentionally absent because it is derived by the server rather than caller-owned.
+// `output_fields` is the stored output contract; an empty list is a text agent.
 export type AgentVersionCreate = {
   version_name: string;
   notes?: string;
@@ -180,6 +183,7 @@ export type AgentVersionCreate = {
   prompt_template: string;
   required_columns: string[];
   deps_mapping?: Record<string, string>;
+  output_fields?: OutputField[];
 };
 export type AgentVersionUpdate = Partial<AgentVersionCreate>;
 
@@ -308,6 +312,7 @@ export type AgentSpecImport = {
   prompt_template: string | null;
   required_columns: string[];
   deps_mapping: Record<string, string>;
+  output_fields: OutputField[];
 };
 
 // A model-drafted agent version: the editor fills from it, and nothing is saved
@@ -318,6 +323,7 @@ export type AgentDraft = {
   prompt_template: string;
   required_columns: string[];
   deps_mapping: Record<string, string>;
+  output_fields: OutputField[];
   rationale: string;
 };
 

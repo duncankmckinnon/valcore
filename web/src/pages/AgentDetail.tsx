@@ -16,11 +16,13 @@ import type {
   AgentVersionCreate,
   DatasetSummary,
   CapabilitySpec,
+  OutputField,
 } from "../api/types";
 import AgentTrialPanel from "../components/AgentTrialPanel";
 import AgentPromptSync from "../components/AgentPromptSync";
 import EvaluatorFromAgent from "../components/EvaluatorFromAgent";
 import { CapabilitiesEditor } from "../components/CapabilitiesEditor";
+import { OutputFieldsEditor } from "../components/OutputFieldsEditor";
 import { useSetup } from "../components/useSetup";
 import type { AppConfig } from "../components/VersionEditor";
 import { PageHeader } from "../components/PageHeader";
@@ -46,7 +48,15 @@ type EditorValues = {
   required_columns: string;
   deps_mapping: [string, string][];
   spec: string;
+  output_fields: OutputField[];
 };
+
+function cloneOutputFields(fields: OutputField[]): OutputField[] {
+  return fields.map((field) => ({
+    ...field,
+    enum_values: field.enum_values ? [...field.enum_values] : field.enum_values,
+  }));
+}
 
 function editorValues(version: AgentVersion): EditorValues {
   return {
@@ -57,6 +67,7 @@ function editorValues(version: AgentVersion): EditorValues {
     required_columns: version.required_columns.join(", "),
     deps_mapping: mappingRows(version.deps_mapping),
     spec: JSON.stringify(version.spec, null, 2),
+    output_fields: cloneOutputFields(version.output_fields),
   };
 }
 
@@ -71,6 +82,7 @@ function blankValues(): EditorValues {
     required_columns: "",
     deps_mapping: [["", ""]],
     spec: "{}",
+    output_fields: [],
   };
 }
 
@@ -84,6 +96,7 @@ function draftValues(draft: AgentDraft): EditorValues {
     required_columns: draft.required_columns.join(", "),
     deps_mapping: mappingRows(draft.deps_mapping),
     spec: JSON.stringify(draft.spec, null, 2),
+    output_fields: cloneOutputFields(draft.output_fields),
   };
 }
 
@@ -106,6 +119,7 @@ function createPayload(
     required_columns: columns(values.required_columns),
     deps_mapping: mappingObject(values.deps_mapping),
     spec,
+    output_fields: cloneOutputFields(values.output_fields),
   };
 }
 
@@ -342,6 +356,11 @@ export default function AgentDetail({ agentId, initialDraft }: AgentDetailProps)
       )
         patch.deps_mapping = mappingObject(currentValues.deps_mapping);
       if (currentValues.spec !== original.spec) patch.spec = spec;
+      if (
+        JSON.stringify(currentValues.output_fields) !==
+        JSON.stringify(original.output_fields)
+      )
+        patch.output_fields = cloneOutputFields(currentValues.output_fields);
       if (Object.keys(patch).length === 0) return;
       const updated = await agents.updateVersion(selected.id, patch);
       setDetail((current) =>
@@ -373,6 +392,7 @@ export default function AgentDetail({ agentId, initialDraft }: AgentDetailProps)
         prompt_template: imported.prompt_template ?? values.prompt_template,
         required_columns: imported.required_columns.join(", "),
         deps_mapping: mappingRows(imported.deps_mapping),
+        output_fields: cloneOutputFields(imported.output_fields),
       };
       valuesRef.current = next;
       setValues(next);
@@ -534,6 +554,9 @@ export default function AgentDetail({ agentId, initialDraft }: AgentDetailProps)
   const readOnly = selected !== null && selected.frozen && !showDraft;
   const rows = values.deps_mapping;
   const parsedSpec = specObject(values.spec);
+  const responseColumns = values.output_fields.some((field) => field.name.trim())
+    ? values.output_fields.map((field) => field.name).filter((name) => name.trim())
+    : (selected?.response_columns ?? []);
   const instructions = parsedSpec?.instructions;
   const gatewayEnabled = setupStatus?.keys.find((key) => key.name === "gateway_api_key")?.set !== false;
   const localModels = (setupStatus?.local_cli_options ?? ["claude", "codex", "cursor"]).map((name) => `local/${name}`);
@@ -729,6 +752,15 @@ export default function AgentDetail({ agentId, initialDraft }: AgentDetailProps)
             onChange={(capabilities) => updateSpecField("capabilities", capabilities.map(({ name, config }) => ({ [name]: config })))}
           />
         </div>
+        <div className="field">
+          <span className="field-label">Output fields</span>
+          <p className="muted">Leave empty for a plain text response. Named fields become the response columns.</p>
+          <OutputFieldsEditor
+            fields={values.output_fields}
+            readOnly={readOnly}
+            onChange={(output_fields) => updateValues({ output_fields })}
+          />
+        </div>
         <label className="field">
           <span className="field-label">Spec</span>
           <TextArea
@@ -741,8 +773,8 @@ export default function AgentDetail({ agentId, initialDraft }: AgentDetailProps)
         {specError && <p role="alert">{specError}</p>}
         <div className="field">
           <span className="field-label">Response columns</span>
-          {selected?.response_columns.length ? (
-            selected.response_columns.map((column) => (
+          {responseColumns.length ? (
+            responseColumns.map((column) => (
               <Badge key={column}>{column}</Badge>
             ))
           ) : (
