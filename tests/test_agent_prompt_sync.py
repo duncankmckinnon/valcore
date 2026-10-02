@@ -165,6 +165,7 @@ class Env:
             "prompt_template": source.prompt_template,
             "required_columns": list(source.required_columns),
             "deps_mapping": dict(source.deps_mapping),
+            "output_fields": [dict(field) for field in source.output_fields],
         }
         fields.update(overrides)
         return self.store.create_agent_version(self.agent_id, **fields)
@@ -552,6 +553,37 @@ def test_link_local_with_empty_input_template_creates_empty_string_variable(stor
     assert env.state("input_template") == "in_sync"
 
 
+def test_link_remote_copies_output_fields(store: Store) -> None:
+    fields = [{"name": "verdict", "type": "str", "description": "The verdict."}]
+    env = build_env(store, output_fields=fields)
+    env.set_remote("instructions", "Remote instructions")
+    env.set_remote("input_template", "Remote {{question}} with {{context}}")
+
+    env.link("remote")
+
+    assert env.active_version().output_fields == fields
+    assert env.store.get_agent_version(env.version_id).output_fields == fields
+
+
+def test_remote_first_link_rejects_concurrent_output_fields_edit(env: Env) -> None:
+    env.set_remote("instructions", "Remote instructions")
+    env.set_remote("input_template", BASE_TMPL_REMOTE)
+    revision = env.rev()
+    original = env.store.create_agent_prompt_sync_link
+    edited = [{"name": "verdict", "type": "str", "description": "The verdict."}]
+
+    def racing_link(*args: Any, **kwargs: Any):
+        env.store.update_agent_version(env.version_id, output_fields=edited)
+        return original(*args, **kwargs)
+
+    env.store.create_agent_prompt_sync_link = racing_link  # type: ignore[method-assign]
+    with pytest.raises(SyncConflictError):
+        env.svc.link(env.agent_id, "remote", revision)
+
+    assert env.cursor() is None
+    assert env.active_version().output_fields == edited
+
+
 def test_link_remote_creates_new_active_version_from_remote_text(env: Env) -> None:
     env.set_remote("instructions", "Remote instructions")
     env.set_remote("input_template", "Remote {{question}} with {{context}}")
@@ -797,6 +829,21 @@ def test_link_failed_remote_write_leaves_no_cursor(env: Env) -> None:
 
 
 # -- Pull ----------------------------------------------------------------------------------------
+
+
+def test_pull_copies_output_fields(store: Store) -> None:
+    fields = [{"name": "verdict", "type": "str", "description": "The verdict."}]
+    env = build_env(store, output_fields=fields)
+    env.link("local")
+    env.set_remote("instructions", "Remote instructions")
+    env.set_remote("input_template", "Reply to {{question}} with {{context}}.")
+
+    env.pull()
+
+    new = env.active_version()
+    assert new.id != env.version_id
+    assert new.output_fields == fields
+    assert env.store.get_agent_version(env.version_id).output_fields == fields
 
 
 def test_pull_creates_new_active_version_copying_everything_but_the_text(linked: Env) -> None:

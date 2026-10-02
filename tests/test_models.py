@@ -142,6 +142,18 @@ def test_parse_output_fields_delegates_to_mixin_method() -> None:
     assert parse_output_fields(version) == version.parsed_output_fields()
 
 
+@pytest.mark.parametrize("value", [None, 1, {}, ""])
+def test_output_fields_container_must_be_a_list(value: object) -> None:
+    evaluator = make_version(output_fields=value)
+    agent = make_agent_version(output_fields=value)
+    with pytest.raises(ConfigError, match="output_fields must be a list"):
+        evaluator.validate_output_fields()
+    with pytest.raises(ConfigError, match="output_fields must be a list"):
+        validate_version(evaluator)
+    with pytest.raises(ConfigError, match="output_fields must be a list"):
+        validate_agent_version(agent)
+
+
 VALIDATE_VERSION_REJECTIONS = [
     pytest.param(
         {"model": "openai:gpt-5"},

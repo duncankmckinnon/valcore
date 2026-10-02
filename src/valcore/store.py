@@ -75,8 +75,27 @@ def create_engine(db_path: Path | str | None = None) -> Engine:
 
 
 def init_db(engine: Engine) -> None:
-    """Create every SQLModel table on the given engine."""
+    """Create every SQLModel table and apply additive column upgrades.
+
+    ``create_all`` adds missing tables but never missing columns. Databases created before
+    ``AgentVersion.output_fields`` existed gain that column here, backfilled with ``[]`` so
+    existing versions keep today's free-text behavior.
+    """
     SQLModel.metadata.create_all(engine)
+    _ensure_agent_version_output_fields(engine)
+
+
+def _ensure_agent_version_output_fields(engine: Engine) -> None:
+    """Add ``agentversion.output_fields`` when an older database lacks it.
+
+    Idempotent: a database that already has the column is left unchanged. Existing rows
+    receive ``[]``, which is the free-text output contract.
+    """
+    with engine.begin() as conn:
+        rows = conn.exec_driver_sql("PRAGMA table_info(agentversion)").fetchall()
+        if any(row[1] == "output_fields" for row in rows):
+            return
+        conn.exec_driver_sql("ALTER TABLE agentversion ADD COLUMN output_fields JSON DEFAULT '[]'")
 
 
 @contextmanager
@@ -574,6 +593,7 @@ class Store:
                 prompt_template=source.prompt_template,
                 required_columns=source.required_columns,
                 deps_mapping=source.deps_mapping,
+                output_fields=list(source.output_fields),
             )
             validate_agent_version(version)
             session.add(version)

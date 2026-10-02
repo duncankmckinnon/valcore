@@ -139,20 +139,23 @@ class OutputFieldsVersion:
     Both EvaluatorVersion and AgentVersion store ``output_fields`` in the same shape and
     need the same OutputField parse path; this mixin is the one place that path lives.
     Each subclass still declares its own ``output_fields`` column directly (matching every
-    other field on these tables, so a new column reaches an existing database the same
-    bare-``create_all`` way) and only overrides whether an empty list is allowed. This is
-    a plain mixin, not a SQLModel/BaseModel subclass, so it contributes no pydantic field
-    of its own.
+    other field on these tables) and only overrides whether an empty list is allowed.
+    ``SQLModel.metadata.create_all`` adds missing tables but never missing columns, so
+    ``AgentVersion.output_fields`` — new on databases that predate it — is added by an
+    idempotent upgrade in ``init_db`` that backfills ``[]``. This is a plain mixin, not a
+    SQLModel/BaseModel subclass, so it contributes no pydantic field of its own.
     """
 
     output_fields_required: ClassVar[bool] = False
 
     def parsed_output_fields(self) -> list[OutputField]:
         """Parse and validate this version's serialized output fields into OutputField specs."""
+        if not isinstance(self.output_fields, list):
+            raise ConfigError("output_fields must be a list.")
         return [OutputField.model_validate(f) for f in self.output_fields]
 
     def validate_output_fields(self) -> None:
-        """Raise ConfigError for malformed, missing, or duplicate output fields."""
+        """Raise ConfigError for a non-list, malformed, missing, or duplicate output field list."""
         try:
             fields = self.parsed_output_fields()
         except ValidationError as exc:
