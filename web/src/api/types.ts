@@ -310,6 +310,17 @@ export type AgentSpecImport = {
   deps_mapping: Record<string, string>;
 };
 
+// A model-drafted agent version: the editor fills from it, and nothing is saved
+// until the user creates the version.
+export type AgentDraft = {
+  version_name: string;
+  spec: Record<string, unknown>;
+  prompt_template: string;
+  required_columns: string[];
+  deps_mapping: Record<string, string>;
+  rationale: string;
+};
+
 // One label within a label set: its name and the criteria description shown as
 // reference text next to it in the annotation UI.
 export interface AnnotationLabel {

@@ -4,6 +4,7 @@
 import type {
   AgentCreate,
   AgentDetail,
+  AgentDraft,
   AgentSpecExport,
   AgentSpecImport,
   AgentSummary,
@@ -412,6 +413,11 @@ export const agents = {
     api<AgentSpecImport>("/api/agents/import", {
       method: "POST",
       ...jsonBody({ content, format }),
+    }),
+  generate: (data: { prompt: string }) =>
+    api<AgentDraft>("/api/agents/generate", {
+      method: "POST",
+      ...jsonBody(data),
     }),
 
   trial: (vid: string, data: TrialRequest) =>
