@@ -7,6 +7,7 @@ from pydantic_ai.agent.spec import AgentSpec
 from pydantic_ai.exceptions import UserError
 from pydantic_ai.models.test import TestModel
 
+from valcore.agent_spec import parse_spec
 from valcore.errors import ConfigError, ContractError
 from valcore.factory import (
     agent_response_data,
@@ -452,6 +453,80 @@ def test_agent_response_data_falls_back_to_text_for_non_dict_structured_output()
     assert agent_response_data(spec, ["unexpected", "shape"]) == {
         "response": "['unexpected', 'shape']"
     }
+
+
+def test_agent_response_data_explodes_basemodel_output_into_columns() -> None:
+    class Extracted(BaseModel):
+        summary: str
+        rating: int
+
+    spec = parse_spec({"instructions": "hi"})
+    data = agent_response_data(
+        spec,
+        Extracted(summary="ok", rating=4),
+        output_fields=[{"name": "summary"}, {"name": "rating"}],
+    )
+    assert data == {"summary": "ok", "rating": 4}
+
+
+def test_agent_response_data_plain_dict_still_works_with_output_fields() -> None:
+    spec = parse_spec({"instructions": "hi"})
+    data = agent_response_data(
+        spec,
+        {"summary": "ok", "rating": 4},
+        output_fields=[{"name": "summary"}, {"name": "rating"}],
+    )
+    assert data == {"summary": "ok", "rating": 4}
+
+
+@pytest.mark.anyio
+async def test_build_agent_from_version_output_fields_produces_typed_model() -> None:
+    version = make_agent_version(
+        output_fields=[
+            {"name": "summary", "type": "str", "description": "A summary."},
+            {"name": "rating", "type": "int", "description": "1-5."},
+        ]
+    )
+    agent = build_agent_from_version(version)
+
+    assert agent.output_type is not str
+
+    with agent.override(model=TestModel()):
+        result = await agent.run("Summarize this.")
+
+    assert isinstance(result.output, BaseModel)
+    assert hasattr(result.output, "summary")
+    assert hasattr(result.output, "rating")
+
+
+def test_build_agent_from_version_local_cli_model_with_output_fields_still_gets_typed_output() -> (
+    None
+):
+    """Only capabilities are stripped for a local CLI model; output_type is not."""
+    version = make_agent_version(
+        model="local/claude",
+        output_fields=[{"name": "verdict", "type": "str", "description": "d"}],
+    )
+    agent = build_agent_from_version(version)
+    assert agent.output_type is not str
+
+
+@pytest.mark.anyio
+async def test_execute_agent_version_structured_output_explodes_into_columns() -> None:
+    version = make_agent_version(
+        output_fields=[
+            {"name": "summary", "type": "str", "description": "A summary."},
+            {"name": "rating", "type": "int", "description": "1-5."},
+        ]
+    )
+    agent = build_agent_from_version(version)
+
+    with agent.override(model=TestModel()):
+        execution = await execute_agent_version(version, agent, {"question": "hi"})
+
+    assert execution.error is None
+    assert set(execution.output) == {"summary", "rating"}
+    assert execution.response_columns == ["summary", "rating"]
 
 
 @pytest.mark.anyio
