@@ -2,11 +2,14 @@
 // version-specific editing and trial work moves into AgentDetail.
 
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { agents } from "../api/client";
-import type { AgentSummary } from "../api/types";
+import type { AgentDraft, AgentSummary } from "../api/types";
 import { EmptyState } from "../components/EmptyState";
+import { FormFooter } from "../components/FormFooter";
 import { PageHeader } from "../components/PageHeader";
+import { Tooltip } from "../components/Tooltip";
+import { GATEWAY_BLOCKER, useSetup } from "../components/useSetup";
 import {
   Button,
   ConfirmDialog,
@@ -27,8 +30,11 @@ function AgentsList(): JSX.Element {
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<AgentSummary | null>(null);
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState<"scratch" | "prompt">("scratch");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const { gatewayReady } = useSetup();
 
   const load = async (): Promise<void> => {
     setLoading(true);
@@ -45,13 +51,25 @@ function AgentsList(): JSX.Element {
     void load();
   }, []);
 
-  const create = async (): Promise<void> => {
-    if (name.trim() === "") return;
+  const blockers: string[] = [];
+  if (mode === "prompt" && !gatewayReady) blockers.push(GATEWAY_BLOCKER);
+  if (name.trim() === "") blockers.push("Add a name");
+  if (mode === "prompt" && prompt.trim() === "") blockers.push("Describe the agent");
+
+  const submit = async (): Promise<void> => {
+    if (blockers.length > 0) return;
     setBusy(true);
     setError(null);
     try {
-      const agent = await agents.create({ name, description });
-      navigate(`/agents/${agent.id}`);
+      if (mode === "scratch") {
+        const agent = await agents.create({ name, description });
+        navigate(`/agents/${agent.id}`);
+      } else {
+        // Draft first, so a failed generation never leaves an empty agent behind.
+        const draft = await agents.generate({ prompt });
+        const agent = await agents.create({ name, description });
+        navigate(`/agents/${agent.id}`, { state: { draft } });
+      }
     } catch (err) {
       setError(err);
     } finally {
@@ -127,9 +145,11 @@ function AgentsList(): JSX.Element {
       <Modal
         open={creating}
         title="New agent"
+        description="Start blank and write the first version yourself, or describe the agent and let a model draft one."
+        size="lg"
         onClose={() => setCreating(false)}
         footer={
-          <div className="form-actions">
+          <FormFooter blockers={blockers}>
             <Button
               variant="secondary"
               onClick={() => setCreating(false)}
@@ -139,31 +159,85 @@ function AgentsList(): JSX.Element {
             </Button>
             <Button
               variant="primary"
-              onClick={() => void create()}
-              disabled={busy || name.trim() === ""}
+              onClick={() => void submit()}
+              disabled={busy || blockers.length > 0}
             >
-              {busy ? <Spinner /> : "Create"}
+              {busy ? <Spinner /> : mode === "scratch" ? "Create" : "Generate"}
             </Button>
-          </div>
+          </FormFooter>
         }
       >
-        <label className="field">
-          <span className="field-label">Name</span>
-          <input
-            className="input"
-            aria-label="Agent name"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
-        </label>
-        <label className="field">
-          <span className="field-label">Description</span>
-          <TextArea
-            aria-label="Description"
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-          />
-        </label>
+        <div className="modal-two-pane">
+          <div>
+            <div className="mode-tabs" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === "scratch"}
+                className={`mode-tab ${mode === "scratch" ? "mode-tab-active" : ""}`.trim()}
+                onClick={() => setMode("scratch")}
+              >
+                From scratch
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === "prompt"}
+                className={`mode-tab ${mode === "prompt" ? "mode-tab-active" : ""}`.trim()}
+                onClick={() => setMode("prompt")}
+              >
+                From prompt
+              </button>
+            </div>
+            <label className="field">
+              <span className="field-label">Name</span>
+              <input
+                className="input"
+                aria-label="Agent name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span className="field-label">Description</span>
+              <TextArea
+                aria-label="Description"
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+              />
+            </label>
+            {mode === "prompt" && (
+              <div className="field">
+                <span className="field-label">
+                  Prompt
+                  <Tooltip text="Used only to draft the first version; it is not saved." />
+                </span>
+                <TextArea
+                  aria-label="Prompt"
+                  rows={8}
+                  placeholder="Describe what the agent should do, what it receives, and what it should return…"
+                  value={prompt}
+                  onChange={(event) => setPrompt(event.target.value)}
+                />
+              </div>
+            )}
+          </div>
+          <aside className="modal-side">
+            {mode === "prompt" ? (
+              <>
+                <p>What happens next:</p>
+                <ol>
+                  <li>A model drafts instructions, a prompt template, capabilities, and any output fields.</li>
+                  <li>You land on the agent's page with the draft in the editor.</li>
+                  <li>The version isn't saved until you click Create version.</li>
+                </ol>
+                <p>Generation takes several seconds.</p>
+              </>
+            ) : (
+              <p>You get an empty agent and author the first version yourself.</p>
+            )}
+          </aside>
+        </div>
       </Modal>
       <ConfirmDialog
         open={deleting !== null}
@@ -180,5 +254,7 @@ function AgentsList(): JSX.Element {
 /** Selects the agent detail view when the shared route includes an agent id. */
 export default function AgentsPage(): JSX.Element {
   const { id } = useParams();
-  return id ? <AgentDetail agentId={id} /> : <AgentsList />;
+  const location = useLocation();
+  const draft = (location.state as { draft?: AgentDraft } | null)?.draft;
+  return id ? <AgentDetail agentId={id} initialDraft={draft} /> : <AgentsList />;
 }
