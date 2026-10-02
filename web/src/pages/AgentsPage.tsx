@@ -27,6 +27,7 @@ function AgentsList(): JSX.Element {
   const [rows, setRows] = useState<AgentSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
+  const [submitError, setSubmitError] = useState<unknown>(null);
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<AgentSummary | null>(null);
   const [busy, setBusy] = useState(false);
@@ -56,10 +57,15 @@ function AgentsList(): JSX.Element {
   if (name.trim() === "") blockers.push("Add a name");
   if (mode === "prompt" && prompt.trim() === "") blockers.push("Describe the agent");
 
+  const closeCreate = (): void => {
+    setCreating(false);
+    setSubmitError(null);
+  };
+
   const submit = async (): Promise<void> => {
     if (blockers.length > 0) return;
     setBusy(true);
-    setError(null);
+    setSubmitError(null);
     try {
       if (mode === "scratch") {
         const agent = await agents.create({ name, description });
@@ -71,7 +77,8 @@ function AgentsList(): JSX.Element {
         navigate(`/agents/${agent.id}`, { state: { draft } });
       }
     } catch (err) {
-      setError(err);
+      // Keep the failure inside the dialog. The page banner sits under the backdrop.
+      setSubmitError(err);
     } finally {
       setBusy(false);
     }
@@ -147,12 +154,12 @@ function AgentsList(): JSX.Element {
         title="New agent"
         description="Start blank and write the first version yourself, or describe the agent and let a model draft one."
         size="lg"
-        onClose={() => setCreating(false)}
+        onClose={closeCreate}
         footer={
           <FormFooter blockers={blockers}>
             <Button
               variant="secondary"
-              onClick={() => setCreating(false)}
+              onClick={closeCreate}
               disabled={busy}
             >
               Cancel
@@ -167,6 +174,7 @@ function AgentsList(): JSX.Element {
           </FormFooter>
         }
       >
+        <ErrorBanner error={submitError} onDismiss={() => setSubmitError(null)} />
         <div className="modal-two-pane">
           <div>
             <div className="mode-tabs" role="tablist">

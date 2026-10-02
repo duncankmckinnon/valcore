@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import AgentsPage from "./AgentsPage";
@@ -255,7 +255,8 @@ describe("AgentsPage", () => {
     await user.type(screen.getByLabelText("Prompt"), "Classify the ticket and route it.");
     await user.click(screen.getByRole("button", { name: "Generate" }));
 
-    expect(await screen.findByText("model unavailable")).toBeTruthy();
+    const dialog = screen.getByRole("dialog", { name: "New agent" });
+    expect(await within(dialog).findByText("model unavailable")).toBeTruthy();
     expect(agents.create).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
   });
