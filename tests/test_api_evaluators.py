@@ -4,12 +4,12 @@ from collections.abc import Iterator
 
 import httpx
 import pytest
+from valcore.eval_generator import GeneratedConfig, RefinedConfig
 
-from valcore import generator
+from valcore import eval_generator
 from valcore.api.deps import get_store
 from valcore.api.main import create_app
 from valcore.config_io import EvalPackage
-from valcore.generator import GeneratedConfig, RefinedConfig
 from valcore.models import LabelSchema, RunKind, ScoreKind
 from valcore.store import Store, create_engine, init_db
 
@@ -438,7 +438,7 @@ async def test_generate_returns_config_and_persists_nothing(app, store: Store, m
         assert columns == ["input", "output"]
         return canned
 
-    monkeypatch.setattr(generator, "generate_config", fake_generate)
+    monkeypatch.setattr(eval_generator, "generate_config", fake_generate)
 
     async with _client(app) as client:
         evaluator = (await client.post("/api/evaluators", json={"name": "E"})).json()
@@ -469,7 +469,7 @@ async def test_generate_on_missing_evaluator_404(app, monkeypatch) -> None:
     ) -> GeneratedConfig:
         return _canned_generated()
 
-    monkeypatch.setattr(generator, "generate_config", fake_generate)
+    monkeypatch.setattr(eval_generator, "generate_config", fake_generate)
 
     async with _client(app) as client:
         response = await client.post("/api/evaluators/nope/generate", json={"criteria": "x"})
@@ -490,7 +490,7 @@ async def test_refine_returns_changed_fields(app, monkeypatch) -> None:
         assert config.name == "Answer quality"
         return refined
 
-    monkeypatch.setattr(generator, "refine_config", fake_refine)
+    monkeypatch.setattr(eval_generator, "refine_config", fake_refine)
 
     async with _client(app) as client:
         response = await client.post(
@@ -655,7 +655,7 @@ async def test_generate_from_agent_uses_input_and_output_contract(
     app, store: Store, monkeypatch
 ) -> None:
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
     agent = store.create_agent("Support agent")
     version = store.create_agent_version(
         agent.id,
@@ -697,7 +697,7 @@ async def test_generate_from_unmapped_agent_uses_freeform_input_and_response(
     app, store: Store, monkeypatch
 ) -> None:
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
     agent = store.create_agent("Assistant")
     version = store.create_agent_version(
         agent.id,
@@ -719,7 +719,7 @@ async def test_generate_from_unmapped_agent_uses_freeform_input_and_response(
 @pytest.mark.anyio
 async def test_generate_dataset_id_fills_columns(app, store: Store, monkeypatch) -> None:
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     dataset = store.create_dataset("ds", "", ["question", "answer"])
 
@@ -739,7 +739,7 @@ async def test_generate_dataset_id_passes_categorical_schema(
     app, store: Store, monkeypatch
 ) -> None:
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     dataset = store.create_dataset("ds", "", ["question", "answer"])
     store.create_label_set(
@@ -766,7 +766,7 @@ async def test_generate_dataset_id_passes_categorical_schema(
 @pytest.mark.anyio
 async def test_generate_dataset_id_empty_schema_passes_none(app, store: Store, monkeypatch) -> None:
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     # An empty label_schema is a legal "no ground truth" dataset; it yields no constraint.
     dataset = store.create_dataset("ds", "", ["question", "answer"])
@@ -791,7 +791,7 @@ async def test_generate_columns_narrow_the_dataset_seed(app, store: Store, monke
     dataset.
     """
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     dataset = store.create_dataset("ds", "", ["question", "answer"])
     store.create_label_set(
@@ -823,7 +823,7 @@ async def test_generate_rejects_a_column_absent_from_the_dataset(
 ) -> None:
     """A typo must not silently drop a column the caller meant to keep."""
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     dataset = store.create_dataset("ds", "", ["question", "answer"])
 
@@ -842,7 +842,7 @@ async def test_generate_rejects_a_column_absent_from_the_dataset(
 
 @pytest.mark.anyio
 async def test_generate_unknown_dataset_id_404(app, monkeypatch) -> None:
-    monkeypatch.setattr(generator, "generate_config", _recording_generate([]))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate([]))
 
     async with _client(app) as client:
         response = await client.post(
@@ -857,7 +857,7 @@ async def test_generate_unknown_dataset_id_404(app, monkeypatch) -> None:
 @pytest.mark.anyio
 async def test_generate_column_notes_unknown_key_rejected(app, store: Store, monkeypatch) -> None:
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     dataset = store.create_dataset("ds", "", ["question", "answer"])
 
@@ -882,7 +882,7 @@ async def test_generate_column_notes_unknown_key_rejected(app, store: Store, mon
 @pytest.mark.anyio
 async def test_generate_column_notes_without_columns_rejected(app, monkeypatch) -> None:
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     async with _client(app) as client:
         response = await client.post(
@@ -899,7 +899,7 @@ async def test_generate_column_notes_without_columns_rejected(app, monkeypatch) 
 @pytest.mark.anyio
 async def test_generate_criteria_only_still_works(app, monkeypatch) -> None:
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     async with _client(app) as client:
         response = await client.post(
@@ -919,7 +919,7 @@ async def test_generate_criteria_only_still_works(app, monkeypatch) -> None:
 @pytest.mark.anyio
 async def test_generate_column_notes_valid_against_columns(app, monkeypatch) -> None:
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     async with _client(app) as client:
         response = await client.post(
@@ -942,7 +942,7 @@ async def test_generate_column_notes_valid_against_dataset_columns(
     app, store: Store, monkeypatch
 ) -> None:
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     dataset = store.create_dataset("ds", "", ["question", "answer"])
     store.create_label_set(
@@ -978,7 +978,7 @@ async def test_generate_column_notes_valid_against_dataset_columns(
 async def test_generate_single_label_set_used_automatically(app, store: Store, monkeypatch) -> None:
     """With exactly one label set and no ``label_set_id``, that label set is the seed."""
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     dataset = store.create_dataset("ds", "", ["question", "answer"])
     store.create_label_set(
@@ -1006,7 +1006,7 @@ async def test_generate_single_label_set_used_automatically(app, store: Store, m
 async def test_generate_zero_label_sets_seeds_none(app, store: Store, monkeypatch) -> None:
     """A dataset with no label sets at all seeds a None score space."""
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     dataset = store.create_dataset("ds", "", ["question", "answer"])
 
@@ -1025,7 +1025,7 @@ async def test_generate_zero_label_sets_seeds_none(app, store: Store, monkeypatc
 async def test_generate_two_label_sets_no_id_is_ambiguous(app, store: Store, monkeypatch) -> None:
     """Two label sets with no ``label_set_id`` is ambiguous and names both choices."""
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     dataset = store.create_dataset("ds", "", ["question", "answer"])
     first = store.create_label_set(
@@ -1060,7 +1060,7 @@ async def test_generate_two_label_sets_no_id_is_ambiguous(app, store: Store, mon
 async def test_generate_two_label_sets_with_id_uses_chosen(app, store: Store, monkeypatch) -> None:
     """Two label sets with an explicit ``label_set_id`` seeds from that one."""
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     dataset = store.create_dataset("ds", "", ["question", "answer"])
     store.create_label_set(
@@ -1098,7 +1098,7 @@ async def test_generate_explicit_label_schema_overrides_label_set_seed(
 ) -> None:
     """An explicit ``label_schema`` in the request still wins over the dataset's label set."""
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     dataset = store.create_dataset("ds", "", ["question", "answer"])
     store.create_label_set(
@@ -1133,7 +1133,7 @@ async def test_generate_label_set_id_from_a_different_dataset_rejected(
 ) -> None:
     """A ``label_set_id`` that belongs to another dataset must not silently be used."""
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     dataset_a = store.create_dataset("ds-a", "", ["question", "answer"])
     dataset_b = store.create_dataset("ds-b", "", ["question", "answer"])
@@ -1170,7 +1170,7 @@ async def test_generate_explicit_label_schema_bypasses_ambiguity_check(
 ) -> None:
     """An explicit ``label_schema`` makes label-set choice moot, even with 2+ label sets."""
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     dataset = store.create_dataset("ds", "", ["question", "answer"])
     store.create_label_set(
@@ -1208,7 +1208,7 @@ async def test_generate_explicit_label_schema_bypasses_ambiguity_check(
 @pytest.mark.anyio
 async def test_generate_version_dataset_id_fills_columns(app, store: Store, monkeypatch) -> None:
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     dataset = store.create_dataset("ds", "", ["question", "answer"])
     store.create_label_set(
@@ -1236,7 +1236,7 @@ async def test_generate_version_dataset_id_fills_columns(app, store: Store, monk
 @pytest.mark.anyio
 async def test_generate_version_empty_schema_passes_none(app, store: Store, monkeypatch) -> None:
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     dataset = store.create_dataset("ds", "", ["question", "answer"])
 
@@ -1257,7 +1257,7 @@ async def test_generate_version_columns_narrow_the_dataset_seed(
 ) -> None:
     """The per-evaluator endpoint narrows the same way ``/generate`` does."""
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     dataset = store.create_dataset("ds", "", ["question", "answer"])
 
@@ -1278,7 +1278,7 @@ async def test_generate_version_columns_narrow_the_dataset_seed(
 
 @pytest.mark.anyio
 async def test_generate_version_unknown_dataset_id_404(app, monkeypatch) -> None:
-    monkeypatch.setattr(generator, "generate_config", _recording_generate([]))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate([]))
 
     async with _client(app) as client:
         eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]
@@ -1296,7 +1296,7 @@ async def test_generate_version_column_notes_unknown_key_rejected(
     app, store: Store, monkeypatch
 ) -> None:
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     dataset = store.create_dataset("ds", "", ["question", "answer"])
 
@@ -1321,7 +1321,7 @@ async def test_generate_version_column_notes_unknown_key_rejected(
 @pytest.mark.anyio
 async def test_generate_version_column_notes_without_columns_rejected(app, monkeypatch) -> None:
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     async with _client(app) as client:
         eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]
@@ -1349,7 +1349,7 @@ async def test_generate_without_gateway_key_is_client_error_not_500(
 ) -> None:
     monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     async with _client(app) as client:
         response = await client.post("/api/evaluators/generate", json={"criteria": "x"})
@@ -1369,7 +1369,7 @@ async def test_generate_version_without_gateway_key_is_client_error_not_500(
 ) -> None:
     monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     async with _client(app) as client:
         eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]
@@ -1390,7 +1390,7 @@ async def test_generate_version_without_gateway_key_is_client_error_even_for_unk
     """The guard runs before ``store.get_evaluator``, so it fires first even for a bad id."""
     monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     async with _client(app) as client:
         response = await client.post(
@@ -1416,7 +1416,7 @@ async def test_refine_without_gateway_key_is_client_error_not_500(
         calls.append({"config": config, "instruction": instruction})
         return RefinedConfig(config=config, changed_fields=[], summary="unused")
 
-    monkeypatch.setattr(generator, "refine_config", fake_refine)
+    monkeypatch.setattr(eval_generator, "refine_config", fake_refine)
 
     async with _client(app) as client:
         response = await client.post(
@@ -1459,7 +1459,7 @@ async def test_generate_with_local_model_succeeds_without_gateway_key(
 ) -> None:
     monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     async with _client(app) as client:
         response = await client.post("/api/evaluators/generate", json={"criteria": "x"})
@@ -1474,7 +1474,7 @@ async def test_generate_version_with_local_model_succeeds_without_gateway_key(
 ) -> None:
     monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
     calls: list[dict] = []
-    monkeypatch.setattr(generator, "generate_config", _recording_generate(calls))
+    monkeypatch.setattr(eval_generator, "generate_config", _recording_generate(calls))
 
     async with _client(app) as client:
         eval_id = (await client.post("/api/evaluators", json={"name": "E"})).json()["id"]
@@ -1495,7 +1495,7 @@ async def test_refine_with_local_model_succeeds_without_gateway_key(
         calls.append({"config": config, "instruction": instruction})
         return RefinedConfig(config=config, changed_fields=[], summary="unused")
 
-    monkeypatch.setattr(generator, "refine_config", fake_refine)
+    monkeypatch.setattr(eval_generator, "refine_config", fake_refine)
 
     async with _client(app) as client:
         response = await client.post(

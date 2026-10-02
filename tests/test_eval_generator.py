@@ -16,14 +16,14 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-
-from valcore.errors import ConfigError
-from valcore.generator import (
+from valcore.eval_generator import (
     GeneratedConfig,
     RefinedConfig,
     generate_config,
     refine_config,
 )
+
+from valcore.errors import ConfigError
 from valcore.models import LabelSchema, ScoreKind
 
 # A structurally- and semantically-valid GeneratedConfig payload: reasoning
@@ -390,20 +390,22 @@ async def test_refine_invalid_config_triggers_exactly_one_retry() -> None:
 
 
 def test_build_generator_agent_resolves_a_local_model() -> None:
-    from valcore.generator import build_generator_agent
+    from valcore.eval_generator import EvaluatorGenerator
+
     from valcore.local_cli.bridge_model import CliBridgeModel
 
-    agent = build_generator_agent("local/claude")
+    agent = EvaluatorGenerator(model="local/claude").build_generator_agent()
 
     assert isinstance(agent.model, CliBridgeModel)
     assert agent.model.model_name == "default"
 
 
 def test_build_refiner_agent_resolves_a_local_model() -> None:
-    from valcore.generator import build_refiner_agent
+    from valcore.eval_generator import EvaluatorGenerator
+
     from valcore.local_cli.bridge_model import CliBridgeModel
 
-    agent = build_refiner_agent("local/codex")
+    agent = EvaluatorGenerator(model="local/codex").build_refiner_agent()
 
     assert isinstance(agent.model, CliBridgeModel)
     assert agent.model.model_name == "default"
