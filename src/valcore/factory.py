@@ -27,6 +27,7 @@ from valcore.models import (
     EvaluatorVersion,
     FieldType,
     OutputField,
+    OutputFieldsVersion,
     parse_output_fields,
     validate_agent_version,
     validate_version,
@@ -60,7 +61,7 @@ def usage_dict(usage: RunUsage) -> dict[str, int]:
     }
 
 
-def _model_name(version: EvaluatorVersion) -> str:
+def _model_name(version: OutputFieldsVersion) -> str:
     """Derive a valid class name for the output model from the version name."""
     name = f"{version.version_name.title().replace(' ', '')}Output"
     return name if name.isidentifier() else "EvaluatorOutput"
@@ -73,7 +74,7 @@ def _field_annotation(field: OutputField) -> Any:
     return SCALAR_TYPES[field.type]
 
 
-def build_output_model(version: EvaluatorVersion) -> type[BaseModel]:
+def build_output_model(version: OutputFieldsVersion) -> type[BaseModel]:
     """Build a Pydantic output model from a version's ordered output field specs."""
     definitions: dict[str, Any] = {}
     for field in parse_output_fields(version):
@@ -162,6 +163,9 @@ def build_agent_from_version(version: AgentVersion) -> PydanticAgent:
             "capabilities": [] if is_local_cli_model(version.model) else spec.capabilities,
         }
     )
+    output_type_kwargs: dict[str, Any] = {}
+    if version.output_fields:
+        output_type_kwargs["output_type"] = build_output_model(version)
     try:
         return PydanticAgent.from_spec(
             spec_without_instructions,
@@ -169,6 +173,7 @@ def build_agent_from_version(version: AgentVersion) -> PydanticAgent:
             instructions=instructions,
             custom_capability_types=spec_capability_types(),
             defer_model_check=True,
+            **output_type_kwargs,
         )
     except (ValueError, UserError) as exc:
         raise ConfigError(
@@ -177,14 +182,27 @@ def build_agent_from_version(version: AgentVersion) -> PydanticAgent:
 
 
 def agent_response_data(
-    spec: AgentSpec, output: object, *, text_column: str = "response"
+    spec: AgentSpec,
+    output: object,
+    *,
+    output_fields: list[dict] | None = None,
+    text_column: str = "response",
 ) -> dict[str, object]:
-    """Map an agent run's output onto the response columns it occupies."""
-    if not spec.output_schema or not isinstance(output, dict):
+    """Map an agent run's output onto the response columns it occupies.
+
+    ``output`` is a real BaseModel instance when the version set output_fields (a typed
+    output_type), or a plain dict for the legacy StructuredDict path -- both explode into
+    the same column shape.
+    """
+    if isinstance(output, BaseModel):
+        output = output.model_dump()
+    if (not output_fields and not spec.output_schema) or not isinstance(output, dict):
         return {text_column: str(output)}
     return {
         name: output.get(name)
-        for name in agent_spec.output_column_names(spec, text_column=text_column)
+        for name in agent_spec.output_column_names(
+            spec, output_fields=output_fields, text_column=text_column
+        )
     }
 
 
@@ -195,14 +213,14 @@ async def execute_agent_version(
     spec = agent_spec.parse_spec(version.spec)
     prompt = agent_spec.render_agent_prompt(version.prompt_template, row_data)
     deps = agent_spec.build_deps(version.deps_mapping, row_data)
-    response_columns = agent_spec.output_column_names(spec)
+    response_columns = agent_spec.output_column_names(spec, output_fields=version.output_fields)
     start = time.perf_counter()
     try:
         result = await agent.run(prompt, deps=deps)
         return AgentExecution(
             prompt=prompt,
             deps=deps,
-            output=agent_response_data(spec, result.output),
+            output=agent_response_data(spec, result.output, output_fields=version.output_fields),
             response_columns=response_columns,
             latency_ms=int((time.perf_counter() - start) * 1000),
             usage=usage_dict(result.usage),
