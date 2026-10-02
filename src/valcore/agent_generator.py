@@ -1,5 +1,7 @@
 """Draft agent versions from a natural-language description of the agent."""
 
+import re
+import string
 from typing import Any
 
 from pydantic import BaseModel
@@ -9,6 +11,10 @@ from valcore.capabilities import spec_capability_names
 from valcore.errors import ConfigError
 from valcore.generator import ConfigGenerator, GeneratedConfigBase, Refinement
 from valcore.models import AgentVersion, FieldType, OutputField, validate_agent_version
+
+# A simple column placeholder is letters, digits, and underscores, with no
+# attribute access, indexing, conversion, or format specifier.
+_SIMPLE_COLUMN = re.compile(r"[A-Za-z0-9_]+")
 
 _JSON_TYPES: dict[FieldType, str] = {
     FieldType.STR: "string",
@@ -141,8 +147,58 @@ class AgentGenerator(ConfigGenerator[GeneratedAgentConfig]):
         )
 
     def check_version(self, version: AgentVersion) -> None:
-        """Reject a draft the agent version store would refuse."""
+        """Reject a draft that breaks the agent rules or that the store would refuse."""
+        _check_agent_prompt_rules(version)
         validate_agent_version(version)
+
+
+def _placeholders(template: str, *, label: str) -> list[tuple[str, str, str | None]]:
+    """Return each ``{field}`` as ``(name, format_spec, conversion)``.
+
+    A template whose braces do not parse raises ConfigError so the generator's
+    single validation retry can ask for a corrected draft.
+    """
+    try:
+        # ValueError is raised while iterating, not when parse() is called.
+        parsed = list(string.Formatter().parse(template))
+    except ValueError as exc:
+        raise ConfigError(f"{label} has malformed placeholders: {exc}.") from exc
+    found: list[tuple[str, str, str | None]] = []
+    for _, field_name, format_spec, conversion in parsed:
+        if field_name:
+            found.append((field_name, format_spec or "", conversion))
+    return found
+
+
+def _check_agent_prompt_rules(version: AgentVersion) -> None:
+    """Enforce the agent instruction, prompt-template, and required-column rules.
+
+    Store validation accepts instructions that contain ``{column}`` placeholders,
+    a prompt with no placeholder, format specifiers such as ``{question:>10}``,
+    and an empty ``required_columns`` list. Those drafts violate the agent rules,
+    so they are rejected here before the store check.
+    """
+    instructions = version.spec.get("instructions")
+    if isinstance(instructions, str):
+        instruction_fields = _placeholders(instructions, label="instructions")
+        if instruction_fields:
+            names = [name for name, _, _ in instruction_fields]
+            raise ConfigError(
+                f"instructions must not contain {{column}} placeholders; found {names}."
+            )
+    prompt_fields = _placeholders(version.prompt_template, label="prompt_template")
+    if not prompt_fields:
+        raise ConfigError("prompt_template must contain at least one simple {column} placeholder.")
+    for name, format_spec, conversion in prompt_fields:
+        if conversion or format_spec or _SIMPLE_COLUMN.fullmatch(name) is None:
+            raise ConfigError(
+                "prompt_template placeholders must be simple {column} names made of "
+                "letters, digits, and underscores, with no conversion or format "
+                f"specifier; found field {name!r}, format_spec {format_spec!r}, "
+                f"conversion {conversion!r}."
+            )
+    if not version.required_columns:
+        raise ConfigError("required_columns must list at least one column.")
 
 
 async def generate_agent_draft(

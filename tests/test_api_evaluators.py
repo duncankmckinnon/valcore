@@ -4,12 +4,12 @@ from collections.abc import Iterator
 
 import httpx
 import pytest
-from valcore.eval_generator import GeneratedConfig, RefinedConfig
 
 from valcore import eval_generator
 from valcore.api.deps import get_store
 from valcore.api.main import create_app
 from valcore.config_io import EvalPackage
+from valcore.eval_generator import GeneratedConfig, RefinedConfig
 from valcore.models import LabelSchema, RunKind, ScoreKind
 from valcore.store import Store, create_engine, init_db
 

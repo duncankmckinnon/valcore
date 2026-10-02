@@ -16,14 +16,14 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+from valcore.errors import ConfigError
 from valcore.eval_generator import (
     GeneratedConfig,
     RefinedConfig,
     generate_config,
     refine_config,
 )
-
-from valcore.errors import ConfigError
 from valcore.models import LabelSchema, ScoreKind
 
 # A structurally- and semantically-valid GeneratedConfig payload: reasoning
@@ -179,6 +179,23 @@ async def test_generate_always_invalid_raises_after_single_retry() -> None:
         await generate_config("Judge answer correctness.", agent=agent)
 
     assert counter.calls == 2  # original + one retry, then it propagates
+
+
+@pytest.mark.anyio
+async def test_generate_unknown_tool_retries_then_raises() -> None:
+    """An invented tool fails draft validation, is retried once, and still errors."""
+    unknown = {**copy.deepcopy(VALID_CONFIG), "tools": ["invented_tool"]}
+    agent, capture = capturing_generator_agent([unknown])
+
+    with pytest.raises(ConfigError, match="invented_tool") as exc_info:
+        await generate_config("Judge answer correctness.", agent=agent)
+
+    message = str(exc_info.value)
+    assert "valid names" in message
+    assert "regex_search" in message
+    assert capture.calls == 2
+    assert "invented_tool" in capture.prompts[1]
+    assert "valid names" in capture.prompts[1]
 
 
 @pytest.mark.anyio
@@ -391,7 +408,6 @@ async def test_refine_invalid_config_triggers_exactly_one_retry() -> None:
 
 def test_build_generator_agent_resolves_a_local_model() -> None:
     from valcore.eval_generator import EvaluatorGenerator
-
     from valcore.local_cli.bridge_model import CliBridgeModel
 
     agent = EvaluatorGenerator(model="local/claude").build_generator_agent()
@@ -402,7 +418,6 @@ def test_build_generator_agent_resolves_a_local_model() -> None:
 
 def test_build_refiner_agent_resolves_a_local_model() -> None:
     from valcore.eval_generator import EvaluatorGenerator
-
     from valcore.local_cli.bridge_model import CliBridgeModel
 
     agent = EvaluatorGenerator(model="local/codex").build_refiner_agent()

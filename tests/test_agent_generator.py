@@ -10,8 +10,8 @@ import pytest
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-from valcore.agent_generator import AgentGenerator, GeneratedAgentConfig, generate_agent_draft
 
+from valcore.agent_generator import AgentGenerator, GeneratedAgentConfig, generate_agent_draft
 from valcore.errors import ConfigError
 from valcore.models import FieldType, OutputField
 
@@ -146,6 +146,75 @@ def test_output_schema_rejects_duplicate_field_names() -> None:
                 OutputField(name="answer", type=FieldType.STR, description="b"),
             ]
         )
+
+
+def _generator() -> AgentGenerator:
+    """Return a generator bound to a gateway model so validation is isolated from config."""
+    return AgentGenerator(model="gateway/openai:gpt-4o")
+
+
+def _config(**overrides: object) -> GeneratedAgentConfig:
+    """Build a generated config from the valid free-text payload plus overrides."""
+    return GeneratedAgentConfig.model_validate({**BASE_PAYLOAD, **overrides})
+
+
+def test_validate_config_rejects_instruction_placeholders() -> None:
+    """Instructions that contain a {column} placeholder are not a valid draft."""
+    config = _config(instructions="Answer {question}")
+
+    with pytest.raises(ConfigError, match="instructions must not contain"):
+        _generator().validate_config(config)
+
+
+def test_validate_config_rejects_prompt_without_placeholder() -> None:
+    """A prompt with no {column} placeholder fails even when columns are listed."""
+    config = _config(prompt_template="Answer plainly.", required_columns=["question"])
+
+    with pytest.raises(ConfigError, match="at least one simple"):
+        _generator().validate_config(config)
+
+
+def test_validate_config_rejects_prompt_format_specifier() -> None:
+    """A format specifier such as {question:>10} is not a simple column placeholder."""
+    config = _config(prompt_template="Answer {question:>10}", required_columns=["question"])
+
+    with pytest.raises(ConfigError, match=r"format_spec '>10'") as exc_info:
+        _generator().validate_config(config)
+
+    assert "conversion" in str(exc_info.value)
+
+
+def test_validate_config_rejects_empty_required_columns() -> None:
+    """required_columns must name at least one column."""
+    config = _config(required_columns=[])
+
+    with pytest.raises(ConfigError, match="at least one column"):
+        _generator().validate_config(config)
+
+
+def test_validate_config_rejects_malformed_prompt_braces() -> None:
+    """Unbalanced prompt braces become ConfigError so generation can retry."""
+    config = _config(prompt_template="Answer {question")
+
+    with pytest.raises(ConfigError, match="malformed placeholders"):
+        _generator().validate_config(config)
+
+
+@pytest.mark.anyio
+async def test_invalid_prompt_rules_retry_once() -> None:
+    """A draft that breaks the agent prompt rules is retried once, then accepted."""
+    invalid = {**BASE_PAYLOAD, "prompt_template": "Answer {question:>10}"}
+    capture = CapturingModel([invalid, BASE_PAYLOAD])
+    agent = Agent(capture.model(), output_type=GeneratedAgentConfig)
+
+    draft = await generate_agent_draft(
+        "Help with billing", model="gateway/openai:gpt-4o", agent=agent
+    )
+
+    assert capture.calls == 2
+    assert "The previous configuration was invalid" in capture.prompts[1]
+    assert "format specifier" in capture.prompts[1]
+    assert draft.prompt_template == "Answer {question}."
 
 
 def test_build_generator_agent_resolves_a_local_model() -> None:

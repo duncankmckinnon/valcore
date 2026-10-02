@@ -2,6 +2,7 @@
 
 from pydantic_ai import Agent as PydanticAgent
 
+from valcore.errors import ConfigError
 from valcore.generator import ConfigGenerator, GeneratedConfigBase, Refinement
 from valcore.models import (
     VALID_CAPABILITIES,
@@ -108,7 +109,11 @@ class EvaluatorGenerator(ConfigGenerator[GeneratedConfig]):
         )
 
     def check_version(self, version: EvaluatorVersion) -> None:
-        """Validate the generated evaluator using the stored-version rules."""
+        """Reject unknown tools, then apply the stored evaluator version rules."""
+        valid = sorted(tool_names())
+        unknown = sorted(set(version.tools) - set(valid))
+        if unknown:
+            raise ConfigError(f"Unknown tools {unknown}; valid names are {valid}.")
         validate_version(version)
 
     def generation_prompt(self, request: str) -> str:
