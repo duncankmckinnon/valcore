@@ -102,8 +102,17 @@ def required_deps_properties(spec: AgentSpec) -> set[str]:
     return set((spec.deps_schema or {}).get("required", []))
 
 
-def output_column_names(spec: AgentSpec, *, text_column: str = "response") -> list[str]:
-    """Return dataset columns occupied by the agent's spec-defined output."""
+def output_column_names(
+    spec: AgentSpec, *, output_fields: list[dict] | None = None, text_column: str = "response"
+) -> list[str]:
+    """Return dataset columns occupied by the agent's spec-defined output.
+
+    A non-empty ``output_fields`` always wins over ``spec.output_schema`` — the latter is
+    only a fallback for a version that predates the output_fields column or was imported
+    from a hand-written spec.
+    """
+    if output_fields:
+        return [f["name"] for f in output_fields]
     if not spec.output_schema:
         return [text_column]
     return list(spec.output_schema.get("properties", {})) or [text_column]
