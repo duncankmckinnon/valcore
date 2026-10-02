@@ -13,6 +13,7 @@ import {
 } from "./client";
 import type {
   AgentDetail,
+  AgentDraft,
   AgentSpecExport,
   AgentSpecImport,
   AgentSummary,
@@ -1167,6 +1168,33 @@ describe("agents client helpers", () => {
 
     const [, init] = fetchMock.mock.calls[0];
     expect(init?.body).toBe(JSON.stringify({ name: "Support triager" }));
+  });
+
+  it("agents.generate POSTs {prompt} to /api/agents/generate and returns the draft", async () => {
+    const draft: AgentDraft = {
+      version_name: "v1",
+      spec: { instructions: "...", capabilities: [{ Planning: {} }] },
+      prompt_template: "Answer {question}.",
+      required_columns: ["question"],
+      deps_mapping: {},
+      rationale: "Why this draft looks the way it does.",
+    };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(draft));
+
+    const result = await agents.generate({ prompt: "Answer billing questions" });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/agents/generate");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe(
+      JSON.stringify({ prompt: "Answer billing questions" }),
+    );
+    expect(new Headers(init?.headers).get("Content-Type")).toBe(
+      "application/json",
+    );
+    expect(result).toEqual(draft);
   });
 
   it("agents.get GETs /api/agents/{id} and returns an AgentDetail envelope", async () => {

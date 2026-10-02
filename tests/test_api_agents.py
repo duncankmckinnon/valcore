@@ -261,6 +261,45 @@ async def test_import_rejects_malformed_binding_fields(store: Store, binding: di
     assert imported.json()["error"]["type"] == "ContractError"
 
 
+# -- Generation -----------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_generate_drafts_without_persisting(store: Store, monkeypatch) -> None:
+    """Generation returns the draft, enforces the gateway guard, and persists nothing."""
+    from valcore.agent_generator import AgentDraft
+
+    draft = AgentDraft(
+        version_name="v1",
+        spec={"instructions": "Be helpful."},
+        prompt_template="Answer {question}.",
+        required_columns=["question"],
+        deps_mapping={},
+        rationale="r",
+    )
+    received_prompts: list[str] = []
+    guard_calls: list[None] = []
+
+    async def fake_generate_agent_draft(prompt: str, **_kwargs: object) -> AgentDraft:
+        received_prompts.append(prompt)
+        return draft
+
+    def fake_guard() -> None:
+        guard_calls.append(None)
+
+    monkeypatch.setattr("valcore.agent_generator.generate_agent_draft", fake_generate_agent_draft)
+    monkeypatch.setattr("valcore.api.routes.agents.require_gateway_key_unless_local", fake_guard)
+    async with _client(store) as client:
+        response = await client.post("/api/agents/generate", json={"prompt": "Help with billing"})
+        listed = await client.get("/api/agents")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == draft.model_dump()
+    assert received_prompts == ["Help with billing"]
+    assert guard_calls == [None]
+    assert listed.json() == []
+
+
 # -- Trials and derivations ---------------------------------------------------
 
 

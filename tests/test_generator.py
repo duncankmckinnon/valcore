@@ -1,11 +1,10 @@
-"""Tests for the evaluator generator and refiner agents.
+"""Tests for the generic ``ConfigGenerator`` base class.
 
 No network: agent behavior is driven by ``FunctionModel`` returning canned
-structured outputs. These tests exercise the post-validation + single-retry
-contract of ``generate_config`` / ``refine_config``.
+structured outputs. These tests exercise the run, validate, and single-retry
+contract that ``ConfigGenerator`` provides to every subclass, using a toy
+subclass rather than the real evaluator or agent generators.
 """
-
-import copy
 
 import pytest
 from pydantic_ai import Agent
@@ -17,50 +16,53 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from valcore.errors import ConfigError
-from valcore.generator import (
-    GeneratedConfig,
-    RefinedConfig,
-    generate_config,
-    refine_config,
-)
-from valcore.models import LabelSchema, ScoreKind
+from valcore.errors import ConfigError, ContractError
+from valcore.generator import ConfigGenerator, GeneratedConfigBase, Refinement
+from valcore.models import CapabilitySpec
 
-# A structurally- and semantically-valid GeneratedConfig payload: reasoning
-# field precedes the enum score field, labels match the enum values.
-VALID_CONFIG: dict = {
-    "name": "Answer Correctness",
+
+@pytest.fixture
+def anyio_backend() -> str:
+    """Run anyio-marked async tests against asyncio only."""
+    return "asyncio"
+
+
+VALID_PAYLOAD: dict = {
     "version_name": "v1",
-    "instructions": "You are a judge. Explain your reasoning, then score.",
-    "prompt_template": "Rate the answer to {question}.",
-    "required_columns": ["question"],
-    "output_fields": [
-        {"name": "reasoning", "type": "str", "description": "Why this verdict."},
-        {
-            "name": "verdict",
-            "type": "enum",
-            "description": "The verdict.",
-            "enum_values": ["pass", "fail"],
-        },
-    ],
-    "score_field": "verdict",
-    "score_kind": "categorical",
-    "score_labels": ["pass", "fail"],
-    "score_minimum": None,
-    "score_maximum": None,
-    "capabilities": [{"name": "CodeMode", "config": {}}],
-    "tools": [],
-    "rationale": "Categorical pass/fail with a reasoning-first schema.",
+    "instructions": "Be fun.",
+    "prompt_template": "Describe {toy}.",
+    "required_columns": ["toy"],
+    "capabilities": [],
+    "rationale": "ok",
 }
 
-# Structurally a valid GeneratedConfig, but validate_version rejects it: the
-# score_field names a field that is absent from output_fields.
-INVALID_CONFIG: dict = {
-    **copy.deepcopy(VALID_CONFIG),
-    "output_fields": [
-        {"name": "reasoning", "type": "str", "description": "Why this verdict."},
-    ],
-}
+
+class _ToyConfig(GeneratedConfigBase):
+    rationale: str
+
+    def to_version(self, model: str) -> "_ToyConfig":
+        return self
+
+
+class _ToyRefinement(Refinement[_ToyConfig]):
+    pass
+
+
+class _ToyGenerator(ConfigGenerator[_ToyConfig]):
+    subject = "toy"
+    request_label = "Toy request"
+    config_type = _ToyConfig
+    refinement_type = _ToyRefinement
+
+    def role_instructions(self) -> str:
+        return "You design toys."
+
+    def allowed_capabilities(self) -> list[str]:
+        return ["Planning"]
+
+    def check_version(self, version: _ToyConfig) -> None:
+        if version.version_name == "bad":
+            raise ConfigError("version_name must not be 'bad'.")
 
 
 class CountingModel:
@@ -82,18 +84,6 @@ class CountingModel:
         return FunctionModel(fn)
 
 
-def generator_agent(payloads: list[dict]) -> tuple[Agent, CountingModel]:
-    """Build a generator-typed agent backed by canned GeneratedConfig payloads."""
-    counter = CountingModel(payloads)
-    return Agent(counter.model(), output_type=GeneratedConfig), counter
-
-
-def refiner_agent(payloads: list[dict]) -> tuple[Agent, CountingModel]:
-    """Build a refiner-typed agent backed by canned RefinedConfig payloads."""
-    counter = CountingModel(payloads)
-    return Agent(counter.model(), output_type=RefinedConfig), counter
-
-
 def _latest_user_prompt(messages: list[ModelMessage]) -> str:
     """Return the most recent user-prompt text carried in ``messages``."""
     for message in reversed(messages):
@@ -104,13 +94,7 @@ def _latest_user_prompt(messages: list[ModelMessage]) -> str:
 
 
 class CapturingModel:
-    """A FunctionModel wrapper that records the prompt text of each invocation.
-
-    The generator options are expressed entirely as prompt text, so the tests
-    assert on what the agent actually receives rather than on any post-processed
-    output. ``prompts`` holds the user-prompt string seen on every call, letting a
-    retry's amended prompt be inspected too.
-    """
+    """A FunctionModel wrapper that records the prompt text of each invocation."""
 
     def __init__(self, payloads: list[dict]) -> None:
         self.payloads = payloads
@@ -133,277 +117,89 @@ class CapturingModel:
         return FunctionModel(fn)
 
 
-def capturing_generator_agent(payloads: list[dict]) -> tuple[Agent, CapturingModel]:
-    """Build a generator-typed agent that records the prompt it is handed."""
-    capture = CapturingModel(payloads)
-    return Agent(capture.model(), output_type=GeneratedConfig), capture
+@pytest.mark.anyio
+async def test_generate_returns_valid_config_with_expected_prompt() -> None:
+    """generate() returns the valid payload as a config and sends the expected prompt."""
+    capture = CapturingModel([VALID_PAYLOAD])
+    agent = Agent(capture.model(), output_type=_ToyConfig)
+    generator = _ToyGenerator(model="local/claude")
+
+    result = await generator.generate("make a kite", agent=agent)
+
+    assert isinstance(result, _ToyConfig)
+    assert result.version_name == "v1"
+    assert capture.calls == 1
+    assert capture.prompts[0] == "Toy request:\nmake a kite"
 
 
 @pytest.mark.anyio
-async def test_generate_valid_config_passes_through_unchanged() -> None:
-    """A valid config is returned as-is after a single agent call."""
-    agent, counter = generator_agent([VALID_CONFIG])
+async def test_generate_invalid_config_retries_once_then_succeeds() -> None:
+    """An invalid first config retries once, with the retry prompt naming the failure."""
+    bad_payload = {**VALID_PAYLOAD, "version_name": "bad"}
+    capture = CapturingModel([bad_payload, VALID_PAYLOAD])
+    agent = Agent(capture.model(), output_type=_ToyConfig)
+    generator = _ToyGenerator(model="local/claude")
 
-    result = await generate_config("Judge answer correctness.", agent=agent)
+    result = await generator.generate("make a kite", agent=agent)
 
-    assert isinstance(result, GeneratedConfig)
-    assert counter.calls == 1
-    assert result.name == "Answer Correctness"
-    assert result.score_field == "verdict"
-    assert [f.name for f in result.output_fields] == ["reasoning", "verdict"]
-    assert result.score_labels == ["pass", "fail"]
-    # No mutation of the config the model produced.
-    assert result.model_dump(mode="json") == GeneratedConfig.model_validate(
-        VALID_CONFIG
-    ).model_dump(mode="json")
+    assert result.version_name == "v1"
+    assert capture.calls == 2
+    assert "The previous configuration was invalid" in capture.prompts[1]
 
 
-@pytest.mark.anyio
-async def test_generate_invalid_config_triggers_exactly_one_retry() -> None:
-    """An invalid config retries once and succeeds on the second call."""
-    agent, counter = generator_agent([INVALID_CONFIG, VALID_CONFIG])
-
-    result = await generate_config("Judge answer correctness.", agent=agent)
-
-    assert counter.calls == 2  # one retry, not a loop
-    assert result.score_field == "verdict"
-    assert [f.name for f in result.output_fields] == ["reasoning", "verdict"]
-
-
-@pytest.mark.anyio
-async def test_generate_always_invalid_raises_after_single_retry() -> None:
-    """A config that stays invalid raises ConfigError after exactly one retry."""
-    agent, counter = generator_agent([INVALID_CONFIG])
-
-    with pytest.raises(ConfigError):
-        await generate_config("Judge answer correctness.", agent=agent)
-
-    assert counter.calls == 2  # original + one retry, then it propagates
-
-
-@pytest.mark.anyio
-async def test_generate_columns_do_not_break_valid_config() -> None:
-    """Passing available columns still yields a valid config in one call."""
-    agent, counter = generator_agent([VALID_CONFIG])
-
-    result = await generate_config(
-        "Judge answer correctness.", columns=["question", "answer"], agent=agent
+def test_validate_config_rejects_unknown_capability() -> None:
+    """validate_config raises ConfigError naming an unknown capability."""
+    generator = _ToyGenerator(model="local/claude")
+    config = _ToyConfig(
+        **{**VALID_PAYLOAD, "capabilities": [CapabilitySpec(name="Shell", config={})]}
     )
 
-    assert counter.calls == 1
-    assert result.required_columns == ["question"]
+    with pytest.raises(ConfigError, match="Shell"):
+        generator.validate_config(config)
 
 
 @pytest.mark.anyio
-async def test_refine_returns_full_config_with_changed_fields() -> None:
-    """refine_config returns the complete config plus populated changed_fields."""
-    refined_payload: dict = {
-        "config": copy.deepcopy(VALID_CONFIG),
-        "changed_fields": ["instructions", "prompt_template"],
-        "summary": "Tightened the rubric and reworded the prompt.",
+async def test_generate_exhausted_retries_raises_contract_error() -> None:
+    """A model that never returns a usable output surfaces as ContractError."""
+    counter = CountingModel([{}])
+    agent = Agent(counter.model(), output_type=_ToyConfig)
+    generator = _ToyGenerator(model="local/claude")
+
+    with pytest.raises(ContractError, match="describe the toy request more concretely"):
+        await generator.generate("make a kite", agent=agent)
+
+
+@pytest.mark.anyio
+async def test_refine_returns_refinement_with_valid_config() -> None:
+    """refine() returns a Refinement wrapping the valid config from the agent."""
+    refine_payload = {
+        "config": VALID_PAYLOAD,
+        "changed_fields": ["instructions"],
+        "summary": "s",
     }
-    refined_payload["config"]["instructions"] = "Sharper rubric. Explain, then score."
-    agent, counter = refiner_agent([refined_payload])
+    capture = CapturingModel([refine_payload])
+    agent = Agent(capture.model(), output_type=_ToyRefinement)
+    generator = _ToyGenerator(model="local/claude")
+    current = _ToyConfig.model_validate(VALID_PAYLOAD)
 
-    current = GeneratedConfig.model_validate(VALID_CONFIG)
-    result = await refine_config(current, "Tighten the rubric.", agent=agent)
+    result = await generator.refine(current, "change it", agent=agent)
 
-    assert isinstance(result, RefinedConfig)
-    assert counter.calls == 1
-    assert result.changed_fields == ["instructions", "prompt_template"]
-    assert result.summary
-    # The full config is returned, not a patch.
-    assert isinstance(result.config, GeneratedConfig)
-    assert result.config.score_field == "verdict"
-    assert result.config.instructions == "Sharper rubric. Explain, then score."
+    assert isinstance(result, _ToyRefinement)
+    assert isinstance(result.config, _ToyConfig)
+    assert result.config.version_name == "v1"
+    assert result.changed_fields == ["instructions"]
 
 
-@pytest.mark.anyio
-async def test_column_notes_roles_appear_in_prompt() -> None:
-    """Each column's role from ``column_notes`` is stated in the prompt verbatim."""
-    agent, capture = capturing_generator_agent([VALID_CONFIG])
-
-    await generate_config(
-        "Judge answer correctness.",
-        column_notes={
-            "question": "the user's request; context only, not the thing being judged",
-            "answer": "the text being assessed",
-            "locale": "ignore for scoring",
-        },
-        agent=agent,
-    )
-
-    prompt = capture.prompts[0]
-    assert "question" in prompt
-    assert "the user's request; context only, not the thing being judged" in prompt
-    assert "answer" in prompt
-    assert "the text being assessed" in prompt
-    assert "locale" in prompt
-    assert "ignore for scoring" in prompt
-
-
-@pytest.mark.anyio
-async def test_column_without_note_still_listed_in_prompt() -> None:
-    """A column in ``columns`` but missing from ``column_notes`` still appears."""
-    agent, capture = capturing_generator_agent([VALID_CONFIG])
-
-    await generate_config(
-        "Judge answer correctness.",
-        columns=["question", "answer", "locale"],
-        column_notes={"question": "the text being assessed"},
-        agent=agent,
-    )
-
-    prompt = capture.prompts[0]
-    # The annotated column carries its role, and the bare columns are not dropped.
-    assert "the text being assessed" in prompt
-    assert "answer" in prompt
-    assert "locale" in prompt
-
-
-@pytest.mark.anyio
-async def test_dataset_columns_are_the_only_allowed_required_columns_and_placeholders() -> None:
-    """The per-call prompt prohibits invented and explicitly irrelevant columns."""
-    agent, capture = capturing_generator_agent([VALID_CONFIG])
-
-    await generate_config(
-        "Judge answer correctness.",
-        columns=["question", "answer", "locale"],
-        column_notes={"locale": "irrelevant to scoring; ignore it"},
-        agent=agent,
-    )
-
-    prompt = capture.prompts[0]
-    assert "`required_columns` may contain only the dataset columns listed above" in prompt
-    assert "irrelevant or ignored must appear in neither" in prompt
-    assert "`required_columns` nor `prompt_template`" in prompt
-    assert "Every `{column}` placeholder" in prompt
-    assert "do not invent columns or placeholders" in prompt
-
-
-@pytest.mark.anyio
-async def test_no_column_notes_keeps_current_prompt_form() -> None:
-    """With ``column_notes=None`` the prompt keeps its existing columns form."""
-    agent, capture = capturing_generator_agent([VALID_CONFIG])
-
-    await generate_config(
-        "Judge answer correctness.",
-        columns=["question", "answer"],
-        agent=agent,
-    )
-
-    prompt = capture.prompts[0]
-    # The pre-existing behavior: a plain "Available dataset columns" listing with
-    # no per-column role annotations introduced by the new option.
-    assert "Available dataset columns" in prompt
-    assert "question" in prompt
-    assert "answer" in prompt
-    assert "how each factors into the assessment" not in prompt
-
-
-@pytest.mark.anyio
-async def test_categorical_label_schema_states_labels_as_constraint() -> None:
-    """A categorical ``label_schema`` puts its labels in the prompt as a constraint."""
-    agent, capture = capturing_generator_agent([VALID_CONFIG])
-
-    await generate_config(
-        "Judge answer correctness.",
-        label_schema=LabelSchema(kind=ScoreKind.CATEGORICAL, labels=["good", "bad"]),
-        agent=agent,
-    )
-
-    prompt = capture.prompts[0]
-    assert "categorical" in prompt.lower()
-    assert "good" in prompt
-    assert "bad" in prompt
-
-
-@pytest.mark.anyio
-async def test_numeric_label_schema_states_bounds_as_constraint() -> None:
-    """A numeric ``label_schema`` with bounds states those bounds in the prompt."""
-    agent, capture = capturing_generator_agent([VALID_CONFIG])
-
-    await generate_config(
-        "Judge answer correctness.",
-        label_schema=LabelSchema(kind=ScoreKind.NUMERIC, minimum=1.0, maximum=5.0),
-        agent=agent,
-    )
-
-    prompt = capture.prompts[0]
-    assert "numeric" in prompt.lower()
-    assert "1" in prompt
-    assert "5" in prompt
-
-
-@pytest.mark.anyio
-async def test_no_label_schema_states_no_score_space_constraint() -> None:
-    """With ``label_schema=None`` the prompt imposes no score-space constraint."""
-    agent, capture = capturing_generator_agent([VALID_CONFIG])
-
-    await generate_config("Judge answer correctness.", agent=agent)
-
-    prompt = capture.prompts[0]
-    # No categorical/numeric score-space constraint is stated when unconstrained.
-    assert "score_labels must" not in prompt
-    assert "score_kind must" not in prompt
-
-
-@pytest.mark.anyio
-async def test_generator_options_survive_the_single_retry() -> None:
-    """The options are steering text only: an invalid first config still retries once."""
-    agent, capture = capturing_generator_agent([INVALID_CONFIG, VALID_CONFIG])
-
-    result = await generate_config(
-        "Judge answer correctness.",
-        column_notes={"question": "the text being assessed"},
-        label_schema=LabelSchema(kind=ScoreKind.CATEGORICAL, labels=["pass", "fail"]),
-        agent=agent,
-    )
-
-    assert capture.calls == 2  # one retry, not a loop
-    assert result.score_field == "verdict"
-    # The steering context is preserved into the retry prompt, not discarded.
-    assert "the text being assessed" in capture.prompts[1]
-    assert "pass" in capture.prompts[1]
-
-
-@pytest.mark.anyio
-async def test_refine_invalid_config_triggers_exactly_one_retry() -> None:
-    """A refined config that fails validation retries once, then succeeds."""
-    bad = {
-        "config": copy.deepcopy(INVALID_CONFIG),
-        "changed_fields": ["output_fields"],
-        "summary": "Broke the schema.",
-    }
-    good = {
-        "config": copy.deepcopy(VALID_CONFIG),
-        "changed_fields": ["output_fields"],
-        "summary": "Fixed the schema.",
-    }
-    agent, counter = refiner_agent([bad, good])
-
-    current = GeneratedConfig.model_validate(VALID_CONFIG)
-    result = await refine_config(current, "Change the schema.", agent=agent)
-
-    assert counter.calls == 2
-    assert result.config.score_field == "verdict"
-
-
-def test_build_generator_agent_resolves_a_local_model() -> None:
-    from valcore.generator import build_generator_agent
+def test_build_agents_have_expected_names_and_local_model() -> None:
+    """The built generator and refiner agents are named per subject and use the local CLI model."""
     from valcore.local_cli.bridge_model import CliBridgeModel
 
-    agent = build_generator_agent("local/claude")
+    generator = _ToyGenerator(model="local/claude")
 
-    assert isinstance(agent.model, CliBridgeModel)
-    assert agent.model.model_name == "default"
+    generator_agent = generator.build_generator_agent()
+    refiner_agent = generator.build_refiner_agent()
 
-
-def test_build_refiner_agent_resolves_a_local_model() -> None:
-    from valcore.generator import build_refiner_agent
-    from valcore.local_cli.bridge_model import CliBridgeModel
-
-    agent = build_refiner_agent("local/codex")
-
-    assert isinstance(agent.model, CliBridgeModel)
-    assert agent.model.model_name == "default"
+    assert generator_agent.name == "toy_generator"
+    assert refiner_agent.name == "toy_refiner"
+    assert isinstance(generator_agent.model, CliBridgeModel)
+    assert isinstance(refiner_agent.model, CliBridgeModel)
