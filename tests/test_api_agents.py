@@ -81,6 +81,27 @@ async def _create_agent_and_version(client: httpx.AsyncClient) -> tuple[dict, di
 
 
 @pytest.mark.anyio
+async def test_agent_version_output_fields_round_trip_and_response_columns(store: Store) -> None:
+    """An agent version's declared output_fields round-trip and drive response columns."""
+    async with _client(store) as client:
+        agent = (await client.post("/api/agents", json={"name": "Extractor"})).json()
+        version_response = await client.post(
+            f"/api/agents/{agent['id']}/versions",
+            json=_version_body(
+                output_fields=[
+                    {"name": "summary", "type": "str", "description": "A summary."},
+                    {"name": "rating", "type": "int", "description": "1-5."},
+                ]
+            ),
+        )
+
+    assert version_response.status_code == 200, version_response.text
+    body = version_response.json()
+    assert {f["name"] for f in body["output_fields"]} == {"summary", "rating"}
+    assert body["response_columns"] == ["summary", "rating"]
+
+
+@pytest.mark.anyio
 async def test_version_without_input_binding_uses_optional_defaults(store: Store) -> None:
     async with _client(store) as client:
         agent = (await client.post("/api/agents", json={"name": "Helper"})).json()
