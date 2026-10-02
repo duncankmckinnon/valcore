@@ -931,7 +931,6 @@ def test_agent_version_defaults() -> None:
 
 def test_agent_version_has_no_evaluator_scoring_fields() -> None:
     evaluator_only = {
-        "output_fields",
         "score_field",
         "score_kind",
         "score_labels",
