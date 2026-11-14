@@ -678,6 +678,7 @@ class Run(SQLModel, table=True):
     dataset_id: str
     status: RunStatus
     concurrency: int
+    invocation_mapping: dict = Field(default_factory=dict, sa_column=Column(JSON))
     started_at: datetime | None = None
     finished_at: datetime | None = None
     metrics: dict | None = Field(default=None, sa_column=Column(JSON))
@@ -839,6 +840,7 @@ def check_dataset_compatibility(
     *,
     kind: RunKind = RunKind.VALIDATION,
     derivation: DatasetDerivation | None = None,
+    invocation_mapping: dict | None = None,
 ) -> LabelSet | None:
     """Raise ContractError with an actionable message if the dataset and version disagree.
 
@@ -862,7 +864,23 @@ def check_dataset_compatibility(
         )
 
     effective_columns = dataset.columns + (derivation.response_columns if derivation else [])
-    missing = [c for c in version.required_columns if c not in effective_columns]
+    if version.input_contract == "invocation":
+        from valcore.invocation import check_mapping
+
+        check_mapping(
+            version,
+            effective_columns,
+            invocation_mapping or {},
+            has_invocation=derivation is not None,
+            metadata_columns=dataset.columns,
+        )
+    elif invocation_mapping:
+        raise ContractError("Invocation mappings require an invocation evaluator.")
+    missing = (
+        [c for c in version.required_columns if c not in effective_columns]
+        if version.input_contract == "columns"
+        else []
+    )
     if missing:
         raise ContractError(
             f"Dataset {dataset.name!r} is missing required column(s) {missing}; "

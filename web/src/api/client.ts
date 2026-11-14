@@ -524,6 +524,7 @@ export const runs = {
     dataset_id: string;
     derivation_id?: string;
     evaluator_version_ids?: string[];
+    invocation_mapping?: import("./types").InvocationMapping;
     concurrency?: number;
     // Engine, not kind: drives pydantic-evals so the run lands in Logfire's experiments
     // view. Cannot be cancelled, since `Dataset.evaluate` has no cancellation.

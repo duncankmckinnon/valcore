@@ -46,6 +46,8 @@ class VersionCreate(BaseModel):
     notes: str = ""
     model: str
     instructions: str
+    input_contract: str = "columns"
+    input_mode: str = "input_output"
     prompt_template: str
     required_columns: list[str]
     output_fields: list[OutputField]
@@ -65,6 +67,8 @@ class VersionUpdate(BaseModel):
     notes: str | None = None
     model: str | None = None
     instructions: str | None = None
+    input_contract: str | None = None
+    input_mode: str | None = None
     prompt_template: str | None = None
     required_columns: list[str] | None = None
     output_fields: list[OutputField] | None = None
@@ -133,6 +137,8 @@ class VersionRead(BaseModel):
     frozen: bool
     model: str
     instructions: str
+    input_contract: str = "columns"
+    input_mode: str = "input_output"
     prompt_template: str
     required_columns: list[str]
     output_fields: list[dict]
@@ -305,6 +311,8 @@ async def copy_version(vid: str, store: StoreDep) -> VersionRead:
         "notes": source.notes,
         "model": source.model,
         "instructions": source.instructions,
+        "input_contract": source.input_contract,
+        "input_mode": source.input_mode,
         "prompt_template": source.prompt_template,
         "required_columns": source.required_columns,
         "output_fields": source.output_fields,

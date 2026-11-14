@@ -1,3 +1,5 @@
+import InvocationBindings from "./InvocationBindings";
+import type { InvocationMapping } from "../api/types";
 import { useEffect, useState } from "react";
 import { agents, datasets, evaluators, runs } from "../api/client";
 import type { AgentSummary, AgentVersion, DatasetSummary, Evaluator, EvaluatorVersion, Run } from "../api/types";
@@ -20,6 +22,7 @@ export default function AgentRunLauncher({ withEvaluators, onStarted }: {
   const [selected, setSelected] = useState<Record<string, string>>({});
   const [concurrency, setConcurrency] = useState(8);
   const [submitting, setSubmitting] = useState(false);
+  const [mapping, setMapping] = useState<InvocationMapping>({});
   const [error, setError] = useState<unknown>(null);
   const { gatewayReady } = useSetup();
 
@@ -60,10 +63,13 @@ export default function AgentRunLauncher({ withEvaluators, onStarted }: {
   const missingAgentColumns = version?.required_columns.filter((column) => !dataset?.columns.includes(column)) ?? [];
   const judges = evaluatorList.flatMap((item) =>
     item.versions.filter((candidate) => candidate.id === selected[item.id]));
-  const missingColumns = (judge: EvaluatorVersion) => judge.required_columns.filter((column) => !columns.includes(column));
+  const missingColumns = (judge: EvaluatorVersion) => judge.required_columns.filter((column) => judge.input_contract === "invocation" ? !dataset?.columns.includes(mapping.metadata?.[column] ?? column) : !columns.includes(column));
+  const metadataNames = [...new Set(judges.filter(judge => judge.input_contract === "invocation").flatMap(judge => judge.required_columns))];
+  useEffect(() => setMapping({}), [datasetId]);
   const needsGateway = [version, ...judges].some((item) => item && !item.model.startsWith("local/"));
   const blockedByGateway = needsGateway && !gatewayReady;
   const canStart = dataset && version && missingAgentColumns.length === 0 &&
+    Object.values(mapping.metadata ?? {}).every(column => dataset.columns.includes(column)) &&
     (!withEvaluators || (judges.length > 0 && judges.every((judge) => missingColumns(judge).length === 0))) &&
     Number.isInteger(concurrency) && concurrency >= 1 && concurrency <= 64 &&
     !submitting && !blockedByGateway;
@@ -74,6 +80,7 @@ export default function AgentRunLauncher({ withEvaluators, onStarted }: {
     setError(null);
     try {
       const run = await runs.create({
+        ...(judges.some(judge => judge.input_contract === "invocation") && Object.keys(mapping).length ? { invocation_mapping: mapping } : {}),
         kind: "derive", version_id: versionId, dataset_id: datasetId, concurrency,
         ...(withEvaluators ? { evaluator_version_ids: judges.map((judge) => judge.id) } : {}),
       });
@@ -136,6 +143,7 @@ export default function AgentRunLauncher({ withEvaluators, onStarted }: {
           {!evaluatorList.length && <p className="muted">No evaluators available.</p>}
         </fieldset>
       )}
+      {withEvaluators && judges.some(judge => judge.input_contract === "invocation") && <InvocationBindings columns={dataset?.columns ?? []} required={metadataNames} mapping={mapping} onChange={setMapping} recorded metadataOnly />}
       <label className="field">
         <span className="field-label">Concurrency per run</span>
         <input className="select" type="number" min={1} max={64} aria-label="Concurrency"

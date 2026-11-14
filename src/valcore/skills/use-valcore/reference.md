@@ -397,3 +397,15 @@ Precedence, highest first: explicit argument, `VALCORE_*` environment variable,
 
 Unexpected exceptions traceback normally rather than being flattened, so bugs stay
 reportable.
+
+
+### Invocation run bindings
+
+For evaluator versions with `input_contract: "invocation"`, use
+`valcore run evaluator JUDGE --dataset CASES --kind eval --output-column RETURN_VALUE`
+and add `--input-column ARGUMENTS` for `input_mode: "input_output"`.
+The same options are available on `valcore run experiment`.
+Use repeatable `--metadata NAME COLUMN` to bind additional context to source dataset
+columns. Pipelines supply invocation input/output automatically; `valcore run pipeline`
+accepts `--metadata NAME COLUMN` for follow-up invocation evaluators.
+Mappings are persisted with each run. Column-contract evaluators keep their existing behavior.

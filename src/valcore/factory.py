@@ -261,7 +261,7 @@ def render_prompt(
         if version.input_contract == "invocation":
             if invocation is None or "output" not in invocation:
                 raise ContractError("An invocation evaluator requires a mapped or recorded output.")
-            context = {"output": invocation["output"], "metadata": {}}
+            context = {"output": invocation["output"], "metadata": dict(row_data)}
             if version.input_mode == "input_output":
                 if "input" not in invocation:
                     raise ContractError("This evaluator requires a mapped or recorded input.")

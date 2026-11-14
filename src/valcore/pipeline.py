@@ -24,6 +24,8 @@ def create_pipeline(
     dataset_id: str,
     evaluator_version_ids: list[str],
     concurrency: int,
+    *,
+    invocation_mapping: dict | None = None,
 ) -> Run:
     """Preflight the entire contract before atomically freezing and queuing its runs."""
     if not evaluator_version_ids:
@@ -32,6 +34,8 @@ def create_pipeline(
         raise ContractError("Select each evaluator version only once.")
     if not 1 <= concurrency <= 64:
         raise ContractError("Concurrency must be between 1 and 64.")
+    if invocation_mapping and set(invocation_mapping) - {"metadata"}:
+        raise ContractError("Agent pipelines supply input/output automatically; map metadata only.")
     agent = store.get_agent_version(agent_version_id)
     dataset = store.get_dataset(dataset_id)
     check_agent_dataset_compatibility(agent, dataset)
@@ -46,8 +50,23 @@ def create_pipeline(
         evaluator = store.get_version(id)
         if not is_local_cli_model(evaluator.model):
             config.require_gateway_key()
-        check_dataset_compatibility(evaluator, dataset, [], kind=RunKind.EVAL, derivation=contract)
-    return store.create_agent_pipeline(agent.id, dataset.id, evaluator_version_ids, concurrency)
+        check_dataset_compatibility(
+            evaluator,
+            dataset,
+            [],
+            kind=RunKind.EVAL,
+            derivation=contract,
+            invocation_mapping=invocation_mapping
+            if evaluator.input_contract == "invocation"
+            else None,
+        )
+    return store.create_agent_pipeline(
+        agent.id,
+        dataset.id,
+        evaluator_version_ids,
+        concurrency,
+        invocation_mapping=invocation_mapping,
+    )
 
 
 def prepare_evaluators(store: Store, parent_id: str) -> list[Run]:

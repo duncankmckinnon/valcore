@@ -91,6 +91,7 @@ def init_db(engine: Engine) -> None:
                 "input_mode": "TEXT NOT NULL DEFAULT 'input_output'",
             },
             "agentresponse": {"invocation": "JSON"},
+            "run": {"invocation_mapping": "JSON NOT NULL DEFAULT '{}'"},
         }.items():
             existing = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
             for column, definition in additions.items():
@@ -1565,6 +1566,7 @@ class Store:
         version_id: str,
         dataset_id: str,
         concurrency: int,
+        invocation_mapping: dict | None = None,
     ) -> Run:
         """Create a run, freezing its version in the same transaction."""
         with session_scope(self.engine) as session:
@@ -1579,6 +1581,7 @@ class Store:
                 dataset_id=dataset_id,
                 status=RunStatus.PENDING,
                 concurrency=concurrency,
+                invocation_mapping=invocation_mapping or {},
             )
             session.add(run)
             return run
@@ -1589,6 +1592,7 @@ class Store:
         dataset_id: str,
         evaluator_version_ids: list[str],
         concurrency: int,
+        invocation_mapping: dict | None = None,
     ) -> Run:
         """Atomically freeze every selected version and queue the whole workflow."""
         with session_scope(self.engine) as session:
@@ -1623,6 +1627,9 @@ class Store:
                 child = Run(
                     kind=RunKind.EVAL,
                     version_id=version.id,
+                    invocation_mapping=(invocation_mapping or {})
+                    if version.input_contract == "invocation"
+                    else {},
                     dataset_id=dataset_id,
                     concurrency=concurrency,
                     status=RunStatus.PENDING,

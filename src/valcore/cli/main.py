@@ -1145,6 +1145,19 @@ async def _drive_run(store: Store, run_id: str, watch: bool) -> Run:
     return run
 
 
+def _invocation_mapping(input_column, output_column, metadata):
+    mapping = {}
+    if input_column is not None:
+        mapping["input"] = input_column
+    if output_column is not None:
+        mapping["output"] = output_column
+    if metadata:
+        if len(dict(metadata)) != len(metadata):
+            raise ContractError("Map each metadata name only once.")
+        mapping["metadata"] = dict(metadata)
+    return mapping
+
+
 @run_group.command("pipeline")
 @click.argument("agent_ref")
 @click.option("--dataset", "dataset_ref", required=True, help="Dataset to run the agent over.")
@@ -1169,6 +1182,13 @@ async def _drive_run(store: Store, run_id: str, watch: bool) -> Run:
 )
 @click.option("--json", "as_json", is_flag=True, help="Emit one JSON workflow summary.")
 @click.option("--watch", is_flag=True, help="Print per-row progress with run ids to stderr.")
+@click.option(
+    "--metadata",
+    type=(str, str),
+    multiple=True,
+    metavar="NAME COLUMN",
+    help="Bind evaluator metadata to a dataset column; repeat as needed.",
+)
 @click.pass_context
 def run_pipeline(
     ctx: click.Context,
@@ -1180,6 +1200,7 @@ def run_pipeline(
     concurrency: int | None,
     as_json: bool,
     watch: bool,
+    metadata: tuple[tuple[str, str], ...],
 ) -> None:
     """Run an agent, save its responses, then evaluate them concurrently."""
     store = _store(ctx)
@@ -1197,7 +1218,14 @@ def run_pipeline(
         overrides[evaluator.id] = name
     versions = [resolve_version(store, item, overrides.get(item.id)) for item in evaluators]
     workers = concurrency if concurrency is not None else get_settings().default_concurrency
-    parent = create_pipeline(store, version.id, dataset.id, [item.id for item in versions], workers)
+    parent = create_pipeline(
+        store,
+        version.id,
+        dataset.id,
+        [item.id for item in versions],
+        workers,
+        invocation_mapping=_invocation_mapping(None, None, metadata),
+    )
 
     async def drive(run_id: str) -> Run:
         async def on_event(event: RunEvent) -> None:
@@ -1287,6 +1315,15 @@ def run_pipeline(
 @click.option(
     "--derivation", "derivation_ref", default=None, help="Saved response derivation to read."
 )
+@click.option("--input-column", default=None, help="Column containing invocation input.")
+@click.option("--output-column", default=None, help="Column containing invocation output.")
+@click.option(
+    "--metadata",
+    type=(str, str),
+    multiple=True,
+    metavar="NAME COLUMN",
+    help="Bind metadata to a column; repeat as needed.",
+)
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -1299,6 +1336,9 @@ def run(
     watch: bool,
     min_accuracy: float | None,
     derivation_ref: str | None,
+    input_column: str | None,
+    output_column: str | None,
+    metadata: tuple[tuple[str, str], ...],
 ) -> None:
     """Run an evaluator version over a dataset.
 
@@ -1323,8 +1363,17 @@ def run(
     if not is_local_cli_model(ver.model):
         config_module.require_gateway_key()
 
+    mapping = _invocation_mapping(input_column, output_column, metadata)
+    check_dataset_compatibility(
+        ver,
+        ds,
+        store.list_label_sets(ds.id),
+        kind=RunKind(kind),
+        derivation=derivation,
+        invocation_mapping=mapping,
+    )
     workers = concurrency if concurrency is not None else get_settings().default_concurrency
-    created = store.create_run(RunKind(kind), ver.id, ds.id, workers)
+    created = store.create_run(RunKind(kind), ver.id, ds.id, workers, invocation_mapping=mapping)
     if derivation is not None:
         store.link_run_derivation(created.id, derivation.id, DerivationRole.READS)
 
@@ -1386,6 +1435,15 @@ async def _drive_experiment(store: Store, run_id: str) -> Run:
 @click.option("--derivation", "derivation_ref", default=None, help="Saved responses to score.")
 @click.option("--concurrency", type=int, default=None, help="Max concurrent rows.")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON results to stdout.")
+@click.option("--input-column", default=None, help="Column containing invocation input.")
+@click.option("--output-column", default=None, help="Column containing invocation output.")
+@click.option(
+    "--metadata",
+    type=(str, str),
+    multiple=True,
+    metavar="NAME COLUMN",
+    help="Bind metadata to a column; repeat as needed.",
+)
 @click.pass_context
 def experiment_cmd(
     ctx: click.Context,
@@ -1396,6 +1454,9 @@ def experiment_cmd(
     as_json: bool,
     kind: str,
     derivation_ref: str | None,
+    input_column: str | None,
+    output_column: str | None,
+    metadata: tuple[tuple[str, str], ...],
 ) -> None:
     """Run an evaluator version over a dataset via ``pydantic_evals.Dataset.evaluate``.
 
@@ -1419,16 +1480,17 @@ def experiment_cmd(
         if derivation_ref is not None
         else None
     )
+    mapping = _invocation_mapping(input_column, output_column, metadata)
     check_dataset_compatibility(
         ver,
-        store.get_dataset(ds.id),
+        ds,
         store.list_label_sets(ds.id),
         kind=RunKind(kind),
         derivation=derivation,
+        invocation_mapping=mapping,
     )
-
     workers = concurrency if concurrency is not None else get_settings().default_concurrency
-    created = store.create_run(RunKind(kind), ver.id, ds.id, workers)
+    created = store.create_run(RunKind(kind), ver.id, ds.id, workers, invocation_mapping=mapping)
     if derivation is not None:
         store.link_run_derivation(created.id, derivation.id, DerivationRole.READS)
 

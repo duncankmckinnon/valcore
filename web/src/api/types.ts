@@ -44,7 +44,11 @@ export interface Evaluator {
   active_version_id: string | null;
 }
 
+export type InvocationMapping = { input?: string; output?: string; metadata?: Record<string, string> };
+
 export interface EvaluatorVersion {
+  input_contract?: "columns" | "invocation";
+  input_mode?: "input_output" | "output";
   id: string;
   created_at: string;
   evaluator_id: string;
@@ -421,6 +425,7 @@ export type RunMetrics = Record<string, unknown> & {
 };
 
 export interface Run {
+  invocation_mapping?: InvocationMapping;
   id: string;
   created_at: string;
   kind: RunKind;

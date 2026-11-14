@@ -933,3 +933,74 @@ class TestRunnerSpanTree:
         assert run_spans[0]["end_time"] is not None
         assert run_spans[0]["attributes"]["kind"] == RunKind.EVAL.value
         assert run_spans[0]["attributes"]["status"] == RunStatus.COMPLETED.value
+
+
+@pytest.mark.asyncio
+async def test_invocation_run_maps_values_and_keeps_metadata_separate(store):
+    import json
+
+    version = make_version(
+        store,
+        input_contract="invocation",
+        input_mode="input_output",
+        prompt_template="Judge.",
+        required_columns=["tenant"],
+    )
+    ds = store.create_dataset("mapped", "", ["args", "return_value", "header"])
+    store.add_rows(ds.id, [{"args": {"x": 1}, "return_value": None, "header": "acme"}])
+    mapping = {"input": "args", "output": "return_value", "metadata": {"tenant": "header"}}
+    run = store.create_run(RunKind.EVAL, version.id, ds.id, 1, invocation_mapping=mapping)
+    seen = []
+
+    def respond(messages, info):
+        seen.append(json.loads(messages[-1].parts[0].content.split("Invocation:\n", 1)[1]))
+        return ModelResponse(
+            parts=[ToolCallPart(tool_name=info.output_tools[0].name, args={"verdict": "pass"})]
+        )
+
+    result = await execute_run(
+        store, run.id, agent=Agent(FunctionModel(respond), output_type=build_output_model(version))
+    )
+    assert result.status == RunStatus.COMPLETED
+    assert store.get_run(run.id).invocation_mapping == mapping
+    assert seen == [{"input": {"x": 1}, "output": None, "metadata": {"tenant": "acme"}}]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_supplies_actual_invocation_without_io_column_requirements(
+    store, monkeypatch
+):
+    monkeypatch.setattr("valcore.pipeline.config.require_gateway_key", lambda: None)
+    import json
+
+    from valcore.pipeline import create_pipeline, prepare_evaluators
+
+    agent_version = make_agent_version(store)
+    version = make_version(
+        store,
+        model="local/codex",
+        input_contract="invocation",
+        prompt_template="Judge.",
+        required_columns=[],
+    )
+    ds = make_dataset(store, [None])
+    parent = create_pipeline(store, agent_version.id, ds.id, [version.id], 1)
+    await execute_run(store, parent.id, agent=Agent(TestModel(custom_output_text="new answer")))
+    child = prepare_evaluators(store, parent.id)[0]
+    seen = []
+
+    def respond(messages, info):
+        seen.append(json.loads(messages[-1].parts[0].content.split("Invocation:\n", 1)[1]))
+        return ModelResponse(
+            parts=[ToolCallPart(tool_name=info.output_tools[0].name, args={"verdict": "pass"})]
+        )
+
+    result = await execute_run(
+        store,
+        child.id,
+        agent=Agent(FunctionModel(respond), output_type=build_output_model(version)),
+    )
+    assert result.status == RunStatus.COMPLETED
+    assert seen[0]["output"] == "new answer"
+    assert seen[0]["input"]["prompt"] == "Reply to: in0"
+    assert seen[0]["metadata"] == {}
