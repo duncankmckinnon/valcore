@@ -80,6 +80,7 @@ class RunCreate(BaseModel):
     version_id: str
     dataset_id: str
     concurrency: int | None = Field(default=None, ge=1, le=64)
+    invocation_mapping: dict = Field(default_factory=dict)
     evaluator_version_ids: list[str] = Field(default_factory=list)
     # DERIVE creates its own derivation, so this must be absent; for EVAL it names the
     # response-column contract to read; VALIDATION rejects it until scoped labels exist.
@@ -111,6 +112,7 @@ class RunOut(BaseModel):
     metrics: dict | None
     error: str | None
     cancel_requested: bool
+    invocation_mapping: dict
     derivation_id: str | None
     parent_run_id: str | None
     evaluator_run_ids: list[str]
@@ -355,6 +357,8 @@ async def create_run(body: RunCreate, store: StoreDep, agent_factory: AgentFacto
             raise ContractError("A derive run cannot use the evaluator experiment engine.")
         if body.derivation_id is not None:
             raise ContractError("A derive run creates its own derivation and cannot accept one.")
+        if body.invocation_mapping and not body.evaluator_version_ids:
+            raise ContractError("Invocation mappings require follow-up evaluators.")
         version = store.get_agent_version(body.version_id)
         if not is_local_cli_model(version.model):
             config.require_gateway_key()
@@ -367,6 +371,7 @@ async def create_run(body: RunCreate, store: StoreDep, agent_factory: AgentFacto
                 dataset.id,
                 body.evaluator_version_ids,
                 body.concurrency or _DEFAULT_CONCURRENCY,
+                invocation_mapping=body.invocation_mapping,
             )
             _launch_run(store, run.id, agent_factory)
             return _run_out(store, run)
@@ -406,12 +411,14 @@ async def create_run(body: RunCreate, store: StoreDep, agent_factory: AgentFacto
         store.list_label_sets(dataset.id),
         kind=body.kind,
         derivation=derivation,
+        invocation_mapping=body.invocation_mapping,
     )
     run = store.create_run(
         kind=body.kind,
         version_id=body.version_id,
         dataset_id=body.dataset_id,
         concurrency=body.concurrency or _DEFAULT_CONCURRENCY,
+        invocation_mapping=body.invocation_mapping,
     )
     if derivation is not None:
         store.link_run_derivation(run.id, derivation.id, DerivationRole.READS)

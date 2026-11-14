@@ -33,6 +33,7 @@ from pydantic_evals.reporting import ReportCase, ReportCaseFailure
 
 from valcore.errors import ContractError
 from valcore.factory import build_agent, extract_score, render_prompt
+from valcore.invocation import invocation_contexts
 from valcore.metrics import compute_metrics
 from valcore.models import (
     Annotation,
@@ -90,7 +91,11 @@ def _make_task(
         # No valcore span here: ``evaluate()`` already opens a ``case:`` and an ``execute``
         # span per case, so one of ours would only add a redundant layer between them and the
         # Gateway's own per-call span.
-        prompt = render_prompt(version, inputs)
+        prompt = render_prompt(
+            version,
+            inputs["metadata"] if version.input_contract == "invocation" else inputs,
+            invocation=inputs.get("invocation") if version.input_contract == "invocation" else None,
+        )
         result = await agent.run(prompt)
         output = result.output
         score = extract_score(version, output)
@@ -207,9 +212,15 @@ async def execute_experiment(
         # Mirrors the runner: only a VALIDATION experiment compares against ground truth, so
         # only it requires a label set matching the evaluator's score contract.
         matched_label_set = check_dataset_compatibility(
-            version, dataset, label_sets, kind=run.kind, derivation=derivation
+            version,
+            dataset,
+            label_sets,
+            kind=run.kind,
+            derivation=derivation,
+            invocation_mapping=run.invocation_mapping,
         )
         rows, skipped = await asyncio.to_thread(_source_rows, store, run, dataset)
+        contexts = await asyncio.to_thread(invocation_contexts, store, run, version, rows)
         sourced_row_count = len(rows)
         agent = build_agent(version)
     except Exception as exc:  # noqa: BLE001 — any setup failure becomes a FAILED run
@@ -280,6 +291,10 @@ async def execute_experiment(
         evals_dataset = dataset_to_evals(
             dataset, rows, evaluators, label_set=matched_label_set, annotations=annotations
         )
+        if version.input_contract == "invocation":
+            for case, row in zip(evals_dataset.cases, rows, strict=True):
+                metadata, invocation = contexts[row.id]
+                case.inputs = {"metadata": metadata, "invocation": invocation}
         task = _make_task(version, agent)
         rows_by_id = {row.id: row for row in rows}
 

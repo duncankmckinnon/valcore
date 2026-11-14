@@ -26,6 +26,7 @@ from valcore.factory import (
     render_prompt,
     usage_dict,
 )
+from valcore.invocation import invocation_contexts
 from valcore.metrics import compute_metrics
 from valcore.models import (
     AgentVersion,
@@ -165,9 +166,15 @@ async def execute_run(
             # kind matters: an EVAL run never compares predictions to ground truth, so its label
             # space is free to differ from every label set's. Only VALIDATION requires a match.
             matched_label_set = check_dataset_compatibility(
-                version, dataset, label_sets, kind=run.kind, derivation=derivation
+                version,
+                dataset,
+                label_sets,
+                kind=run.kind,
+                derivation=derivation,
+                invocation_mapping=run.invocation_mapping,
             )
             all_rows, skipped = await asyncio.to_thread(_source_rows, store, run, dataset)
+            contexts = await asyncio.to_thread(invocation_contexts, store, run, version, all_rows)
             built_agent = agent if agent is not None else build_agent(version)
 
         sourced_row_count = len(all_rows)
@@ -236,7 +243,13 @@ async def execute_run(
                     )
                 else:
                     outcome = await _score_row(
-                        store, run_id, version, built_agent, row, ground_truth_by_row.get(row.id)
+                        store,
+                        run_id,
+                        version,
+                        built_agent,
+                        row,
+                        ground_truth_by_row.get(row.id),
+                        context=contexts.get(row.id),
                     )
                 await emit(
                     "row",
@@ -334,12 +347,18 @@ async def _score_row(
     agent: PydanticAgent,
     row: DatasetRow,
     label_value: str | float | None,
+    *,
+    context: tuple[dict, dict] | None = None,
 ) -> _Outcome:
     """Score one row and persist its result; row failures are recorded, not raised."""
     with tracing.row_span(row):
         start = time.perf_counter()
         try:
-            prompt = render_prompt(version, row.data)
+            prompt = render_prompt(
+                version,
+                context[0] if context else row.data,
+                invocation=context[1] if context else None,
+            )
             result = await agent.run(prompt)
             latency_ms = int((time.perf_counter() - start) * 1000)
             output: BaseModel = result.output
@@ -391,6 +410,7 @@ async def _derive_row(
             {
                 "row_id": row.id,
                 "data": execution.output,
+                "invocation": execution.invocation,
                 "latency_ms": execution.latency_ms,
                 "usage": execution.usage,
                 "error": execution.error,

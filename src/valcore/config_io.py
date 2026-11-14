@@ -65,11 +65,15 @@ class ValcoreMeta:
     score_kind: ScoreKind
     score_labels: list[str] | None
     tools: list[str]
+    input_contract: str = "columns"
+    input_mode: str = "input_output"
 
     @classmethod
     def from_dict(cls, data: dict) -> ValcoreMeta:
         """Read a ``valcore`` block, coercing ``score_kind`` back to its enum."""
         return cls(
+            input_contract=data.get("input_contract", "columns"),
+            input_mode=data.get("input_mode", "input_output"),
             prompt_template=data["prompt_template"],
             required_columns=data["required_columns"],
             score_field=data["score_field"],
@@ -85,6 +89,8 @@ class ValcoreMeta:
         ``_resolve_label_schema`` both compare against the raw value, not the enum.
         """
         return {
+            "input_contract": self.input_contract,
+            "input_mode": self.input_mode,
             "prompt_template": self.prompt_template,
             "required_columns": self.required_columns,
             "score_field": self.score_field,

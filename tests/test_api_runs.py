@@ -1326,3 +1326,26 @@ async def test_invalid_pipeline_request_has_no_side_effects(store, extra):
         )
     assert response.status_code == 422
     assert store.list_runs() == []
+
+
+@pytest.mark.anyio
+async def test_invocation_run_api_persists_mappings_and_rejects_missing_output(store, monkeypatch):
+    prevent_background_execution(monkeypatch)
+    version = make_version(
+        store,
+        input_contract="invocation",
+        input_mode="output",
+        required_columns=[],
+        prompt_template="Judge.",
+    )
+    dataset, _ = make_dataset(store, [None])
+    async with _client(store, constant_factory()) as client:
+        payload = {"kind": "eval", "version_id": version.id, "dataset_id": dataset.id}
+        response = await client.post("/api/runs", json=payload)
+        assert response.status_code == 422
+        assert store.list_runs() == []
+        mapping = {"output": "output"}
+        response = await client.post("/api/runs", json={**payload, "invocation_mapping": mapping})
+        assert response.status_code == 200, response.text
+        assert response.json()["invocation_mapping"] == mapping
+        assert store.get_run(response.json()["id"]).invocation_mapping == mapping

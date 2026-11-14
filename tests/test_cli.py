@@ -2568,3 +2568,46 @@ def test_list_runs_json_includes_workflow_links(runner, store, db_path):
     assert rows[parent.id]["evaluator_run_ids"] == children
     assert rows[children[0]]["parent_run_id"] == parent.id
     assert rows[parent.id]["derivation_id"] == store.get_run_derivation(parent.id).derivation_id
+
+
+@pytest.mark.parametrize("command", ["evaluator", "experiment"])
+def test_cli_invocation_mapping_roundtrip(runner, store, db_path, monkeypatch, command):
+    evaluator = store.create_evaluator("invocation judge")
+    version = store.create_version(
+        evaluator.id,
+        **{
+            **VERSION_FIELDS,
+            "model": "local/codex",
+            "input_contract": "invocation",
+            "input_mode": "output",
+            "prompt_template": "Judge.",
+            "required_columns": ["tenant"],
+        },
+    )
+    ds = store.create_dataset("invocations", "", ["value", "header"])
+    store.add_rows(ds.id, [{"value": [0, False], "header": "acme"}])
+    monkeypatch.setattr(
+        f"valcore.{'runner' if command == 'evaluator' else 'experiment'}.build_agent",
+        lambda v: Agent(TestModel(), output_type=build_output_model(v)),
+    )
+    result = _invoke(
+        runner,
+        db_path,
+        "run",
+        command,
+        evaluator.name,
+        "--dataset",
+        ds.name,
+        "--kind",
+        "eval",
+        "--output-column",
+        "value",
+        "--metadata",
+        "tenant",
+        "header",
+        "--json",
+    )
+    assert result.exit_code == 0, result.output
+    run = store.list_runs(version_id=version.id)[0]
+    assert run.status.value == "completed"
+    assert run.invocation_mapping == {"output": "value", "metadata": {"tenant": "header"}}

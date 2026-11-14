@@ -84,6 +84,19 @@ def init_db(engine: Engine) -> None:
     """
     SQLModel.metadata.create_all(engine)
     _ensure_agent_version_output_fields(engine)
+    with engine.begin() as conn:
+        for table, additions in {
+            "evaluatorversion": {
+                "input_contract": "TEXT NOT NULL DEFAULT 'columns'",
+                "input_mode": "TEXT NOT NULL DEFAULT 'input_output'",
+            },
+            "agentresponse": {"invocation": "JSON"},
+            "run": {"invocation_mapping": "JSON NOT NULL DEFAULT '{}'"},
+        }.items():
+            existing = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+            for column, definition in additions.items():
+                if column not in existing:
+                    conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def _ensure_agent_version_output_fields(engine: Engine) -> None:
@@ -834,6 +847,7 @@ class Store:
                         derivation_id=derivation.id,
                         dataset_row_id=response["row_id"],
                         data=response["data"],
+                        invocation=response.get("invocation"),
                         latency_ms=response.get("latency_ms"),
                         usage=response.get("usage"),
                         error=response.get("error"),
@@ -905,6 +919,7 @@ class Store:
                 derivation_id=derivation_id,
                 dataset_row_id=row.id,
                 data=response["data"],
+                invocation=response.get("invocation"),
                 latency_ms=response.get("latency_ms"),
                 usage=response.get("usage"),
                 error=response.get("error"),
@@ -1551,6 +1566,7 @@ class Store:
         version_id: str,
         dataset_id: str,
         concurrency: int,
+        invocation_mapping: dict | None = None,
     ) -> Run:
         """Create a run, freezing its version in the same transaction."""
         with session_scope(self.engine) as session:
@@ -1565,6 +1581,7 @@ class Store:
                 dataset_id=dataset_id,
                 status=RunStatus.PENDING,
                 concurrency=concurrency,
+                invocation_mapping=invocation_mapping or {},
             )
             session.add(run)
             return run
@@ -1575,6 +1592,7 @@ class Store:
         dataset_id: str,
         evaluator_version_ids: list[str],
         concurrency: int,
+        invocation_mapping: dict | None = None,
     ) -> Run:
         """Atomically freeze every selected version and queue the whole workflow."""
         with session_scope(self.engine) as session:
@@ -1609,6 +1627,9 @@ class Store:
                 child = Run(
                     kind=RunKind.EVAL,
                     version_id=version.id,
+                    invocation_mapping=(invocation_mapping or {})
+                    if version.input_contract == "invocation"
+                    else {},
                     dataset_id=dataset_id,
                     concurrency=concurrency,
                     status=RunStatus.PENDING,

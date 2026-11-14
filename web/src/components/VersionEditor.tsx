@@ -36,6 +36,8 @@ export type AppConfig = {
 };
 
 type FormState = {
+  input_contract: "columns" | "invocation";
+  input_mode: "input_output" | "output";
   version_name: string;
   notes: string;
   model: string;
@@ -66,6 +68,8 @@ type VersionEditorProps = {
 
 function toForm(version: EvaluatorVersion): FormState {
   return {
+    input_contract: version.input_contract ?? "columns",
+    input_mode: version.input_mode ?? "input_output",
     version_name: version.version_name,
     notes: version.notes,
     model: version.model,
@@ -85,6 +89,8 @@ function toForm(version: EvaluatorVersion): FormState {
 
 function blankForm(config: AppConfig): FormState {
   return {
+    input_contract: "invocation",
+    input_mode: "input_output",
     version_name: "",
     notes: "",
     model: config.default_model,
@@ -121,6 +127,8 @@ function initialForm(
 
 function generatedForm(draft: GeneratedConfig, config: AppConfig): FormState {
   return {
+    input_contract: draft.input_contract ?? "columns",
+    input_mode: draft.input_mode ?? "input_output",
     version_name: draft.version_name,
     notes: "",
     model: config.default_model,
@@ -261,6 +269,8 @@ export function VersionEditor({
   };
 
   const asConfig = (): GeneratedConfig => ({
+    input_contract: form.input_contract,
+    input_mode: form.input_mode,
     name: evaluatorName ?? "",
     version_name: form.version_name,
     instructions: form.instructions,
@@ -354,7 +364,19 @@ export function VersionEditor({
             promptTemplateError={fieldError("prompt_template")}
           />
 
+          <label className="field"><span className="field-label">Evaluation context</span>
+            <select className="select" aria-label="Evaluation context" disabled={frozen} value={form.input_contract === "columns" ? "columns" : form.input_mode} onChange={e => {
+              const value = e.target.value;
+              setForm(previous => ({ ...previous, input_contract: value === "columns" ? "columns" : "invocation", input_mode: value === "output" ? "output" : "input_output" }));
+            }}>
+              <option value="input_output">Invocation input and output</option>
+              <option value="output">Output only</option>
+              <option value="columns">Legacy dataset columns</option>
+            </select>
+          </label>
+          {form.input_contract === "invocation" && <p className="muted">Input and output are supplied automatically. Declare only additional metadata below. When converting a legacy version, remove input/output placeholders from the prompt and their names from required metadata.</p>}
           <InputsSection
+            invocation={form.input_contract === "invocation"}
             columns={form.required_columns}
             columnDraft={columnDraft}
             frozen={frozen}

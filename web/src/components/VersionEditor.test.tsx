@@ -287,8 +287,6 @@ describe("VersionEditor: draft mode", () => {
 
     await user.type(screen.getByLabelText("Version name"), "v1");
 
-    await user.type(screen.getByLabelText("Add required column"), "answer");
-    await user.click(screen.getByRole("button", { name: "Add" }));
 
     await user.click(screen.getByRole("button", { name: "Add field" }));
     await user.type(screen.getByLabelText("Field 0 name"), "confidence");
@@ -304,7 +302,7 @@ describe("VersionEditor: draft mode", () => {
 
     expect(evaluators.createVersion).toHaveBeenCalledWith(
       "e1",
-      expect.objectContaining({ version_name: "v1", score_field: "confidence" }),
+      expect.objectContaining({ version_name: "v1", score_field: "confidence", input_contract: "invocation", required_columns: [] }),
     );
     expect(evaluators.updateVersion).not.toHaveBeenCalled();
     expect(evaluators.copyVersion).not.toHaveBeenCalled();
@@ -479,4 +477,12 @@ describe("VersionEditor: field tooltips", () => {
     const popover = screen.getByRole("tooltip");
     expect(popover.textContent ?? "").toMatch(/required columns/i);
   });
+});
+
+
+it("starts new evaluators with an invocation contract and optional metadata", () => {
+  render(<VersionEditor version={null} evaluatorId="e1" config={config} />);
+  expect(screen.getByLabelText("Evaluation context")).toHaveValue("input_output");
+  expect(screen.getByText("Required metadata")).toBeInTheDocument();
+  expect(screen.queryByText("Add at least one required column.")).not.toBeInTheDocument();
 });

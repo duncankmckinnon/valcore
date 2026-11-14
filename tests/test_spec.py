@@ -683,3 +683,19 @@ def test_label_outside_categorical_set_still_serializes_and_reimports() -> None:
     dumped = evals.model_dump(mode="json", by_alias=True)
     reloaded = EvalsDataset[dict, object, dict].from_dict(dumped)
     assert reloaded.cases[0].expected_output == "nope"
+
+
+def test_invocation_contract_survives_package_roundtrip():
+    from valcore.config_io import ValcoreMeta
+
+    version = make_version(
+        input_contract="invocation",
+        input_mode="output",
+        required_columns=[],
+        prompt_template="Judge.",
+    )
+    meta = ValcoreMeta.from_dict(valcore_meta(version)).to_dict()
+    fields = spec_to_version_fields(version_to_spec(version), meta)
+    assert fields["input_contract"] == "invocation"
+    assert fields["input_mode"] == "output"
+    assert fields["required_columns"] == []

@@ -96,6 +96,48 @@ valcore run pipeline support-agent --dataset support-cases \
 The CLI waits for completion, evaluates concurrently, and emits one JSON summary.
 See the bundled CLI reference for version selection and failure behavior.
 
+## Evaluators judge invocations
+
+New evaluators in the editor receive **input and output**, or **output only**.
+Input is the function or agent invocation's arguments; output is its return value.
+Additional context such as request headers, tenant settings, and reference answers is
+**metadata**. Only metadata has fixed requirements, and an evaluator may require none.
+
+Agent pipelines bind these values automatically. Stored agents capture the actual
+`agent.run` arguments as `{"prompt": ..., "deps": ...}` and preserve the returned
+value, including structured output. This is the outer agent invocation, not a transcript
+of every internal model/tool call. Metadata comes from source dataset columns and is
+separate from both the agent's dependencies and its output.
+
+For existing data, choose column bindings in Runs or through the CLI:
+
+```bash
+valcore run evaluator quality --dataset cases --kind eval \
+  --input-column request --output-column result --metadata tenant tenant_header
+```
+
+An output-only evaluator needs only `--output-column`. `run experiment` supports the
+same bindings. `run pipeline` supplies input/output automatically and accepts repeatable
+`--metadata NAME COLUMN` options. Values may be JSON objects, arrays, scalars, or null;
+no particular input/output column name is required. Mappings belong to each run.
+
+In configuration files, opt in with `valcore.input_contract: "invocation"` and
+`valcore.input_mode: "input_output"` or `"output"`. `required_columns` then names
+required metadata, and can be `[]`. The prompt template can reference required metadata;
+the invocation is appended automatically as JSON, without input/output placeholders.
+Standalone Python exports expose `await evaluate(output, input=arguments, metadata=context)`;
+output-only evaluators allow `await evaluate(output)` when no metadata is required.
+The exported `ValcoreJudge` reads Pydantic Evals' `ctx.inputs`, `ctx.output`, and `ctx.metadata`.
+
+Existing versions and configurations without `input_contract` retain the legacy
+`"columns"` behavior. To convert, create a new version, select an invocation context,
+remove input/output names from required metadata, and replace their prompt placeholders
+with instructions about the supplied invocation. Frozen versions and historical runs
+are preserved. Older derivations lack recorded arguments: supply explicit bindings,
+or use an output-only evaluator (whose output is the saved response-column object).
+Generated datasets for invocation evaluators include input/output role columns alongside
+metadata; bind those columns when launching a run.
+
 ## Quickstart
 
 Store your gateway API key, then start the app:

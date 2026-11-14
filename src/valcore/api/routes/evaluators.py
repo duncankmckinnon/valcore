@@ -2,7 +2,7 @@
 
 import re
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict
@@ -46,6 +46,8 @@ class VersionCreate(BaseModel):
     notes: str = ""
     model: str
     instructions: str
+    input_contract: str = "columns"
+    input_mode: str = "input_output"
     prompt_template: str
     required_columns: list[str]
     output_fields: list[OutputField]
@@ -65,6 +67,8 @@ class VersionUpdate(BaseModel):
     notes: str | None = None
     model: str | None = None
     instructions: str | None = None
+    input_contract: str | None = None
+    input_mode: str | None = None
     prompt_template: str | None = None
     required_columns: list[str] | None = None
     output_fields: list[OutputField] | None = None
@@ -88,6 +92,8 @@ class GenerateRequest(BaseModel):
     guidance.
     """
 
+    input_contract: Literal["columns", "invocation"] | None = None
+    input_mode: Literal["input_output", "output"] | None = None
     criteria: str
     columns: list[str] | None = None
     dataset_id: str | None = None
@@ -133,6 +139,8 @@ class VersionRead(BaseModel):
     frozen: bool
     model: str
     instructions: str
+    input_contract: str = "columns"
+    input_mode: str = "input_output"
     prompt_template: str
     required_columns: list[str]
     output_fields: list[dict]
@@ -305,6 +313,8 @@ async def copy_version(vid: str, store: StoreDep) -> VersionRead:
         "notes": source.notes,
         "model": source.model,
         "instructions": source.instructions,
+        "input_contract": source.input_contract,
+        "input_mode": source.input_mode,
         "prompt_template": source.prompt_template,
         "required_columns": source.required_columns,
         "output_fields": source.output_fields,
@@ -482,6 +492,11 @@ async def generate(body: GenerateRequest, store: StoreDep) -> GeneratedConfig:
     columns, label_schema, column_notes = _resolve_seed(body, store)
     return await eval_generator.generate_config(
         body.criteria,
+        **(
+            {"input_contract": body.input_contract or "invocation", "input_mode": body.input_mode}
+            if body.input_contract or body.input_mode
+            else {}
+        ),
         columns=columns,
         column_notes=column_notes,
         label_schema=label_schema,
@@ -501,6 +516,11 @@ async def generate_version(id: str, body: GenerateRequest, store: StoreDep) -> G
     columns, label_schema, column_notes = _resolve_seed(body, store)
     return await eval_generator.generate_config(
         body.criteria,
+        **(
+            {"input_contract": body.input_contract or "invocation", "input_mode": body.input_mode}
+            if body.input_contract or body.input_mode
+            else {}
+        ),
         columns=columns,
         column_notes=column_notes,
         label_schema=label_schema,

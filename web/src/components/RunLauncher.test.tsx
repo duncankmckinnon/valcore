@@ -601,3 +601,19 @@ describe("agent runs from Runs", () => {
     expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
   });
 });
+
+
+describe("invocation bindings", () => {
+  it("maps arbitrary dataset columns to output and metadata", async () => {
+    datasetsListMock.mockResolvedValue([{ ...makeDataset(), columns: ["question", "answer"] }]);
+    evaluatorsGetMock.mockResolvedValue({ ...makeEvaluator(), versions: [makeVersion({ input_contract: "invocation", input_mode: "output", required_columns: ["tenant"] })] } as never);
+    const user = userEvent.setup();
+    render(<RunLauncher onStarted={vi.fn()} />);
+    await user.selectOptions(await screen.findByLabelText("Evaluator"), "ev-1");
+    await user.selectOptions(await screen.findByLabelText("Data"), "ds-1");
+    await user.selectOptions(await screen.findByLabelText("Output column"), "answer");
+    await user.selectOptions(screen.getByLabelText("Metadata: tenant"), "question");
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(runsCreateMock).toHaveBeenCalledWith(expect.objectContaining({ invocation_mapping: { output: "answer", metadata: { tenant: "question" } } })));
+  });
+});

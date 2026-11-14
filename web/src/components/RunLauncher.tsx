@@ -15,6 +15,8 @@ import type {
   RunKind,
 } from "../api/types";
 import { Button, ErrorBanner, Select, Spinner } from "./ui";
+import InvocationBindings from "./InvocationBindings";
+import type { InvocationMapping } from "../api/types";
 import AgentRunLauncher from "./AgentRunLauncher";
 import { GATEWAY_BLOCKER, useSetup } from "./useSetup";
 
@@ -58,6 +60,7 @@ function EvaluatorRunLauncher({ onStarted }: Props) {
   const [datasetList, setDatasetList] = useState<DatasetSummary[]>([]);
   const [derivationList, setDerivationList] = useState<Derivation[]>([]);
   const [versions, setVersions] = useState<EvaluatorVersion[]>([]);
+  const [mapping, setMapping] = useState<InvocationMapping>({});
   const [coverage, setCoverage] = useState<RunCoverage | null>(null);
 
   const [evaluatorId, setEvaluatorId] = useState("");
@@ -112,7 +115,11 @@ function EvaluatorRunLauncher({ onStarted }: Props) {
   const datasetId = selectedContract?.datasetId ?? "";
   const selectedVersion = versions.find((version) => version.id === versionId);
 
+  useEffect(() => setMapping({}), [contractId, versionId]);
+  const invocation = selectedVersion?.input_contract === "invocation";
+  const metadataColumns = datasetList.find(dataset => dataset.id === datasetId)?.columns ?? [];
   function missingRequiredColumns(contract: DataContract): string[] {
+    if (invocation) return [];
     return (
       selectedVersion?.required_columns.filter(
         (column) => !contract.columns.includes(column),
@@ -175,6 +182,11 @@ function EvaluatorRunLauncher({ onStarted }: Props) {
   const contractSelectable =
     selectedContract !== undefined &&
     isCompatible(selectedContract) &&
+    (!invocation || (
+      (selectedContract.derivationId || (mapping.output && (selectedVersion?.input_mode === "output" || mapping.input))) &&
+      selectedVersion!.required_columns.every(name => metadataColumns.includes(mapping.metadata?.[name] ?? name)) &&
+      Object.values(mapping.metadata ?? {}).every(column => metadataColumns.includes(column))
+    )) &&
     !(kind === "validation" && selectedContract.derivationId !== undefined);
   const canStart = useMemo(
     () =>
@@ -197,6 +209,7 @@ function EvaluatorRunLauncher({ onStarted }: Props) {
         ...(selectedContract?.derivationId
           ? { derivation_id: selectedContract.derivationId }
           : {}),
+        ...(invocation ? { invocation_mapping: mapping } : {}),
         concurrency,
         experiment,
       });
@@ -275,6 +288,7 @@ function EvaluatorRunLauncher({ onStarted }: Props) {
         </select>
       </label>
 
+      {invocation && selectedContract && <InvocationBindings columns={selectedContract.columns} metadataColumns={metadataColumns} required={selectedVersion?.required_columns ?? []} mapping={mapping} onChange={setMapping} recorded={!!selectedContract.derivationId} outputOnly={selectedVersion?.input_mode === "output"} />}
       <label className="field">
         <span className="field-label">Run kind</span>
         <Select

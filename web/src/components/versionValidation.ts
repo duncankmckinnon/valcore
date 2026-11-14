@@ -5,6 +5,8 @@
 import type { CapabilitySpec, OutputField, ScoreKind } from "../api/types";
 
 export type VersionDraft = {
+  input_contract?: "columns" | "invocation";
+  input_mode?: "input_output" | "output";
   version_name: string;
   model: string;
   instructions: string;
@@ -132,7 +134,7 @@ export function validateVersion(draft: VersionDraft): VersionErrors {
     errors.output_fields = fieldsError;
   }
 
-  if (draft.required_columns.length === 0) {
+  if (draft.input_contract !== "invocation" && draft.required_columns.length === 0) {
     errors.required_columns = "Add at least one required column.";
   }
 

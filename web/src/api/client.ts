@@ -174,6 +174,8 @@ export const evaluators = {
     model?: string;
     dataset_id?: string;
     agent_version_id?: string;
+    input_contract?: "columns" | "invocation";
+    input_mode?: "input_output" | "output";
     // Picks which of the dataset's label sets supplies the score space; omit when the
     // dataset has exactly one (used automatically) or zero (no score space is seeded).
     label_set_id?: string;
@@ -524,6 +526,7 @@ export const runs = {
     dataset_id: string;
     derivation_id?: string;
     evaluator_version_ids?: string[];
+    invocation_mapping?: import("./types").InvocationMapping;
     concurrency?: number;
     // Engine, not kind: drives pydantic-evals so the run lands in Logfire's experiments
     // view. Cannot be cancelled, since `Dataset.evaluate` has no cancellation.

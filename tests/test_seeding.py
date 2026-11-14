@@ -190,3 +190,16 @@ class TestEvaluatorSeedFromDataset:
         label_set = make_label_set()
         evaluator_seed_from_dataset(dataset, label_set)
         assert dataset.columns == ["question", "answer"]
+
+
+def test_invocation_dataset_seed_includes_roles_without_metadata_collisions():
+    from valcore.models import EvaluatorVersion, ScoreKind
+
+    version = EvaluatorVersion(
+        input_contract="invocation",
+        input_mode="input_output",
+        required_columns=["input"],
+        score_kind=ScoreKind.NUMERIC,
+    )
+    columns, _ = dataset_shape_from_version(version, [])
+    assert columns == ["input", "input_2", "output"]

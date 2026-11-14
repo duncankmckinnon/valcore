@@ -1216,3 +1216,19 @@ def test_agent_prompt_sync_link_remote_versions_and_texts_may_be_absent_or_empty
             assert stored.input_template_base_text == ""
     finally:
         engine.dispose()
+
+
+def test_invocation_evaluator_allows_no_required_metadata():
+    validate_version(
+        make_version(
+            input_contract="invocation",
+            input_mode="output",
+            required_columns=[],
+            prompt_template="Judge the output.",
+        )
+    )
+
+
+def test_unknown_evaluator_input_contract_is_rejected():
+    with pytest.raises(ConfigError, match="input contract"):
+        validate_version(make_version(input_contract="unknown"))
