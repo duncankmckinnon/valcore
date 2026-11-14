@@ -71,11 +71,13 @@ from valcore.models import (
     RunStatus,
     ScoreKind,
     check_agent_dataset_compatibility,
+    check_dataset_compatibility,
     label_set_fields_from_schema,
     validate_agent_version,
     validate_version,
 )
 from valcore.paths import config_path
+from valcore.pipeline import create_pipeline, prepare_evaluators
 from valcore.runner import RunEvent, execute_run
 from valcore.settings import (
     LOCAL_CLI_NAMES,
@@ -244,6 +246,13 @@ def list_(ctx: click.Context, kind: str, as_json: bool) -> None:
         rows = []
         for run in store.list_runs():
             row = run.model_dump()
+            parent_id, child_ids = store.run_dependencies(run.id)
+            link = store.get_run_derivation(run.id)
+            row.update(
+                parent_run_id=parent_id,
+                evaluator_run_ids=child_ids,
+                derivation_id=link.derivation_id if link else None,
+            )
             row["accuracy"] = run.metrics.get("accuracy") if run.metrics else None
             rows.append(row)
         emit(
@@ -1136,6 +1145,131 @@ async def _drive_run(store: Store, run_id: str, watch: bool) -> Run:
     return run
 
 
+@run_group.command("pipeline")
+@click.argument("agent_ref")
+@click.option("--dataset", "dataset_ref", required=True, help="Dataset to run the agent over.")
+@click.option("--version", "version_name", default=None, help="Agent version (default: active).")
+@click.option(
+    "--evaluator",
+    "evaluator_refs",
+    multiple=True,
+    required=True,
+    help="Evaluator name or id prefix; repeat for multiple evaluators.",
+)
+@click.option(
+    "--evaluator-version",
+    "version_overrides",
+    type=(str, str),
+    multiple=True,
+    metavar="EVALUATOR VERSION",
+    help="Override a selected evaluator's active version.",
+)
+@click.option(
+    "--concurrency", type=click.IntRange(1, 64), default=None, help="Max concurrent rows per run."
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON workflow summary.")
+@click.option("--watch", is_flag=True, help="Print per-row progress with run ids to stderr.")
+@click.pass_context
+def run_pipeline(
+    ctx: click.Context,
+    agent_ref: str,
+    dataset_ref: str,
+    version_name: str | None,
+    evaluator_refs: tuple[str, ...],
+    version_overrides: tuple[tuple[str, str], ...],
+    concurrency: int | None,
+    as_json: bool,
+    watch: bool,
+) -> None:
+    """Run an agent, save its responses, then evaluate them concurrently."""
+    store = _store(ctx)
+    agent = resolve_agent(store, agent_ref)
+    version = resolve_agent_version(store, agent, version_name)
+    dataset = resolve_dataset(store, dataset_ref)
+    evaluators = [resolve_evaluator(store, ref) for ref in evaluator_refs]
+    overrides = {}
+    for ref, name in version_overrides:
+        evaluator = resolve_evaluator(store, ref)
+        if evaluator.id not in {item.id for item in evaluators}:
+            raise ContractError(f"Version override {ref!r} must also be selected with --evaluator.")
+        if evaluator.id in overrides:
+            raise ContractError(f"Multiple version overrides for {ref!r}.")
+        overrides[evaluator.id] = name
+    versions = [resolve_version(store, item, overrides.get(item.id)) for item in evaluators]
+    workers = concurrency if concurrency is not None else get_settings().default_concurrency
+    parent = create_pipeline(store, version.id, dataset.id, [item.id for item in versions], workers)
+
+    async def drive(run_id: str) -> Run:
+        async def on_event(event: RunEvent) -> None:
+            if watch and event.type == "row":
+                payload = event.payload
+                click.echo(
+                    f"{run_id} {payload['row_id']} "
+                    f"{'ok' if payload['success'] else 'error'} "
+                    f"score={payload.get('score_value')}",
+                    err=True,
+                )
+
+        try:
+            return await execute_run(store, run_id, on_event=on_event)
+        except Exception as exc:  # noqa: BLE001 — isolate failures between evaluator runs
+            return store.update_run_status(
+                run_id,
+                RunStatus.FAILED,
+                error=str(exc),
+                finished_at=datetime.now(UTC),
+            )
+
+    async def workflow() -> list[Run]:
+        finished = await drive(parent.id)
+        children = await asyncio.to_thread(prepare_evaluators, store, parent.id)
+        completed = await asyncio.gather(
+            *[
+                drive(child.id)
+                for child in children
+                if child.status is RunStatus.PENDING and not child.cancel_requested
+            ]
+        )
+        by_id = {child.id: child for child in completed}
+        return [finished, *[by_id.get(child.id, child) for child in children]]
+
+    finished = asyncio.run(workflow())
+    link = store.get_run_derivation(parent.id)
+    derivation = {
+        "id": link.derivation_id,
+        "state": store.derivation_state(link.derivation_id).value,
+    }
+
+    def summary(run: Run) -> dict:
+        return {
+            "run_id": run.id,
+            "version_id": run.version_id,
+            "kind": run.kind.value,
+            "status": run.status.value,
+            "error": run.error,
+            "metrics": run.metrics,
+            "results": [result.model_dump(mode="json") for result in store.list_results(run.id)],
+        }
+
+    if as_json:
+        emit(
+            {
+                "agent_run": summary(finished[0]),
+                "evaluator_runs": [summary(run) for run in finished[1:]],
+                "derivation": derivation,
+            },
+            True,
+        )
+    else:
+        click.echo(f"derivation {derivation['id']} ({derivation['state']})")
+        for run in finished:
+            _emit_run(store, run, False)
+            if run.error:
+                click.echo(run.error, err=True)
+    if any(run.status is not RunStatus.COMPLETED for run in finished):
+        ctx.exit(1)
+
+
 @run_group.command("evaluator")
 @click.argument("evaluator")
 @click.option("--dataset", required=True, help="Dataset to score.")
@@ -1243,6 +1377,13 @@ async def _drive_experiment(store: Store, run_id: str) -> Run:
 @click.argument("evaluator")
 @click.option("--dataset", required=True, help="Dataset to score.")
 @click.option("--version", "version_name", default=None, help="Version name (default: active).")
+@click.option(
+    "--kind",
+    type=click.Choice(["validation", "eval"]),
+    default="validation",
+    help="Validate against labels or score rows (default: validation).",
+)
+@click.option("--derivation", "derivation_ref", default=None, help="Saved responses to score.")
 @click.option("--concurrency", type=int, default=None, help="Max concurrent rows.")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON results to stdout.")
 @click.pass_context
@@ -1253,6 +1394,8 @@ def experiment_cmd(
     version_name: str | None,
     concurrency: int | None,
     as_json: bool,
+    kind: str,
+    derivation_ref: str | None,
 ) -> None:
     """Run an evaluator version over a dataset via ``pydantic_evals.Dataset.evaluate``.
 
@@ -1271,8 +1414,23 @@ def experiment_cmd(
         config_module.require_gateway_key()
     ds = resolve_dataset(store, dataset)
 
+    derivation = (
+        resolve_derivation(store, derivation_ref, dataset_id=ds.id)
+        if derivation_ref is not None
+        else None
+    )
+    check_dataset_compatibility(
+        ver,
+        store.get_dataset(ds.id),
+        store.list_label_sets(ds.id),
+        kind=RunKind(kind),
+        derivation=derivation,
+    )
+
     workers = concurrency if concurrency is not None else get_settings().default_concurrency
-    created = store.create_run(RunKind.VALIDATION, ver.id, ds.id, workers)
+    created = store.create_run(RunKind(kind), ver.id, ds.id, workers)
+    if derivation is not None:
+        store.link_run_derivation(created.id, derivation.id, DerivationRole.READS)
 
     finished = asyncio.run(_drive_experiment(store, created.id))
     if finished.status is RunStatus.FAILED:

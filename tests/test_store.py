@@ -3117,3 +3117,26 @@ def test_link_preserves_unrelated_integrity_error(store: Store) -> None:
     assert store.get_agent_prompt_sync_link(agent.id) is None
     assert [version.id for version in store.list_agent_versions(agent.id)] == [original.id]
     assert store.get_agent(agent.id).active_version_id == original.id
+
+
+def test_agent_pipeline_creation_is_atomic_and_dependencies_persist(store: Store) -> None:
+    agent = store.create_agent("pipeline agent")
+    agent_version = store.create_agent_version(agent.id, **agent_version_fields())
+    evaluator = store.create_evaluator("pipeline evaluator")
+    version = store.create_version(evaluator.id, **version_fields())
+    dataset = store.create_dataset("pipeline data", "", ["input"])
+    with pytest.raises(NotFoundError):
+        store.create_agent_pipeline(agent_version.id, dataset.id, [version.id, "missing"], 2)
+    assert store.list_runs() == []
+    assert not store.get_agent_version(agent_version.id).frozen
+    assert not store.get_version(version.id).frozen
+
+    parent = store.create_agent_pipeline(agent_version.id, dataset.id, [version.id], 2)
+    reopened = Store(store.engine)
+    upstream, children = reopened.run_dependencies(parent.id)
+    assert upstream is None
+    assert len(children) == 1
+    assert reopened.run_dependencies(children[0]) == (parent.id, [])
+    assert reopened.get_run(children[0]).status is RunStatus.PENDING
+    assert reopened.get_agent_version(agent_version.id).frozen
+    assert reopened.get_version(version.id).frozen

@@ -1121,3 +1121,208 @@ async def test_retry_failed_with_local_model_succeeds_without_gateway_key(
         after = await _poll_until_terminal(client, run_id)
 
     assert after["status"] == RunStatus.COMPLETED.value, after
+
+
+@pytest.mark.anyio
+async def test_agent_pipeline_evaluates_new_responses_concurrently(store, monkeypatch):
+    from valcore import runner
+
+    monkeypatch.setattr(
+        runner,
+        "build_agent_from_version",
+        lambda version: Agent(TestModel(custom_output_text="new response")),
+    )
+    agent = make_agent_version(store)
+    dataset, rows = make_dataset(store, [None])
+    first = make_version(
+        store, required_columns=["input", "response"], prompt_template="{input}: {response}"
+    )
+    second = make_version(
+        store, required_columns=["input", "response"], prompt_template="{input}: {response}"
+    )
+    entered = set()
+    both_started = asyncio.Event()
+
+    def factory(version):
+        async def respond(messages, info):
+            entered.add(version.id)
+            if len(entered) == 2:
+                both_started.set()
+            await asyncio.wait_for(both_started.wait(), 2)
+            assert "new response" in str(messages)
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name=info.output_tools[0].name,
+                        args={"verdict": "pass"},
+                    )
+                ]
+            )
+
+        return Agent(FunctionModel(respond), output_type=build_output_model(version))
+
+    async with _client(store, factory) as client:
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "derive",
+                "version_id": agent.id,
+                "dataset_id": dataset.id,
+                "evaluator_version_ids": [first.id, second.id],
+            },
+        )
+        assert response.status_code == 200, response.text
+        parent = response.json()
+        assert len(parent["evaluator_run_ids"]) == 2
+        for child_id in parent["evaluator_run_ids"]:
+            child = await _poll_until_terminal(client, child_id)
+            assert child["status"] == "completed", child
+            assert child["parent_run_id"] == parent["id"]
+            assert child["derivation_id"] == parent["derivation_id"]
+            result = (await client.get(f"/api/runs/{child_id}/results")).json()["results"][0]
+            assert result["row_id"] == rows[0].id
+            assert result["data"]["response"] == "new response"
+        assert store.derivation_state(parent["derivation_id"]) is DerivationState.SAVED
+        assert store.list_rows(dataset.id)[0].data == rows[0].data
+
+
+@pytest.mark.anyio
+async def test_pipeline_preflights_all_evaluators_before_creating_runs(store, monkeypatch):
+    prevent_background_execution(monkeypatch)
+    agent = make_agent_version(store)
+    dataset, _ = make_dataset(store, [None])
+    incompatible = make_version(store, required_columns=["missing"], prompt_template="{missing}")
+    async with _client(store, constant_factory()) as client:
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "derive",
+                "version_id": agent.id,
+                "dataset_id": dataset.id,
+                "evaluator_version_ids": [incompatible.id],
+            },
+        )
+    assert response.status_code == 422
+    assert store.list_runs() == []
+    assert not store.get_agent_version(agent.id).frozen
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status", [RunStatus.FAILED, RunStatus.CANCELLED])
+async def test_pipeline_stops_evaluators_when_agent_does_not_finish(store, monkeypatch, status):
+    async def fail(store, run_id, **kwargs):
+        return store.update_run_status(run_id, status, error="agent stopped")
+
+    monkeypatch.setattr(runs_route, "execute_run", fail)
+    agent = make_agent_version(store)
+    dataset, _ = make_dataset(store, [None])
+    evaluator = make_version(store)
+    async with _client(store, constant_factory()) as client:
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "derive",
+                "version_id": agent.id,
+                "dataset_id": dataset.id,
+                "evaluator_version_ids": [evaluator.id],
+            },
+        )
+        assert response.status_code == 200, response.text
+        parent = response.json()
+        child = await _poll_until_terminal(client, parent["evaluator_run_ids"][0])
+        assert child["status"] == status.value
+        assert "agent" in child["error"].lower()
+        assert store.derivation_state(parent["derivation_id"]) is DerivationState.STAGED
+
+
+@pytest.mark.anyio
+async def test_pipeline_skips_failed_agent_rows_and_isolates_evaluator_failure(store, monkeypatch):
+    original = runs_route.execute_run
+    dataset, rows = make_dataset(store, [None, None])
+    agent = make_agent_version(store)
+    good = make_version(store, required_columns=["response"], prompt_template="{response}")
+    bad = make_version(store, required_columns=["response"], prompt_template="{response}")
+
+    async def execute(store, run_id, **kwargs):
+        run = store.get_run(run_id)
+        if run.kind is not RunKind.DERIVE:
+            return await original(store, run_id, **kwargs)
+        link = store.get_run_derivation(run_id)
+        store.add_agent_response(
+            link.derivation_id, {"row_id": rows[0].id, "data": {"response": "fresh"}}
+        )
+        store.add_agent_response(
+            link.derivation_id, {"row_id": rows[1].id, "data": {}, "error": "model failed"}
+        )
+        return store.update_run_status(run_id, RunStatus.COMPLETED_WITH_ERRORS)
+
+    monkeypatch.setattr(runs_route, "execute_run", execute)
+
+    def factory(version):
+        if version.id == bad.id:
+            raise RuntimeError("broken evaluator")
+        return constant_factory()(version)
+
+    async with _client(store, factory) as client:
+        parent = await _start_run(
+            client, agent.id, dataset.id, kind="derive", evaluator_version_ids=[bad.id, good.id]
+        )
+        children = [await _poll_until_terminal(client, id) for id in parent["evaluator_run_ids"]]
+        by_version = {child["version_id"]: child for child in children}
+        assert by_version[bad.id]["status"] == "failed"
+        assert by_version[good.id]["status"] == "completed", by_version
+        assert by_version[good.id]["metrics"]["scored"] == 1
+        assert by_version[good.id]["metrics"]["skipped"] == {"response_error": 1}
+        assert len(store.list_results(by_version[good.id]["id"])) == 1
+
+
+@pytest.mark.anyio
+async def test_queued_evaluator_can_be_cancelled_without_running(store, monkeypatch):
+    release = asyncio.Event()
+
+    async def execute(store, run_id, **kwargs):
+        assert store.get_run(run_id).kind is RunKind.DERIVE
+        await release.wait()
+        return store.update_run_status(run_id, RunStatus.COMPLETED)
+
+    monkeypatch.setattr(runs_route, "execute_run", execute)
+    agent = make_agent_version(store)
+    evaluator = make_version(store)
+    dataset, _ = make_dataset(store, [None])
+    async with _client(store, constant_factory()) as client:
+        parent = await _start_run(
+            client, agent.id, dataset.id, kind="derive", evaluator_version_ids=[evaluator.id]
+        )
+        child_id = parent["evaluator_run_ids"][0]
+        cancelled = await client.post(f"/api/runs/{child_id}/cancel")
+        assert cancelled.json()["status"] == "cancelled"
+        release.set()
+        await asyncio.wait_for(_tasks[parent["id"]], 2)
+        assert store.get_run(child_id).status is RunStatus.CANCELLED
+        assert store.list_results(child_id) == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"kind": "eval", "evaluator_version_ids": ["ev"]},
+        {"kind": "derive", "evaluator_version_ids": ["ev", "ev"]},
+        {"kind": "derive", "concurrency": 0},
+        {"kind": "derive", "concurrency": 65},
+    ],
+)
+async def test_invalid_pipeline_request_has_no_side_effects(store, extra):
+    agent = make_agent_version(store)
+    dataset, _ = make_dataset(store, [None])
+    async with _client(store, constant_factory()) as client:
+        response = await client.post(
+            "/api/runs",
+            json={
+                "version_id": agent.id,
+                "dataset_id": dataset.id,
+                **extra,
+            },
+        )
+    assert response.status_code == 422
+    assert store.list_runs() == []

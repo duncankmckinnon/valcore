@@ -27,7 +27,7 @@ vi.mock("../api/client", async (importOriginal) => {
     ...actual,
     evaluators: { ...actual.evaluators, list: vi.fn(), get: vi.fn() },
     datasets: { ...actual.datasets, list: vi.fn() },
-    agents: { ...actual.agents, listDerivations: vi.fn() },
+    agents: { ...actual.agents, listDerivations: vi.fn(), list: vi.fn(), listVersions: vi.fn() },
     runs: { ...actual.runs, create: vi.fn(), coverage: vi.fn() },
   };
 });
@@ -537,5 +537,67 @@ describe("RunLauncher gateway gating", () => {
 
     expect(screen.getByRole("button", { name: "Start" })).not.toBeDisabled();
     expect(screen.queryByText(GATEWAY_BLOCKER)).toBeNull();
+  });
+});
+
+describe("agent runs from Runs", () => {
+  async function chooseAgent(user: ReturnType<typeof userEvent.setup>, mode: string) {
+    vi.mocked(agents.list).mockResolvedValue([{
+      id: "agent-1", name: "Writer", active_version_id: "av-1",
+    }] as never);
+    vi.mocked(agents.listVersions).mockResolvedValue([{
+      id: "av-1", version_name: "v1", model: "local/codex",
+      required_columns: ["answer"], response_columns: ["response"],
+    }] as never);
+    renderLauncher();
+    await user.selectOptions(screen.getByLabelText("Run type"), mode);
+    await screen.findByRole("option", { name: "My dataset" });
+    await user.selectOptions(screen.getByLabelText("Dataset"), "ds-1");
+    await user.selectOptions(screen.getByLabelText("Agent"), "agent-1");
+    await screen.findByRole("option", { name: "v1" });
+  }
+
+  it("starts an agent-only run with no gateway key for a local agent", async () => {
+    useSetupMock.mockReturnValue(makeSetupResult({ gatewayReady: false }));
+    runsCreateMock.mockResolvedValue(makeRun({ kind: "derive" }));
+    const user = userEvent.setup();
+    await chooseAgent(user, "agent");
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(runsCreateMock).toHaveBeenCalledWith({
+      kind: "derive", version_id: "av-1", dataset_id: "ds-1", concurrency: 8,
+    }));
+  });
+
+  it("submits multiple evaluators against the new response columns", async () => {
+    evaluatorsListMock.mockResolvedValue([
+      makeEvaluator(), makeEvaluator({ id: "ev-2", name: "Safety" }),
+    ]);
+    evaluatorsGetMock.mockImplementation(async (id) => ({
+      ...makeEvaluator({ id, name: id === "ev-2" ? "Safety" : "My evaluator" }),
+      versions: [makeVersion({ id: id + "-v", required_columns: ["answer", "response"] })],
+      active_version_id: id + "-v",
+    }) as never);
+    runsCreateMock.mockResolvedValue(makeRun({ kind: "derive" }));
+    const user = userEvent.setup();
+    await chooseAgent(user, "pipeline");
+    expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
+    await user.click(await screen.findByRole("checkbox", { name: "My evaluator" }));
+    await user.click(screen.getByRole("checkbox", { name: "Safety" }));
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(runsCreateMock).toHaveBeenCalledWith({
+      kind: "derive", version_id: "av-1", dataset_id: "ds-1", concurrency: 8,
+      evaluator_version_ids: ["ev-1-v", "ev-2-v"],
+    }));
+  });
+
+  it("blocks an evaluator that requires unavailable columns", async () => {
+    evaluatorsGetMock.mockResolvedValue({
+      ...makeEvaluator(), versions: [makeVersion({ required_columns: ["missing"] })],
+    } as never);
+    const user = userEvent.setup();
+    await chooseAgent(user, "pipeline");
+    await user.click(await screen.findByRole("checkbox", { name: "My evaluator" }));
+    expect(await screen.findByText(/Missing columns: missing/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
   });
 });

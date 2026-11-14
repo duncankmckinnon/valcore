@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai import Agent as PydanticAgent
 from sse_starlette.sse import EventSourceResponse
 
@@ -33,6 +33,7 @@ from valcore.models import (
     check_dataset_compatibility,
     find_matching_label_set,
 )
+from valcore.pipeline import create_pipeline, prepare_evaluators
 from valcore.runner import RunEvent, execute_run
 from valcore.settings import is_local_cli_model
 from valcore.store import Store
@@ -78,7 +79,8 @@ class RunCreate(BaseModel):
     kind: RunKind
     version_id: str
     dataset_id: str
-    concurrency: int | None = None
+    concurrency: int | None = Field(default=None, ge=1, le=64)
+    evaluator_version_ids: list[str] = Field(default_factory=list)
     # DERIVE creates its own derivation, so this must be absent; for EVAL it names the
     # response-column contract to read; VALIDATION rejects it until scoped labels exist.
     derivation_id: str | None = None
@@ -110,6 +112,8 @@ class RunOut(BaseModel):
     error: str | None
     cancel_requested: bool
     derivation_id: str | None
+    parent_run_id: str | None
+    evaluator_run_ids: list[str]
 
 
 class ResultRow(BaseModel):
@@ -176,8 +180,12 @@ class RunCoverageOut(BaseModel):
 def _run_out(store: Store, run: Run) -> RunOut:
     """Build a run response including its optional derivation contract."""
     link = store.get_run_derivation(run.id)
+    parent_id, child_ids = store.run_dependencies(run.id)
     return RunOut(
-        **run.model_dump(), derivation_id=link.derivation_id if link is not None else None
+        **run.model_dump(),
+        derivation_id=link.derivation_id if link is not None else None,
+        parent_run_id=parent_id,
+        evaluator_run_ids=child_ids,
     )
 
 
@@ -203,7 +211,11 @@ async def _run_to_completion(
     model, which reaches an already-logged-in CLI on this machine rather than the gateway.
     """
 
+    _, child_ids = await asyncio.to_thread(store.run_dependencies, run_id)
+
     async def on_event(event: RunEvent) -> None:
+        if child_ids and event.type in ("finished", "error"):
+            return
         bus.publish(run_id, {"type": event.type, "run_id": run_id, "payload": event.payload})
 
     try:
@@ -235,7 +247,36 @@ async def _run_to_completion(
         )
         bus.publish(run_id, {"type": "error", "run_id": run_id, "payload": {"error": str(exc)}})
     finally:
+        if child_ids:
+            await _start_dependent_runs(store, run_id, agent_factory)
+            finished = await asyncio.to_thread(store.get_run, run_id)
+            bus.publish(
+                run_id,
+                {
+                    "type": "finished",
+                    "run_id": run_id,
+                    "payload": {"status": finished.status.value, "metrics": finished.metrics},
+                },
+            )
         bus.close(run_id)
+
+
+async def _start_dependent_runs(
+    store: Store,
+    parent_id: str,
+    agent_factory: AgentFactory | None,
+) -> None:
+    """Save successful responses before launching independent evaluator tasks."""
+    children = await asyncio.to_thread(prepare_evaluators, store, parent_id)
+    for child in children:
+        if child.status is RunStatus.PENDING and not child.cancel_requested:
+            _launch_run(store, child.id, agent_factory)
+        else:
+            bus.publish(
+                child.id,
+                {"type": "finished", "run_id": child.id, "payload": {"status": child.status.value}},
+            )
+            bus.close(child.id)
 
 
 def _launch_run(
@@ -305,6 +346,10 @@ async def create_run(body: RunCreate, store: StoreDep, agent_factory: AgentFacto
     the user has to go and read. Passing ``body.kind`` keeps an EVAL run permitted when the
     label spaces differ, which is the whole point of prescribing them.
     """
+    if body.evaluator_version_ids and body.kind is not RunKind.DERIVE:
+        raise ContractError("Follow-up evaluators require an agent run.")
+    if len(set(body.evaluator_version_ids)) != len(body.evaluator_version_ids):
+        raise ContractError("Select each evaluator version only once.")
     if body.kind is RunKind.DERIVE:
         if body.experiment:
             raise ContractError("A derive run cannot use the evaluator experiment engine.")
@@ -315,6 +360,16 @@ async def create_run(body: RunCreate, store: StoreDep, agent_factory: AgentFacto
             config.require_gateway_key()
         dataset = store.get_dataset(body.dataset_id)
         check_agent_dataset_compatibility(version, dataset)
+        if body.evaluator_version_ids:
+            run = create_pipeline(
+                store,
+                version.id,
+                dataset.id,
+                body.evaluator_version_ids,
+                body.concurrency or _DEFAULT_CONCURRENCY,
+            )
+            _launch_run(store, run.id, agent_factory)
+            return _run_out(store, run)
         run = store.create_run(
             kind=body.kind,
             version_id=body.version_id,
@@ -501,6 +556,12 @@ async def list_run_results(
     if run.kind is RunKind.DERIVE:
         raise ContractError("Derive runs do not have evaluator results.")
     rows_by_id = {row.id: row for row in store.list_rows(run.dataset_id)}
+    link = store.get_run_derivation(id)
+    derived_data = (
+        {row.row_id: row.data for row in store.derived_rows(link.derivation_id)}
+        if link is not None and link.role is DerivationRole.READS
+        else {}
+    )
 
     version = store.get_version(run.version_id)
     label_sets = store.list_label_sets(run.dataset_id)
@@ -539,7 +600,7 @@ async def list_run_results(
                 result_id=result.id,
                 row_id=result.row_id,
                 idx=row.idx if row is not None else -1,
-                data=row.data if row is not None else {},
+                data=derived_data.get(result.row_id, row.data if row is not None else {}),
                 output=result.output,
                 score_value=result.score_value,
                 agreement=result.agreement,
@@ -604,7 +665,13 @@ async def run_events(id: str, store: StoreDep) -> EventSourceResponse:
 @router.post("/{id}/cancel", response_model=RunOut)
 async def cancel_run(id: str, store: StoreDep) -> RunOut:
     """Flag a run for cancellation; the background task transitions it to ``CANCELLED``."""
-    return _run_out(store, store.request_cancel(id))
+    run = store.request_cancel(id)
+    parent_id, _ = store.run_dependencies(id)
+    if parent_id and run.status is RunStatus.PENDING:
+        run = store.update_run_status(id, RunStatus.CANCELLED, finished_at=datetime.now(UTC))
+        bus.publish(id, {"type": "finished", "run_id": id, "payload": {"status": "cancelled"}})
+        bus.close(id)
+    return _run_out(store, run)
 
 
 @router.post("/{id}/retry-failed", response_model=RunOut)
@@ -624,6 +691,11 @@ async def retry_failed(id: str, store: StoreDep, agent_factory: AgentFactoryDep)
     existing = store.get_run(id)
     if existing.kind is RunKind.DERIVE:
         raise ContractError("Derive runs only support whole-dataset execution.")
+    parent_id, _ = store.run_dependencies(id)
+    if parent_id and store.get_run_derivation(id) is None:
+        raise ContractError(
+            "This evaluator has no completed agent responses; start a new workflow."
+        )
     version = store.get_version(existing.version_id)
     if not is_local_cli_model(version.model):
         config.require_gateway_key()

@@ -281,3 +281,21 @@ describe("RunDetail derive runs", () => {
     expect(screen.getByText(/error.*2/i)).toBeInTheDocument();
   });
 });
+
+it("links a queued evaluation back to its agent and explains why it is waiting", async () => {
+  getRunMock.mockResolvedValue(makeRun({
+    kind: "eval", status: "failed", parent_run_id: "parent-1",
+    error: "Agent run failed; evaluation was not started.",
+  }));
+  renderDetail();
+  expect(await screen.findByRole("link", { name: "Agent run" })).toHaveAttribute("href", "/runs/parent-1");
+  expect(screen.getByText("Agent run failed; evaluation was not started.")).toBeInTheDocument();
+});
+
+it("shows linked evaluator results on the agent run", async () => {
+  getRunMock.mockImplementation(async (id) => id === "child-1"
+    ? makeRun({ id, kind: "eval", status: "completed", evaluator_run_ids: [] })
+    : makeRun({ evaluator_run_ids: ["child-1"] }));
+  renderDetail();
+  expect(await screen.findByRole("link", { name: /Evaluator 1/ })).toHaveAttribute("href", "/runs/child-1");
+});
