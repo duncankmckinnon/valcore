@@ -6,7 +6,7 @@
 // router state so Prev/Next need no extra fetch; a direct/bookmarked visit falls back to
 // fetching that same page itself.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { annotations, labelSets } from "../api/client";
 import type { AnnotationPut, AnnotationRow, LabelSet } from "../api/types";
@@ -21,6 +21,15 @@ type Props = {
 
 const PAGE_SIZE = 100;
 
+function RowContent({ value }: { value: unknown }) {
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    return <pre className="generation-text"><code>{JSON.stringify(parsed, null, 2)}</code></pre>;
+  } catch {
+    return <p className="generation-text">{String(value)}</p>;
+  }
+}
+
 export default function AnnotationRowPage({ datasetId, labelSetId, rowId }: Props) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -34,6 +43,7 @@ export default function AnnotationRowPage({ datasetId, labelSetId, rowId }: Prop
   const [description, setDescription] = useState("");
   const [error, setError] = useState<unknown>(null);
   const [saving, setSaving] = useState(false);
+  const labelInputs = useRef<(HTMLInputElement | null)[]>([]);
 
   useEffect(() => {
     labelSets.get(labelSetId).then(setLabelSet).catch(setError);
@@ -73,7 +83,7 @@ export default function AnnotationRowPage({ datasetId, labelSetId, rowId }: Prop
   }
 
   async function save() {
-    if (!labelSet) return;
+    if (!labelSet || saving) return;
     setSaving(true);
     setError(null);
     try {
@@ -83,9 +93,11 @@ export default function AnnotationRowPage({ datasetId, labelSetId, rowId }: Prop
         description: description.trim() === "" ? null : description.trim(),
       };
       const saved = await annotations.put(labelSetId, rowId, body);
-      setEntries((prev) =>
-        prev ? prev.map((r) => (r.row_id === rowId ? { ...r, annotation: saved } : r)) : prev,
-      );
+      const updated = entries?.map((r) => r.row_id === rowId ? { ...r, annotation: saved } : r) ?? null;
+      setEntries(updated);
+      if (nextId) {
+        navigate(`/annotations/${datasetId}/${labelSetId}/rows/${nextId}`, { state: { rows: updated } });
+      }
     } catch (err) {
       setError(err);
     } finally {
@@ -94,9 +106,36 @@ export default function AnnotationRowPage({ datasetId, labelSetId, rowId }: Prop
   }
 
   function goTo(id: string | null) {
-    if (!id) return;
+    if (!id || saving) return;
     navigate(`/annotations/${datasetId}/${labelSetId}/rows/${id}`, { state: { rows: entries } });
   }
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || saving) return;
+      const target = event.target;
+      if (target instanceof HTMLElement &&
+          (target.isContentEditable || target.closest("textarea, select, input:not([type=checkbox])"))) return;
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        goTo(event.key === "ArrowLeft" ? prevId : nextId);
+      } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        const inputs = labelInputs.current.filter((input): input is HTMLInputElement => input !== null);
+        if (!inputs.length) return;
+        event.preventDefault();
+        const focused = inputs.indexOf(document.activeElement as HTMLInputElement);
+        const next = focused < 0
+          ? (event.key === "ArrowDown" ? 0 : inputs.length - 1)
+          : (focused + (event.key === "ArrowDown" ? 1 : -1) + inputs.length) % inputs.length;
+        inputs[next].focus();
+      } else if (event.key === "Enter" && labelInputs.current.includes(target as HTMLInputElement)) {
+        event.preventDefault();
+        (target as HTMLInputElement).click();
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  });
 
   if (!labelSet || entries === null) {
     if (error) {
@@ -139,30 +178,33 @@ export default function AnnotationRowPage({ datasetId, labelSetId, rowId }: Prop
         description={labelSet.description || undefined}
         action={
           <div className="form-actions">
-            <Button variant="secondary" disabled={!prevId} onClick={() => goTo(prevId)}>
+            <Button variant="secondary" disabled={!prevId || saving} onClick={() => goTo(prevId)}>
               ← Prev
             </Button>
-            <Button variant="secondary" disabled={!nextId} onClick={() => goTo(nextId)}>
+            <Button variant="secondary" disabled={!nextId || saving} onClick={() => goTo(nextId)}>
               Next →
             </Button>
           </div>
         }
       />
 
+      <p className="muted">← / → change rows · ↑ / ↓ focus labels · Enter toggles a label · Save advances to the next row.</p>
+
       <div className="annotation-row-data">
         {Object.entries(current.data).map(([column, val]) => (
           <div key={column} className="field">
             <span className="field-label">{column}</span>
-            <p className="generation-text">{String(val)}</p>
+            <RowContent value={val} />
           </div>
         ))}
       </div>
 
       <div className="annotation-row-labels">
         {labelSet.kind === "categorical" ? (
-          (labelSet.labels ?? []).map((label) => (
+          (labelSet.labels ?? []).map((label, index) => (
             <label key={label.name} className="field-inline">
               <input
+                ref={(element) => { labelInputs.current[index] = element; }}
                 type="checkbox"
                 checked={labels.includes(label.name)}
                 onChange={() => toggleLabel(label.name)}

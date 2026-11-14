@@ -1,7 +1,7 @@
 // web/src/pages/AnnotationRowPage.test.tsx
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import AnnotationRowPage from "./AnnotationRowPage";
 import { annotations, labelSets } from "../api/client";
 import type { AnnotationRow, LabelSet } from "../api/types";
@@ -57,7 +57,7 @@ function renderPage(rowId = "r1", state?: { rows: AnnotationRow[] }) {
 }
 
 function AnnotationRowPageRoute() {
-  return <AnnotationRowPage datasetId="d1" labelSetId="ls1" rowId="r1" />;
+  return <AnnotationRowPage datasetId="d1" labelSetId="ls1" rowId={useParams().rowId!} />;
 }
 
 afterEach(() => {
@@ -180,4 +180,43 @@ describe("AnnotationRowPage", () => {
     expect((screen.getByRole("button", { name: /Prev/ }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: /Next/ }) as HTMLButtonElement).disabled).toBe(false);
   });
+});
+
+it("advances after saving and supports arrow navigation and label selection", async () => {
+  getLabelSetMock.mockResolvedValue(LABEL_SET);
+  putMock.mockResolvedValue({ labels: ["good"], description: null } as never);
+  renderPage("r1", { rows: [makeRow(), makeRow({ row_id: "r2", idx: 1, data: { text: "second row" } })] });
+  await screen.findByText("hello world");
+  fireEvent.keyDown(document.body, { key: "ArrowDown" });
+  expect(document.activeElement).toBe(screen.getByRole("checkbox", { name: /good/ }));
+  fireEvent.keyDown(document.activeElement!, { key: "Enter" });
+  expect((screen.getByRole("checkbox", { name: /good/ }) as HTMLInputElement).checked).toBe(true);
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
+  expect(document.activeElement).toBe(screen.getByRole("checkbox", { name: /bad/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await screen.findByText("second row");
+  fireEvent.keyDown(document.body, { key: "ArrowLeft" });
+  await screen.findByText("hello world");
+  expect((screen.getByRole("checkbox", { name: /good/ }) as HTMLInputElement).checked).toBe(true);
+  fireEvent.keyDown(screen.getByLabelText("Description / rationale"), { key: "ArrowRight" });
+  expect(screen.getByText("hello world")).toBeTruthy();
+  fireEvent.keyDown(document.body, { key: "ArrowRight" });
+  await screen.findByText("second row");
+});
+
+it("formats JSON strings and preserves plain text", async () => {
+  getLabelSetMock.mockResolvedValue(LABEL_SET);
+  renderPage("r1", { rows: [makeRow({ data: { json: '{"answer":[1,2]}', text: "plain text" } })] });
+  await screen.findByText("plain text");
+  expect(document.querySelector("pre")?.textContent).toBe(JSON.stringify({ answer: [1, 2] }, null, 2));
+});
+
+it("stays on the row when saving fails", async () => {
+  getLabelSetMock.mockResolvedValue(LABEL_SET);
+  putMock.mockRejectedValue(new Error("Save failed"));
+  renderPage("r1", { rows: [makeRow(), makeRow({ row_id: "r2", idx: 1 })] });
+  await screen.findByText("hello world");
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await screen.findByText(/Save failed/);
+  expect(screen.getByRole("heading", { name: "Row 0" })).toBeTruthy();
 });
