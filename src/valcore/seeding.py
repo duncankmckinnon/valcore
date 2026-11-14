@@ -29,7 +29,15 @@ def dataset_shape_from_version(
     must be complete and collision-free before generation — a column named twice would
     silently drop every row. Collisions therefore raise rather than being deduplicated.
     """
-    required = version.required_columns
+    required = list(version.required_columns)
+    if version.input_contract == "invocation":
+        for role in ["input", "output"] if version.input_mode == "input_output" else ["output"]:
+            name = role
+            suffix = 2
+            while name in required:
+                name = f"{role}_{suffix}"
+                suffix += 1
+            required.append(name)
     required_set = set(required)
 
     clashes = [col for col in extra_columns if col in required_set]

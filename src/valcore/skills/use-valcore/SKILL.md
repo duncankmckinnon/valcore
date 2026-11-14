@@ -139,8 +139,10 @@ argument/env/file/default order.
 | Field | Meaning |
 |---|---|
 | `instructions` | Rubric-style system prompt. Defines every label explicitly. |
-| `prompt_template` | Per-row user prompt using `{column}` placeholders. |
-| `required_columns` | Every column the judge needs. Each must appear in the template. |
+| `input_contract` | Use `invocation` for new evaluators; omitted means legacy `columns`. |
+| `input_mode` | `input_output` or `output` (output only). |
+| `prompt_template` | Invocation: metadata placeholders only; context is appended as JSON. Legacy: dataset placeholders. |
+| `required_columns` | Invocation: required metadata names, possibly `[]`. Legacy: dataset columns needed by the judge. |
 | `output_fields` | Ordered. Put the reasoning field *before* the score field. |
 | `score_field` | Which output field carries the score. Must name one of `output_fields`. |
 | `score_kind` | `categorical` or `numeric`. |
@@ -166,8 +168,11 @@ label sets is fine — it just cannot back a `validation` run.
 
 This is where runs most often fail to start. A run requires:
 
-1. **Columns**: `required_columns` must be a **subset** of the dataset's columns. Extra
-   dataset columns are fine — the judge ignores them.
+1. **Invocation bindings**: for `input_contract: "invocation"`, agent pipelines supply
+   input/output automatically. For ordinary datasets use `--output-column`, plus
+   `--input-column` for input-aware evaluators. Required metadata defaults to same-named
+   source columns; repeat `--metadata NAME COLUMN` to rename it. Metadata is separate from
+   agent output. Legacy `columns` versions require their columns in the dataset or derivation.
 2. **Label kind**: `validation` needs a label set on the dataset whose kind equals the
    evaluator's `score_kind`.
 3. **Label set**: for categorical scoring, one of the dataset's label sets' labels and the
@@ -176,10 +181,9 @@ This is where runs most often fail to start. A run requires:
 
 A dataset with **no label sets at all** skips checks 2 and 3 — with no label space
 declared, there is nothing to reconcile with the score space. It still must satisfy
-check 1: the evaluator's `required_columns` must be present. Such a dataset runs against
-any evaluator whose columns it covers; it just cannot back a `validation` run (no label
-set exists to match). A dataset that **has** label sets, none of which match the
-evaluator's score contract, fails checks 2/3 outright — a real mismatch, not merely "no
+check 1: invocation bindings and metadata (or legacy columns) must be available. It cannot
+back a `validation` run (no label set exists to match). A dataset that **has** label sets, none of which match the
+evaluator's score contract, fails checks 2/3 for validation — a real mismatch, not merely "no
 ground truth declared."
 
 Labels are therefore **optional** at the dataset level. An `eval` run needs no label set
@@ -316,3 +320,19 @@ local CLI model is refused with a `ContractError`.
   stays interpretable.
 - Editing a dataset's shape (renaming or changing columns) remaps existing rows' data
   automatically.
+
+
+## Invocation evaluators and compatibility
+
+Prefer `input_contract: "invocation"` for new configs, with `input_mode: "input_output"`
+or `"output"`. Do not declare request/response fields in `required_columns`; only
+additional metadata belongs there. An empty list is valid. Invocation output retains its
+JSON structure. Stored agents record input as `{ "prompt": ..., "deps": ... }`, the
+arguments to the outer agent call, rather than every internal model message.
+
+Do not rewrite old versions implicitly: missing contract fields mean `columns`.
+To convert, create a new version, set the invocation contract, remove input/output
+requirements and template placeholders, and keep only needed metadata requirements.
+Use the run mapping options documented in reference.md. Older derivations need an explicit
+input mapping for input-aware evaluation; output-only evaluation can use their saved
+response-column object. Standalone exports provide `evaluate(output, *, input=..., metadata=...)`.

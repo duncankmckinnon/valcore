@@ -514,6 +514,8 @@ export interface RunStreamEvent {
 }
 
 export interface GeneratedConfig {
+  input_contract?: "columns" | "invocation";
+  input_mode?: "input_output" | "output";
   name: string;
   version_name: string;
   instructions: string;

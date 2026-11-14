@@ -156,6 +156,7 @@ export function JudgmentSection({
 }
 
 type InputsSectionProps = {
+  invocation?: boolean;
   columns: string[];
   columnDraft: string;
   frozen: boolean;
@@ -166,6 +167,7 @@ type InputsSectionProps = {
 };
 
 export function InputsSection({
+  invocation = false,
   columns,
   columnDraft,
   frozen,
@@ -180,8 +182,8 @@ export function InputsSection({
       <div className="editor-section-body">
         <div className="field">
           <FieldLabel
-            text="Required columns"
-            tooltip="Input columns the prompt and judge can reference."
+            text={invocation ? "Required metadata" : "Required columns"}
+            tooltip={invocation ? "Additional context required by the judge. Leave empty when no metadata is needed." : "Input columns the prompt and judge can reference."}
           />
           <div className="chips">
             {columns.map((column) => (
@@ -204,7 +206,7 @@ export function InputsSection({
             <div className="chip-add">
               <input
                 className="input"
-                aria-label="Add required column"
+                aria-label={invocation ? "Add required metadata" : "Add required column"}
                 value={columnDraft}
                 onChange={(event) => onColumnDraft(event.target.value)}
                 onKeyDown={(event) => {

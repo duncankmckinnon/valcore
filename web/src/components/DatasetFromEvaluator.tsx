@@ -33,6 +33,15 @@ export default function DatasetFromEvaluator({
   maxCount,
   onClose,
 }: DatasetFromEvaluatorProps) {
+  const lockedColumns = [...version.required_columns];
+  if (version.input_contract === "invocation") {
+    for (const role of version.input_mode === "output" ? ["output"] : ["input", "output"]) {
+      let name = role;
+      let suffix = 2;
+      while (lockedColumns.includes(name)) name = `${role}_${suffix++}`;
+      lockedColumns.push(name);
+    }
+  }
   const navigate = useNavigate();
   const { gatewayReady } = useSetup();
   const [name, setName] = useState("");
@@ -135,7 +144,7 @@ export default function DatasetFromEvaluator({
             <Tooltip text="Extra columns must be named explicitly here — the model never invents columns you did not ask for." />
           </span>
           <ColumnNotesEditor
-            lockedColumns={version.required_columns}
+            lockedColumns={lockedColumns}
             extraColumns={extraColumns}
             notes={notes}
             notePlaceholder="What should this column contain?"

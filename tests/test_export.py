@@ -660,3 +660,77 @@ def test_render_script_still_accepts_a_gateway_model() -> None:
     src = render_script(_make_version(model="gateway/openai:gpt-5"))
 
     assert "MODEL = 'gateway/openai:gpt-5'" in src
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["input_output", "output"])
+async def test_exported_invocation_evaluator_is_a_python_wrapper(mode):
+    from types import SimpleNamespace
+
+    version = _make_version(
+        input_contract="invocation",
+        input_mode=mode,
+        required_columns=["tenant"],
+        prompt_template="Judge.",
+    )
+    ns = _exec_script(render_script(version))
+    prompts = []
+
+    class StubAgent:
+        async def run(self, prompt):
+            prompts.append(json.loads(prompt.split("Invocation:\n", 1)[1]))
+            return SimpleNamespace(output="score")
+
+    ns["_agent"] = StubAgent
+    assert (
+        await ns["evaluate"]({"items": [False]}, input=None, metadata={"tenant": "acme"}) == "score"
+    )
+    assert prompts[0]["output"] == {"items": [False]}
+    assert prompts[0]["metadata"] == {"tenant": "acme"}
+    assert ("input" in prompts[0]) == (mode == "input_output")
+    if mode == "input_output":
+        with pytest.raises(ValueError, match="input"):
+            await ns["evaluate"]("answer", metadata={"tenant": "acme"})
+
+
+@pytest.mark.asyncio
+async def test_exported_judge_uses_eval_context_output_and_metadata(tmp_path):
+    from types import SimpleNamespace
+
+    from valcore.config_io import EvalPackage
+
+    version = _make_version(
+        input_contract="invocation",
+        input_mode="output",
+        required_columns=["tenant"],
+        prompt_template="Judge.",
+    )
+    package = tmp_path / "package.json"
+    package.write_text(
+        json.dumps(
+            {
+                "agent": EvalPackage.from_version(version).spec.model_dump(
+                    mode="json", by_alias=True
+                ),
+                "valcore": EvalPackage.from_version(version).valcore.to_dict(),
+            }
+        )
+    )
+    ns = _exec_script(render_judge_module(version, str(package)))
+    seen = []
+
+    class StubAgent:
+        @classmethod
+        def from_spec(cls, *args, **kwargs):
+            return cls()
+
+        async def run(self, prompt):
+            seen.append(json.loads(prompt.split("Invocation:\n", 1)[1]))
+            return SimpleNamespace(output=SimpleNamespace(verdict="good"))
+
+    ns["Agent"] = StubAgent
+    result = await ns["ValcoreJudge"]().evaluate(
+        SimpleNamespace(inputs={"unrelated": "input"}, output=[False], metadata={"tenant": "acme"})
+    )
+    assert result == "good"
+    assert seen == [{"output": [False], "metadata": {"tenant": "acme"}}]

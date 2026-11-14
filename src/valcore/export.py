@@ -194,6 +194,8 @@ def render_script(version: EvaluatorVersion) -> str:
     imports.add_from("functools", "cache")
     imports.add_from("pydantic", "BaseModel")
     imports.add_from("pydantic", "Field")
+    if version.input_contract == "invocation":
+        imports.add_from("pydantic_core", "to_jsonable_python")
     imports.add_from("pydantic_ai", "Agent")
     if any(f.type is FieldType.ENUM for f in fields):
         imports.add_from("typing", "Literal")
@@ -235,18 +237,46 @@ def render_script(version: EvaluatorVersion) -> str:
     sections.append(f"INSTRUCTIONS = {_py_str(version.instructions)}")
     sections.append(agent_block)
     sections.append(f"PROMPT_TEMPLATE = {_py_str(version.prompt_template)}")
-    sections.append(
-        "async def evaluate(row: dict) -> OutputModel:\n"
-        '    """Format the prompt with one row and run the evaluator, returning its output."""\n'
-        "    result = await _agent().run(PROMPT_TEMPLATE.format(**row))\n"
-        "    return result.output"
-    )
-    sections.append(
-        'if __name__ == "__main__":\n'
-        "    row = json.load(sys.stdin)\n"
-        "    output = asyncio.run(evaluate(row))\n"
-        "    print(output.model_dump_json(indent=2))"
-    )
+    if version.input_contract == "invocation":
+        sections.append("_MISSING = object()")
+        sections.append(f"INPUT_MODE = {version.input_mode!r}")
+        sections.append(f"REQUIRED_METADATA = {version.required_columns!r}")
+        sections.append(
+            "async def evaluate(output, *, input=_MISSING, metadata=None) -> OutputModel:\n"
+            '    """Judge a return value, optional invocation arguments, and additional metadata."""\n'
+            "    metadata = {} if metadata is None else metadata\n"
+            "    for name in REQUIRED_METADATA:\n"
+            "        if name not in metadata:\n"
+            "            raise ValueError(f'Missing required metadata: {name}')\n"
+            "    context = {'output': output, 'metadata': metadata}\n"
+            "    if INPUT_MODE == 'input_output':\n"
+            "        if input is _MISSING:\n"
+            "            raise ValueError('This evaluator requires input.')\n"
+            "        context['input'] = input\n"
+            "    prompt = PROMPT_TEMPLATE.format(**{k: str(v) for k, v in metadata.items()})\n"
+            "    prompt += '\\n\\nInvocation:\\n' + json.dumps(to_jsonable_python(context), ensure_ascii=False)\n"
+            "    result = await _agent().run(prompt)\n"
+            "    return result.output"
+        )
+        sections.append(
+            'if __name__ == "__main__":\n'
+            "    invocation = json.load(sys.stdin)\n"
+            "    output = asyncio.run(evaluate(invocation['output'], input=invocation.get('input', _MISSING), metadata=invocation.get('metadata')))\n"
+            "    print(output.model_dump_json(indent=2))"
+        )
+    else:
+        sections.append(
+            "async def evaluate(row: dict) -> OutputModel:\n"
+            '    """Format the prompt with one row and run the evaluator, returning its output."""\n'
+            "    result = await _agent().run(PROMPT_TEMPLATE.format(**row))\n"
+            "    return result.output"
+        )
+        sections.append(
+            'if __name__ == "__main__":\n'
+            "    row = json.load(sys.stdin)\n"
+            "    output = asyncio.run(evaluate(row))\n"
+            "    print(output.model_dump_json(indent=2))"
+        )
     return "\n\n\n".join(sections) + "\n"
 
 
@@ -340,6 +370,7 @@ def render_judge_module(version: EvaluatorVersion, package_filename: str) -> str
 
     imports = _Imports()
     imports.add_plain("json")
+    imports.add_from("pydantic_core", "to_jsonable_python")
     imports.add_from("pathlib", "Path")
     imports.add_from("dataclasses", "dataclass")
     imports.add_from("pydantic", "BaseModel")
@@ -391,7 +422,19 @@ def render_judge_module(version: EvaluatorVersion, package_filename: str) -> str
             '        agent_doc = doc.get("agent", doc)',
             '        vc = doc["valcore"]',
             from_spec_block,
-            '        result = await agent.run(vc["prompt_template"].format(**ctx.inputs))',
+            '        if vc.get("input_contract", "columns") == "invocation":',
+            "            metadata = ctx.metadata or {}",
+            '            for name in vc["required_columns"]:',
+            "                if name not in metadata:",
+            '                    raise ValueError(f"Missing required metadata: {name}")',
+            '            context = {"output": ctx.output, "metadata": metadata}',
+            '            if vc.get("input_mode", "input_output") == "input_output":',
+            '                context["input"] = ctx.inputs',
+            '            prompt = vc["prompt_template"].format(**{k: str(v) for k, v in metadata.items()})',
+            '            prompt += "\\n\\nInvocation:\\n" + json.dumps(to_jsonable_python(context), ensure_ascii=False)',
+            "        else:",
+            '            prompt = vc["prompt_template"].format(**ctx.inputs)',
+            "        result = await agent.run(prompt)",
             '        return getattr(result.output, vc["score_field"])',
         ]
     )

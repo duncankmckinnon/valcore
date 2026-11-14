@@ -25,6 +25,7 @@ export default function EvaluatorFromAgent({ open, version, onGenerated, onClose
   const outputs = version.response_columns;
   const columns = [...new Set([...inputs, ...outputs])];
   const [selected, setSelected] = useState(columns);
+  const [outputOnly, setOutputOnly] = useState(false);
   const [criteria, setCriteria] = useState("");
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [prescribeLabels, setPrescribeLabels] = useState(false);
@@ -35,7 +36,7 @@ export default function EvaluatorFromAgent({ open, version, onGenerated, onClose
 
   const canSubmit =
     criteria.trim() !== "" &&
-    selected.some((name) => inputs.includes(name)) &&
+
     selected.some((name) => outputs.includes(name)) &&
     gatewayReady &&
     !submitting;
@@ -47,6 +48,8 @@ export default function EvaluatorFromAgent({ open, version, onGenerated, onClose
     try {
       const draft = await evaluators.generate({
         criteria: criteria.trim(),
+        input_contract: "invocation",
+        input_mode: outputOnly ? "output" : "input_output",
         agent_version_id: version.id,
         columns: selected,
         column_notes: Object.fromEntries(
@@ -66,7 +69,7 @@ export default function EvaluatorFromAgent({ open, version, onGenerated, onClose
     <Modal
       open={open}
       title="Generate evaluator from agent"
-      description="The evaluator draft uses the agent's input and response fields. Review it before saving."
+      description="The evaluator receives the agent invocation automatically. Field notes below guide the judging criteria. Review the draft before saving."
       size="lg"
       onClose={onClose}
       footer={
@@ -90,6 +93,7 @@ export default function EvaluatorFromAgent({ open, version, onGenerated, onClose
           onChange={(event) => setCriteria(event.target.value)}
         />
       </label>
+      <label className="field-inline"><input type="checkbox" checked={outputOnly} onChange={event => setOutputOnly(event.target.checked)} />Judge output only</label>
       <div className="field">
         <span className="field-label">Agent contract fields</span>
         <ColumnNotesEditor
@@ -104,7 +108,7 @@ export default function EvaluatorFromAgent({ open, version, onGenerated, onClose
           onChangeNotes={setNotes}
           onChangeExtraColumns={() => {}}
         />
-        <p className="muted">Include at least one input and one response field.</p>
+        <p className="muted">Select response fields to describe the assessment. These are guidance, not required metadata.</p>
       </div>
       <div className="field">
         <label className="field-inline">

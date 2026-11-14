@@ -29,6 +29,7 @@ from valcore.models import LabelSchema, ScoreKind
 # A structurally- and semantically-valid GeneratedConfig payload: reasoning
 # field precedes the enum score field, labels match the enum values.
 VALID_CONFIG: dict = {
+    "input_contract": "invocation",
     "name": "Answer Correctness",
     "version_name": "v1",
     "instructions": "You are a judge. Explain your reasoning, then score.",
@@ -424,3 +425,28 @@ def test_build_refiner_agent_resolves_a_local_model() -> None:
 
     assert isinstance(agent.model, CliBridgeModel)
     assert agent.model.model_name == "default"
+
+
+def test_generated_invocation_config_keeps_contract_and_empty_metadata():
+    config = GeneratedConfig.model_validate(
+        {
+            **VALID_CONFIG,
+            "input_contract": "invocation",
+            "input_mode": "output",
+            "required_columns": [],
+            "prompt_template": "Judge output.",
+        }
+    )
+    version = config.to_version("local/codex")
+    from valcore.models import validate_version
+
+    validate_version(version)
+    assert version.input_contract == "invocation"
+    assert version.input_mode == "output"
+    assert version.required_columns == []
+
+
+def test_old_generated_configs_still_default_to_column_contract():
+    payload = {key: value for key, value in VALID_CONFIG.items() if key != "input_contract"}
+    config = GeneratedConfig.model_validate(payload)
+    assert config.to_version("local/codex").input_contract == "columns"

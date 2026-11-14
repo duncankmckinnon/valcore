@@ -2,7 +2,7 @@
 
 import re
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict
@@ -92,6 +92,8 @@ class GenerateRequest(BaseModel):
     guidance.
     """
 
+    input_contract: Literal["columns", "invocation"] | None = None
+    input_mode: Literal["input_output", "output"] | None = None
     criteria: str
     columns: list[str] | None = None
     dataset_id: str | None = None
@@ -490,6 +492,11 @@ async def generate(body: GenerateRequest, store: StoreDep) -> GeneratedConfig:
     columns, label_schema, column_notes = _resolve_seed(body, store)
     return await eval_generator.generate_config(
         body.criteria,
+        **(
+            {"input_contract": body.input_contract or "invocation", "input_mode": body.input_mode}
+            if body.input_contract or body.input_mode
+            else {}
+        ),
         columns=columns,
         column_notes=column_notes,
         label_schema=label_schema,
@@ -509,6 +516,11 @@ async def generate_version(id: str, body: GenerateRequest, store: StoreDep) -> G
     columns, label_schema, column_notes = _resolve_seed(body, store)
     return await eval_generator.generate_config(
         body.criteria,
+        **(
+            {"input_contract": body.input_contract or "invocation", "input_mode": body.input_mode}
+            if body.input_contract or body.input_mode
+            else {}
+        ),
         columns=columns,
         column_notes=column_notes,
         label_schema=label_schema,

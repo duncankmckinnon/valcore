@@ -18,6 +18,8 @@ from valcore.tools import tool_names
 class GeneratedConfig(GeneratedConfigBase):
     """Complete evaluator version config produced by the generator."""
 
+    input_contract: str = "columns"
+    input_mode: str = "input_output"
     name: str
     output_fields: list[OutputField]
     score_field: str
@@ -32,6 +34,8 @@ class GeneratedConfig(GeneratedConfigBase):
         """Build the unsaved evaluator version used for structural validation."""
         return EvaluatorVersion(
             evaluator_id="",
+            input_contract=self.input_contract,
+            input_mode=self.input_mode,
             version_name=self.version_name,
             model=model,
             instructions=self.instructions,
@@ -64,12 +68,16 @@ class EvaluatorGenerator(ConfigGenerator[GeneratedConfig]):
         self,
         model: str | None = None,
         *,
+        input_contract: str | None = None,
+        input_mode: str | None = None,
         columns: list[str] | None = None,
         column_notes: dict[str, str] | None = None,
         label_schema: LabelSchema | None = None,
     ) -> None:
         """Keep optional dataset shape and score constraints for the draft prompt."""
         super().__init__(model)
+        self.input_contract = input_contract
+        self.input_mode = input_mode
         self.columns = columns
         self.column_notes = column_notes
         self.label_schema = label_schema
@@ -101,8 +109,15 @@ class EvaluatorGenerator(ConfigGenerator[GeneratedConfig]):
                 "field of type enum whose `enum_values` exactly equal `score_labels`. A "
                 "numeric score requires `score_kind` 'numeric', a score field typed int or "
                 "float, and `score_labels` null.\n"
-                "- `required_columns` must list at least one column: every column the "
-                "judge needs.\n"
+                "- For new evaluators set `input_contract` to 'invocation'. Set `input_mode` "
+                "to 'input_output' or 'output' according to whether the criteria need input. "
+                "The runtime automatically appends a JSON invocation with output, optional "
+                "input, and metadata. Do not template input/output or require their columns.\n"
+                "- With the invocation contract, `required_columns` names ONLY additional "
+                "metadata (e.g. headers or reference answers), and may be empty. "
+                "Dataset input/output columns are mapped at run time, not declared here.\n"
+                "- Preserve an existing config's input_contract when refining unless asked "
+                "to convert it. Legacy 'columns' configs still require at least one column.\n"
                 f"- `tools` may use only these names: {tool_names()}. Never invent a tool "
                 "outside this list."
             )
@@ -114,12 +129,18 @@ class EvaluatorGenerator(ConfigGenerator[GeneratedConfig]):
         unknown = sorted(set(version.tools) - set(valid))
         if unknown:
             raise ConfigError(f"Unknown tools {unknown}; valid names are {valid}.")
+        if self.input_contract is not None and version.input_contract != self.input_contract:
+            raise ConfigError(f"Use input_contract {self.input_contract!r}.")
+        if self.input_mode is not None and version.input_mode != self.input_mode:
+            raise ConfigError(f"Use input_mode {self.input_mode!r}.")
         validate_version(version)
 
     def generation_prompt(self, request: str) -> str:
         """Append any supplied dataset columns and score-space guidance."""
         return (
             super().generation_prompt(request)
+            + (f"\nRequired input_contract: {self.input_contract}" if self.input_contract else "")
+            + (f"\nRequired input_mode: {self.input_mode}" if self.input_mode else "")
             + _columns_section(self.columns, self.column_notes)
             + _score_space_section(self.label_schema)
         )
@@ -188,6 +209,8 @@ def _score_space_section(label_schema: LabelSchema | None) -> str:
 async def generate_config(
     criteria: str,
     *,
+    input_contract: str | None = "invocation",
+    input_mode: str | None = None,
     columns: list[str] | None = None,
     column_notes: dict[str, str] | None = None,
     label_schema: LabelSchema | None = None,
@@ -202,7 +225,12 @@ async def generate_config(
     retry contract is unchanged.
     """
     generator = EvaluatorGenerator(
-        model, columns=columns, column_notes=column_notes, label_schema=label_schema
+        model,
+        input_contract=input_contract,
+        input_mode=input_mode,
+        columns=columns,
+        column_notes=column_notes,
+        label_schema=label_schema,
     )
     return await generator.generate(criteria, agent=agent)
 

@@ -126,7 +126,10 @@ Runs an evaluator version over a dataset.
 | `--json` | Emit JSON results to stdout. |
 | `--watch` | Print one line per completed row. |
 | `--min-accuracy FLOAT` | Exit 2 below this threshold. |
-| `--derivation REF` | Read saved response columns from a derivation. Cannot be used with validation. |
+| `--derivation REF` | Read a saved agent invocation or legacy response columns. Cannot be used with validation. |
+| `--input-column COLUMN` | Map invocation arguments from a dataset column. |
+| `--output-column COLUMN` | Map the returned value from a dataset column. |
+| `--metadata NAME COLUMN` | Bind additional metadata; repeat for multiple names. |
 
 `EVALUATOR` and `DATASET` resolve by exact name first, then by unique id prefix.
 
@@ -149,7 +152,9 @@ has no `--watch` and no cancellation, because `Dataset.evaluate` offers neither.
 
 Also accepts `--kind [validation|eval]` (default: `validation`) and
 `--derivation REF` to score saved agent responses with `--kind eval`.
-Validation cannot target a derivation, matching ordinary evaluator runs.
+Also accepts `--input-column COLUMN`, `--output-column COLUMN`, and repeatable
+`--metadata NAME COLUMN` for invocation evaluators. Validation cannot target a derivation,
+matching ordinary evaluator runs.
 
 ### `valcore run agent AGENT`
 
@@ -409,3 +414,27 @@ Use repeatable `--metadata NAME COLUMN` to bind additional context to source dat
 columns. Pipelines supply invocation input/output automatically; `valcore run pipeline`
 accepts `--metadata NAME COLUMN` for follow-up invocation evaluators.
 Mappings are persisted with each run. Column-contract evaluators keep their existing behavior.
+
+
+### Authoring invocation contracts
+
+Set `input_contract: "invocation"` and `input_mode: "input_output"` or `"output"` in the
+package's `valcore` block. `required_columns` declares metadata only and may be empty.
+Use instructions to describe judging the invocation; the runtime supplies input/output
+as JSON without template placeholders. Any template placeholders must name required
+metadata. Existing packages without contract fields remain legacy column evaluators.
+Use a new version when converting an existing evaluator so frozen versions and old runs
+retain their original meaning. The editor defaults new blank evaluators to invocation
+input/output and offers output-only and legacy options.
+
+API run bodies accept `invocation_mapping`, for example
+`{"output": "result", "input": "arguments", "metadata": {"tenant": "header_tenant"}}`.
+Agent pipelines allow metadata bindings only, since their invocations are captured
+automatically. Recorded input is the outer call's `prompt` and `deps` arguments; it does
+not include every internal model/tool call. Metadata is read from original dataset rows.
+Old derivations without invocation capture require explicit input bindings for
+input-aware evaluators; output-only evaluators receive the saved response-column object.
+
+Standalone exports accept `evaluate(output, *, input=..., metadata=...)`; stdin accepts
+an object with `output`, optional `input`, and optional `metadata`. The exported Pydantic
+Evals judge reads `ctx.output`, `ctx.inputs`, and `ctx.metadata` directly.
