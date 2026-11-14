@@ -33,6 +33,7 @@ command here first, then regenerate with `scripts/sync_command_table.py`.
 | `valcore serve` | Serve the web UI and API (`--port`, `--host`, `--no-browser`). |
 | `valcore list <evaluators\|datasets\|runs\|agents\|derivations>` | List resources as a table or, with `--json`, as JSON. |
 | `valcore run agent <agent>` | Run an agent over a dataset, one row, ad-hoc inputs, or a literal prompt. |
+| `valcore run pipeline <agent> --dataset <dataset> --evaluator <evaluator>` | Run an agent, save responses, and run one or more evaluators concurrently. |
 | `valcore run evaluator <evaluator> --dataset <dataset>` | Run an evaluator version over a dataset. |
 | `valcore run experiment <evaluator> --dataset <dataset>` | Run an evaluator through `pydantic_evals.Dataset.evaluate`. |
 | `valcore export <evaluator>` | Export an evaluator (and, with `--dataset`, a dataset) as a Python script or, with `--format json`, a portable eval package. |
@@ -146,7 +147,9 @@ has no `--watch` and no cancellation, because `Dataset.evaluate` offers neither.
 | `--concurrency INTEGER` | Max concurrent rows. |
 | `--json` | Emit JSON results to stdout. |
 
-Always runs as `validation` kind; there is no `--kind` here.
+Also accepts `--kind [validation|eval]` (default: `validation`) and
+`--derivation REF` to score saved agent responses with `--kind eval`.
+Validation cannot target a derivation, matching ordinary evaluator runs.
 
 ### `valcore run agent AGENT`
 
@@ -158,6 +161,52 @@ text directly to the agent, bypassing its prompt template, and cannot be saved.
 An agent may have no input fields or prompt template. In that case ad-hoc `--input input=TEXT`
 is sent as plain text, and dataset rows are sent as JSON after the agent's instructions.
 Running without any inputs sends an empty request. Dependency mappings remain optional.
+
+### `valcore run pipeline AGENT --dataset DATASET --evaluator EVALUATOR`
+
+The CLI equivalent of **Runs → Agent then evaluators**. Runs the selected agent over
+the dataset, automatically saves its response derivation, then starts all selected
+evaluators concurrently against the original columns plus the new response columns.
+The CLI works directly with the local database; no running API server is required.
+
+| Option | Meaning |
+|---|---|
+| `--dataset DATASET` | Required dataset name or unique id prefix. |
+| `--version TEXT` | Agent version name; defaults to active. |
+| `--evaluator EVALUATOR` | Required, repeatable evaluator name or unique id prefix. |
+| `--evaluator-version EVALUATOR VERSION` | Repeatable version override for a selected evaluator; otherwise active. |
+| `--concurrency INTEGER` | Concurrent rows per run, 1–64; defaults to configured concurrency. |
+| `--json` | One JSON summary on stdout, including agent/evaluator run ids, versions, statuses, errors, metrics, evaluator results, and derivation id/state. |
+| `--watch` | Per-row progress with run ids on stderr; safe alongside `--json`. |
+
+```bash
+valcore run pipeline support-agent --dataset support-cases \
+  --version v2 \
+  --evaluator accuracy --evaluator safety \
+  --evaluator-version accuracy v3 \
+  --concurrency 4 --watch --json
+```
+
+Every selection and required column is checked before runs are created. Versions freeze
+when queued. Gateway credentials are required only for versions using a gateway model;
+an entirely local workflow needs no gateway key.
+
+The process stays in the foreground until the agent and evaluators finish. It does not
+detach, but evaluator runs execute asynchronously with each other. Results and workflow
+relationships persist in the local database and appear in the UI's Runs view.
+`valcore list runs --json` includes `parent_run_id`, `evaluator_run_ids`, and
+`derivation_id`, so an agent can discover the same relationships later.
+
+Failed agent rows are skipped by evaluators; a failed or cancelled agent prevents its
+queued evaluations from starting. An evaluator failure does not stop its siblings.
+Exit code is 0 only if every run completes without errors; otherwise 1. With `--json`,
+execution failures still emit the complete summary before exiting 1. Invalid selections
+fail before execution with an error on stderr.
+
+Pipelines use ordinary `eval` runs. To validate human labels use `run evaluator
+--kind validation`; to record a Logfire experiment use `run experiment`. You can also
+run the steps separately with `run agent --dataset DATASET --save` and `run evaluator
+--kind eval --derivation REF`.
 
 ### `valcore agent derivation {list|save|discard}`
 

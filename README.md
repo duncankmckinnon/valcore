@@ -84,6 +84,17 @@ cancelled, queued evaluators do not start. A failing evaluator does not stop the
 others. Execution continues when you leave the page; keep the valcore server
 running. Concurrency is configured per run.
 
+The same workflow is available without a server:
+
+```bash
+valcore run pipeline support-agent --dataset support-cases \
+  --evaluator accuracy --evaluator safety \
+  --version v2 --evaluator-version accuracy v3 \
+  --concurrency 4 --watch --json
+```
+
+The CLI waits for completion, evaluates concurrently, and emits one JSON summary.
+See the bundled CLI reference for version selection and failure behavior.
 
 ## Quickstart
 
@@ -219,6 +230,7 @@ source of truth (`scripts/sync_command_table.py --check` fails CI if the two dri
 | `valcore serve` | Serve the web UI and API (`--port`, `--host`, `--no-browser`). |
 | `valcore list <evaluators\|datasets\|runs\|agents\|derivations>` | List resources as a table or, with `--json`, as JSON. |
 | `valcore run agent <agent>` | Run an agent over a dataset, one row, ad-hoc inputs, or a literal prompt. |
+| `valcore run pipeline <agent> --dataset <dataset> --evaluator <evaluator>` | Run an agent, save responses, and run one or more evaluators concurrently. |
 | `valcore run evaluator <evaluator> --dataset <dataset>` | Run an evaluator version over a dataset. |
 | `valcore run experiment <evaluator> --dataset <dataset>` | Run an evaluator through `pydantic_evals.Dataset.evaluate`. |
 | `valcore export <evaluator>` | Export an evaluator (and, with `--dataset`, a dataset) as a Python script or, with `--format json`, a portable eval package. |

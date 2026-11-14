@@ -2316,3 +2316,255 @@ def test_prompt_sync_unlink_uses_fresh_revision(runner, db_path, sync_agent):
     assert result.exit_code == 0, result.output
     assert fake.mutations() == [("unlink", agent.id, fake.last_revision)]
     assert fake.calls[0][0] == "inspect"
+
+
+def _seed_pipeline(store):
+    agent = store.create_agent("writer")
+    version = store.create_agent_version(
+        agent.id,
+        version_name="v1",
+        model="local/codex",
+        spec={"instructions": "Respond."},
+        prompt_template="{input}",
+        required_columns=["input"],
+        deps_mapping={},
+    )
+    evaluator = store.create_evaluator("quality")
+    judge = store.create_version(
+        evaluator.id,
+        **{
+            **VERSION_FIELDS,
+            "model": "local/codex",
+            "required_columns": ["input", "response"],
+            "prompt_template": "{input}: {response}",
+        },
+    )
+    store.create_version(
+        evaluator.id,
+        **{
+            **VERSION_FIELDS,
+            "version_name": "v2",
+            "model": "local/codex",
+        },
+    )
+    return version, judge
+
+
+def test_run_pipeline_versions_concurrency_and_json(runner, store, db_path, monkeypatch):
+    import asyncio
+
+    agent_version, judge = _seed_pipeline(store)
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "valcore.runner.build_agent_from_version",
+        lambda version: Agent(TestModel(custom_output_text="fresh response")),
+    )
+    # Both judges must enter before either can finish; this detects serial orchestration.
+    entered = set()
+    gate = None
+
+    def build(version):
+        async def respond(messages, info):
+            nonlocal gate
+            if gate is None:
+                gate = asyncio.Event()
+            entered.add(version.id)
+            if len(entered) == 2:
+                gate.set()
+            await asyncio.wait_for(gate.wait(), 2)
+            if version.id == judge.id:
+                assert "fresh response" in str(messages)
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name=info.output_tools[0].name,
+                        args={"verdict": "pass"},
+                    )
+                ]
+            )
+
+        return Agent(FunctionModel(respond), output_type=build_output_model(version))
+
+    monkeypatch.setattr("valcore.runner.build_agent", build)
+    other = store.create_evaluator("safety")
+    store.create_version(other.id, **{**VERSION_FIELDS, "model": "local/codex"})
+    result = _invoke(
+        runner,
+        db_path,
+        "run",
+        "pipeline",
+        "writer",
+        "--version",
+        "v1",
+        "--dataset",
+        "cases",
+        "--evaluator",
+        "quality",
+        "--evaluator",
+        "safety",
+        "--evaluator-version",
+        "quality",
+        "v1",
+        "--concurrency",
+        "2",
+        "--json",
+        "--watch",
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["agent_run"]["version_id"] == agent_version.id
+    assert payload["derivation"]["state"] == "saved"
+    assert len(payload["evaluator_runs"]) == 2
+    assert {run["status"] for run in payload["evaluator_runs"]} == {"completed"}
+    assert judge.id in {run["version_id"] for run in payload["evaluator_runs"]}
+    assert all(run.concurrency == 2 for run in store.list_runs())
+    assert "score=" in result.stderr
+
+
+def test_run_pipeline_preflight_leaves_no_runs(runner, store, db_path):
+    _seed_pipeline(store)
+    evaluator = store.create_evaluator("incompatible")
+    store.create_version(
+        evaluator.id,
+        **{
+            **VERSION_FIELDS,
+            "model": "local/codex",
+            "required_columns": ["missing"],
+            "prompt_template": "{missing}",
+        },
+    )
+    result = _invoke(
+        runner,
+        db_path,
+        "run",
+        "pipeline",
+        "writer",
+        "--dataset",
+        "cases",
+        "--evaluator",
+        "quality",
+        "--evaluator",
+        "incompatible",
+    )
+    assert result.exit_code == 1, result.output
+    assert "missing" in result.output
+    assert store.list_runs() == []
+
+
+def test_run_pipeline_failure_still_emits_machine_readable_summary(
+    runner, store, db_path, monkeypatch
+):
+    _seed_pipeline(store)
+
+    def fail(version):
+        raise RuntimeError("agent unavailable")
+
+    monkeypatch.setattr("valcore.runner.build_agent_from_version", fail)
+    result = _invoke(
+        runner,
+        db_path,
+        "run",
+        "pipeline",
+        "writer",
+        "--dataset",
+        "cases",
+        "--evaluator",
+        "quality",
+        "--json",
+    )
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["agent_run"]["status"] == "failed"
+    assert payload["evaluator_runs"][0]["status"] == "failed"
+    assert payload["derivation"]["state"] == "staged"
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        [],
+        ["--evaluator", "quality", "--concurrency", "0"],
+        ["--evaluator", "quality", "--evaluator-version", "judge", "v1"],
+        ["--evaluator", "quality", "--evaluator", "quality"],
+    ],
+)
+def test_run_pipeline_rejects_invalid_selection(runner, store, db_path, options):
+    _seed_pipeline(store)
+    result = _invoke(runner, db_path, "run", "pipeline", "writer", "--dataset", "cases", *options)
+    assert result.exit_code != 0
+    assert store.list_runs() == []
+
+
+def test_experiment_can_score_saved_agent_responses(runner, store, db_path, monkeypatch):
+    agent, _ = _seed_pipeline(store)
+    dataset = resolve_dataset(store, "cases")
+    derivation = store.save_derivation(
+        dataset_id=dataset.id,
+        agent_version_id=agent.id,
+        response_columns=["response"],
+        responses=[
+            {"row_id": row.id, "data": {"response": "fresh"}} for row in store.list_rows(dataset.id)
+        ],
+    )
+    monkeypatch.setattr("valcore.experiment.build_agent", _constant_test_model_agent_builder())
+    result = _invoke(
+        runner,
+        db_path,
+        "run",
+        "experiment",
+        "quality",
+        "--version",
+        "v1",
+        "--dataset",
+        "cases",
+        "--kind",
+        "eval",
+        "--derivation",
+        derivation.id,
+        "--json",
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "eval"
+    assert len(payload["results"]) == 4
+    assert store.get_run_derivation(payload["run_id"]).derivation_id == derivation.id
+
+
+def test_experiment_rejects_validation_of_responses_before_creating_run(runner, store, db_path):
+    agent, _ = _seed_pipeline(store)
+    dataset = resolve_dataset(store, "cases")
+    derivation = store.save_derivation(
+        dataset_id=dataset.id,
+        agent_version_id=agent.id,
+        response_columns=["response"],
+        responses=[{"row_id": store.list_rows(dataset.id)[0].id, "data": {"response": "fresh"}}],
+    )
+    result = _invoke(
+        runner,
+        db_path,
+        "run",
+        "experiment",
+        "quality",
+        "--dataset",
+        "cases",
+        "--kind",
+        "validation",
+        "--derivation",
+        derivation.id,
+    )
+    assert result.exit_code == 1, result.output
+    assert "Validation cannot target a derivation" in result.output
+    assert store.list_runs() == []
+
+
+def test_list_runs_json_includes_workflow_links(runner, store, db_path):
+    agent, judge = _seed_pipeline(store)
+    dataset = resolve_dataset(store, "cases")
+    parent = store.create_agent_pipeline(agent.id, dataset.id, [judge.id], 2)
+    _, children = store.run_dependencies(parent.id)
+    result = _invoke(runner, db_path, "list", "runs", "--json")
+    assert result.exit_code == 0
+    rows = {row["id"]: row for row in json.loads(result.stdout)}
+    assert rows[parent.id]["evaluator_run_ids"] == children
+    assert rows[children[0]]["parent_run_id"] == parent.id
+    assert rows[parent.id]["derivation_id"] == store.get_run_derivation(parent.id).derivation_id

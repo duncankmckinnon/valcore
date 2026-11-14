@@ -22,7 +22,6 @@ from valcore.api.events import bus
 from valcore.errors import ContractError
 from valcore.experiment import execute_experiment
 from valcore.models import (
-    DatasetDerivation,
     DerivationRole,
     DerivationState,
     EvaluatorVersion,
@@ -34,6 +33,7 @@ from valcore.models import (
     check_dataset_compatibility,
     find_matching_label_set,
 )
+from valcore.pipeline import create_pipeline, prepare_evaluators
 from valcore.runner import RunEvent, execute_run
 from valcore.settings import is_local_cli_model
 from valcore.store import Store
@@ -248,7 +248,7 @@ async def _run_to_completion(
         bus.publish(run_id, {"type": "error", "run_id": run_id, "payload": {"error": str(exc)}})
     finally:
         if child_ids:
-            await _start_dependent_runs(store, run_id, child_ids, agent_factory)
+            await _start_dependent_runs(store, run_id, agent_factory)
             finished = await asyncio.to_thread(store.get_run, run_id)
             bus.publish(
                 run_id,
@@ -264,47 +264,19 @@ async def _run_to_completion(
 async def _start_dependent_runs(
     store: Store,
     parent_id: str,
-    child_ids: list[str],
     agent_factory: AgentFactory | None,
 ) -> None:
     """Save successful responses before launching independent evaluator tasks."""
-    parent = await asyncio.to_thread(store.get_run, parent_id)
-    try:
-        if parent.status not in (RunStatus.COMPLETED, RunStatus.COMPLETED_WITH_ERRORS):
-            raise ContractError(f"Agent run {parent.status.value}; evaluation was not started.")
-        link = await asyncio.to_thread(store.get_run_derivation, parent_id)
-        await asyncio.to_thread(store.save_staged_derivation, link.derivation_id)
-        for child_id in child_ids:
-            child = await asyncio.to_thread(store.get_run, child_id)
-            if child.cancel_requested or child.status is RunStatus.CANCELLED:
-                continue
-            await asyncio.to_thread(
-                store.link_run_derivation,
-                child_id,
-                link.derivation_id,
-                DerivationRole.READS,
-            )
-            _launch_run(store, child_id, agent_factory)
-    except Exception as exc:  # noqa: BLE001 — queued children must not be stranded
-        for child_id in child_ids:
-            child = await asyncio.to_thread(store.get_run, child_id)
-            if child.status is not RunStatus.PENDING or child_id in _tasks:
-                continue
-            status = (
-                RunStatus.CANCELLED if parent.status is RunStatus.CANCELLED else RunStatus.FAILED
-            )
-            await asyncio.to_thread(
-                store.update_run_status,
-                child_id,
-                status,
-                error=str(exc),
-                finished_at=datetime.now(UTC),
-            )
+    children = await asyncio.to_thread(prepare_evaluators, store, parent_id)
+    for child in children:
+        if child.status is RunStatus.PENDING and not child.cancel_requested:
+            _launch_run(store, child.id, agent_factory)
+        else:
             bus.publish(
-                child_id,
-                {"type": "finished", "run_id": child_id, "payload": {"status": status.value}},
+                child.id,
+                {"type": "finished", "run_id": child.id, "payload": {"status": child.status.value}},
             )
-            bus.close(child_id)
+            bus.close(child.id)
 
 
 def _launch_run(
@@ -389,23 +361,8 @@ async def create_run(body: RunCreate, store: StoreDep, agent_factory: AgentFacto
         dataset = store.get_dataset(body.dataset_id)
         check_agent_dataset_compatibility(version, dataset)
         if body.evaluator_version_ids:
-            contract = DatasetDerivation(
-                dataset_id=dataset.id,
-                agent_version_id=version.id,
-                response_columns=version.response_columns,
-            )
-            for evaluator_id in body.evaluator_version_ids:
-                evaluator = store.get_version(evaluator_id)
-                if not is_local_cli_model(evaluator.model):
-                    config.require_gateway_key()
-                check_dataset_compatibility(
-                    evaluator,
-                    dataset,
-                    [],
-                    kind=RunKind.EVAL,
-                    derivation=contract,
-                )
-            run = store.create_agent_pipeline(
+            run = create_pipeline(
+                store,
                 version.id,
                 dataset.id,
                 body.evaluator_version_ids,
