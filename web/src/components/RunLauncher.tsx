@@ -15,6 +15,7 @@ import type {
   RunKind,
 } from "../api/types";
 import { Button, ErrorBanner, Select, Spinner } from "./ui";
+import AgentRunLauncher from "./AgentRunLauncher";
 import { GATEWAY_BLOCKER, useSetup } from "./useSetup";
 
 type EvaluatorWithVersions = Evaluator & { versions: EvaluatorVersion[] };
@@ -34,6 +35,25 @@ type DataContract = {
 };
 
 export default function RunLauncher({ onStarted }: Props) {
+  const [mode, setMode] = useState("evaluator");
+  return (
+    <>
+      <label className="field">
+        <span className="field-label">Run type</span>
+        <Select aria-label="Run type" value={mode} onChange={(e) => setMode(e.target.value)}
+          options={[
+            { value: "evaluator", label: "Evaluator" },
+            { value: "agent", label: "Agent" },
+            { value: "pipeline", label: "Agent then evaluators" },
+          ]} />
+      </label>
+      {mode === "evaluator" ? <EvaluatorRunLauncher onStarted={onStarted} /> :
+        <AgentRunLauncher key={mode} withEvaluators={mode === "pipeline"} onStarted={onStarted} />}
+    </>
+  );
+}
+
+function EvaluatorRunLauncher({ onStarted }: Props) {
   const [evaluatorList, setEvaluatorList] = useState<Evaluator[]>([]);
   const [datasetList, setDatasetList] = useState<DatasetSummary[]>([]);
   const [derivationList, setDerivationList] = useState<Derivation[]>([]);

@@ -41,6 +41,7 @@ from valcore.models import (
     LabelSet,
     LabelSource,
     Run,
+    RunDependency,
     RunDerivation,
     RunKind,
     RunResult,
@@ -1567,6 +1568,68 @@ class Store:
             )
             session.add(run)
             return run
+
+    def create_agent_pipeline(
+        self,
+        agent_version_id: str,
+        dataset_id: str,
+        evaluator_version_ids: list[str],
+        concurrency: int,
+    ) -> Run:
+        """Atomically freeze every selected version and queue the whole workflow."""
+        with session_scope(self.engine) as session:
+            agent = _require(session, AgentVersion, agent_version_id)
+            _require(session, Dataset, dataset_id)
+            versions = [_require(session, EvaluatorVersion, id) for id in evaluator_version_ids]
+            parent = Run(
+                kind=RunKind.DERIVE,
+                version_id=agent.id,
+                dataset_id=dataset_id,
+                concurrency=concurrency,
+                status=RunStatus.PENDING,
+            )
+            derivation = DatasetDerivation(
+                dataset_id=dataset_id,
+                agent_version_id=agent.id,
+                response_columns=agent.response_columns,
+            )
+            agent.frozen = True
+            session.add(agent)
+            session.add(parent)
+            session.add(derivation)
+            session.add(DerivationStatus(derivation_id=derivation.id, state=DerivationState.STAGED))
+            session.add(
+                RunDerivation(
+                    run_id=parent.id, derivation_id=derivation.id, role=DerivationRole.FILLS
+                )
+            )
+            for version in versions:
+                version.frozen = True
+                session.add(version)
+                child = Run(
+                    kind=RunKind.EVAL,
+                    version_id=version.id,
+                    dataset_id=dataset_id,
+                    concurrency=concurrency,
+                    status=RunStatus.PENDING,
+                )
+                session.add(child)
+                session.add(RunDependency(parent_run_id=parent.id, child_run_id=child.id))
+            return parent
+
+    def run_dependencies(self, run_id: str) -> tuple[str | None, list[str]]:
+        """Return the upstream agent and downstream evaluators, including queued runs."""
+        with session_scope(self.engine) as session:
+            links = session.exec(
+                select(RunDependency).where(
+                    or_(RunDependency.parent_run_id == run_id, RunDependency.child_run_id == run_id)
+                )
+            ).all()
+            parent = next(
+                (link.parent_run_id for link in links if link.child_run_id == run_id), None
+            )
+            children = [link.child_run_id for link in links if link.parent_run_id == run_id]
+            return parent, children
 
     def link_run_derivation(
         self, run_id: str, derivation_id: str, role: DerivationRole

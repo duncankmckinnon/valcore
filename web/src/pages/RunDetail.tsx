@@ -108,6 +108,49 @@ function DerivationRows({ page }: { page: DerivedRowsPage }) {
   );
 }
 
+function EvaluatorRuns({ ids, total }: { ids: string[]; total: number }) {
+  const [children, setChildren] = useState<Run[]>([]);
+  const [error, setError] = useState<unknown>(null);
+  const key = ids.join(",");
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function refresh() {
+      try {
+        const loaded = await Promise.all(key.split(",").map((id) => runs.get(id)));
+        if (cancelled) return;
+        setChildren(loaded);
+        setError(null);
+        if (loaded.some((child) => !TERMINAL.has(child.status))) {
+          timer = setTimeout(refresh, 2000);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err);
+          timer = setTimeout(refresh, 5000);
+        }
+      }
+    }
+    void refresh();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [key]);
+
+  return (
+    <section>
+      <h2>Evaluator runs</h2>
+      <ErrorBanner error={error} />
+      {children.map((child, index) => (
+        <div key={child.id} className="field">
+          <Link to={`/runs/${child.id}`}>Evaluator {index + 1} · {child.id.slice(0, 8)}</Link>
+          {TERMINAL.has(child.status) ? <Badge>{child.status.replace(/_/g, " ")}</Badge> :
+            <RunProgress runId={child.id} total={total} startedAt={child.started_at} />}
+          {child.error && <p className="muted">{child.error}</p>}
+        </div>
+      ))}
+    </section>
+  );
+}
+
 export default function RunDetail({ runId }: Props) {
   const [run, setRun] = useState<Run | null>(null);
   const [total, setTotal] = useState(0);
@@ -234,6 +277,15 @@ export default function RunDetail({ runId }: Props) {
       <PageHeader title={`Run ${run.id.slice(0, 8)}`} />
 
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      {run.error && <ErrorBanner error={new Error(run.error)} />}
+      {run.parent_run_id && (
+        <p><Link to={`/runs/${run.parent_run_id}`}>Agent run</Link>
+          {run.status === "pending" && " · Waiting for agent responses"}
+        </p>
+      )}
+      {!!run.evaluator_run_ids?.length && (
+        <EvaluatorRuns ids={run.evaluator_run_ids} total={total} />
+      )}
 
       {!isTerminal ? (
         <RunProgress
@@ -256,7 +308,7 @@ export default function RunDetail({ runId }: Props) {
                   ? ` / derivation ${derivation.ordinal}`
                   : " / staged"}
               </p>
-              {derivation.state === "staged" && (
+              {derivation.state === "staged" && !run.evaluator_run_ids?.length && (
                 <div className="form-actions">
                   <Button
                     onClick={() => void saveDerivation()}

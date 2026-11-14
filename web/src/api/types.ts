@@ -434,6 +434,8 @@ export interface Run {
   metrics: RunMetrics | null;
   error: string | null;
   cancel_requested: boolean;
+  parent_run_id?: string | null;
+  evaluator_run_ids?: string[];
 }
 
 export interface RunResult {

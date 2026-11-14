@@ -523,6 +523,7 @@ export const runs = {
     version_id: string;
     dataset_id: string;
     derivation_id?: string;
+    evaluator_version_ids?: string[];
     concurrency?: number;
     // Engine, not kind: drives pydantic-evals so the run lands in Logfire's experiments
     // view. Cannot be cancelled, since `Dataset.evaluate` has no cancellation.

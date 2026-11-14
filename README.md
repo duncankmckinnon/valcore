@@ -70,6 +70,21 @@ The website docs explain the concepts the other four surfaces assume — label s
 frozen versions, run kinds, agreement metrics, installation, credentials, portable
 packages, CI, and Logfire. The app links there instead of maintaining a second copy.
 
+### Run an agent and evaluate its responses
+
+In **Runs → New run**, choose **Agent** to generate responses for a dataset,
+or **Agent then evaluators** to select a dataset, an agent version, and one or
+more evaluator versions. The workflow saves the agent responses automatically,
+then runs the evaluators concurrently against the original row data plus the new
+response columns. Each evaluator has its own run, progress, and results, linked
+from the agent run.
+
+Failed agent rows are skipped by the evaluators. If the agent run fails or is
+cancelled, queued evaluators do not start. A failing evaluator does not stop the
+others. Execution continues when you leave the page; keep the valcore server
+running. Concurrency is configured per run.
+
+
 ## Quickstart
 
 Store your gateway API key, then start the app:

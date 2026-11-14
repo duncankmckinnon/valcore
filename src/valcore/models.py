@@ -546,6 +546,14 @@ class DerivationStatus(SQLModel, table=True):
     state: DerivationState
 
 
+class RunDependency(SQLModel, table=True):
+    """A queued evaluator run waits for this agent run to produce its input."""
+
+    id: str = Field(default_factory=lambda: uuid4().hex, primary_key=True)
+    parent_run_id: str = Field(index=True)
+    child_run_id: str = Field(unique=True, index=True)
+
+
 class RunDerivation(SQLModel, table=True):
     """Links a run to the derivation it fills or reads.
 
