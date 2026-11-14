@@ -31,8 +31,8 @@ kinds of key gate specific capabilities:
 
 | Capability | Needs |
 |---|---|
-| `run agent`, `run evaluator`, `run experiment` / seeded generation, on a `gateway/...` model | gateway API key |
-| `run agent`, `run evaluator`, `run experiment`, on a `local/<cli>` model | the named CLI installed and already logged in on this machine — no gateway key |
+| `run agent`, `run pipeline`, `run evaluator`, `run experiment` / seeded generation, on a `gateway/...` model | gateway API key |
+| `run agent`, `run pipeline`, `run evaluator`, `run experiment`, on a `local/<cli>` model | the named CLI installed and already logged in on this machine — no gateway key |
 | `logfire pull` / `list` / `fetch` | Logfire read key (or the legacy combined key) |
 | `logfire push` | Logfire write key (or the legacy combined key) |
 | Tracing valcore's own runs | Logfire token — optional; silently does nothing without it |
