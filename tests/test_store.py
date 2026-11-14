@@ -3140,3 +3140,21 @@ def test_agent_pipeline_creation_is_atomic_and_dependencies_persist(store: Store
     assert reopened.get_run(children[0]).status is RunStatus.PENDING
     assert reopened.get_agent_version(agent_version.id).frozen
     assert reopened.get_version(version.id).frozen
+
+
+def test_invocation_contract_additive_upgrade_preserves_legacy_versions(tmp_path, make_engine):
+    engine = make_engine(tmp_path / "legacy-invocation.db")
+    init_db(engine)
+    store = Store(engine)
+    evaluator = store.create_evaluator("legacy")
+    version = store.create_version(evaluator.id, **version_fields())
+    with engine.begin() as conn:
+        conn.exec_driver_sql("ALTER TABLE evaluatorversion DROP COLUMN input_contract")
+        conn.exec_driver_sql("ALTER TABLE evaluatorversion DROP COLUMN input_mode")
+        conn.exec_driver_sql("ALTER TABLE agentresponse DROP COLUMN invocation")
+    init_db(engine)
+    init_db(engine)
+    restored = store.get_version(version.id)
+    assert restored.input_contract == "columns"
+    assert restored.input_mode == "input_output"
+    assert restored.prompt_template == version.prompt_template

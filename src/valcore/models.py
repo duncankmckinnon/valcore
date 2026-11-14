@@ -433,6 +433,8 @@ class EvaluatorVersion(OutputFieldsVersion, SQLModel, table=True):
     frozen: bool = False
     model: str
     instructions: str
+    input_contract: str = "columns"
+    input_mode: str = "input_output"
     prompt_template: str
     required_columns: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     output_fields: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
@@ -583,6 +585,7 @@ class AgentResponse(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     derivation_id: str = Field(index=True)
     dataset_row_id: str = Field(index=True)
+    invocation: dict | None = Field(default=None, sa_column=Column(JSON))
     data: dict = Field(default_factory=dict, sa_column=Column(JSON))
     latency_ms: int | None = None
     usage: dict | None = Field(default=None, sa_column=Column(JSON))
@@ -765,7 +768,11 @@ def validate_version(version: EvaluatorVersion) -> None:
                 f"not {score.type.value}."
             )
 
-    if not version.required_columns:
+    if version.input_contract not in ("columns", "invocation"):
+        raise ConfigError("Unknown evaluator input contract.")
+    if version.input_mode not in ("input_output", "output"):
+        raise ConfigError("Unknown evaluator input mode.")
+    if version.input_contract == "columns" and not version.required_columns:
         raise ConfigError("Evaluator version must define at least one required column.")
 
     missing = sorted(_template_columns(version.prompt_template) - set(version.required_columns))

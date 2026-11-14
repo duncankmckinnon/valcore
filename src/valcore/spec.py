@@ -188,6 +188,8 @@ def spec_to_version_fields(spec: AgentSpec, valcore: dict) -> dict:
         "instructions": spec.instructions,
         "output_fields": schema_to_output_fields(spec.output_schema),
         "capabilities": _capabilities_from_spec(spec),
+        "input_contract": valcore.get("input_contract", "columns"),
+        "input_mode": valcore.get("input_mode", "input_output"),
         "prompt_template": valcore["prompt_template"],
         "required_columns": valcore["required_columns"],
         "score_field": valcore["score_field"],
@@ -200,6 +202,8 @@ def spec_to_version_fields(spec: AgentSpec, valcore: dict) -> dict:
 def valcore_meta(version: EvaluatorVersion) -> dict:
     """Produce the package's ``valcore`` block — the fields no foreign format can express."""
     return {
+        "input_contract": version.input_contract,
+        "input_mode": version.input_mode,
         "prompt_template": version.prompt_template,
         "required_columns": version.required_columns,
         "score_field": version.score_field,

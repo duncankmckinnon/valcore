@@ -391,6 +391,7 @@ async def _derive_row(
             {
                 "row_id": row.id,
                 "data": execution.output,
+                "invocation": execution.invocation,
                 "latency_ms": execution.latency_ms,
                 "usage": execution.usage,
                 "error": execution.error,

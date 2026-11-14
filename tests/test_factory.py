@@ -689,3 +689,60 @@ def test_build_agent_keeps_capabilities_for_a_gateway_model(
 
     assert len(calls) == 1
     assert len(calls[0]) == 1 and calls[0][0].name == "Shell"
+
+
+def test_invocation_prompt_keeps_structured_values_and_omits_unused_input():
+    import json
+
+    version = make_version(
+        input_contract="invocation",
+        input_mode="output",
+        prompt_template="Judge.",
+        required_columns=[],
+    )
+    prompt = render_prompt(
+        version, {}, invocation={"input": {"secret": "unused"}, "output": {"items": [1, False]}}
+    )
+    context = json.loads(prompt.split("Invocation:\n", 1)[1])
+    assert context == {"output": {"items": [1, False]}, "metadata": {}}
+
+
+def test_invocation_prompt_requires_recorded_input_when_requested():
+    version = make_version(
+        input_contract="invocation",
+        input_mode="input_output",
+        prompt_template="Judge.",
+        required_columns=[],
+    )
+    with pytest.raises(ContractError, match="input"):
+        render_prompt(version, {}, invocation={"output": "answer"})
+
+
+def test_invocation_metadata_is_separate_from_output():
+    import json
+
+    version = make_version(
+        input_contract="invocation",
+        input_mode="input_output",
+        prompt_template="Judge {tenant}.",
+        required_columns=["tenant"],
+    )
+    prompt = render_prompt(version, {"tenant": "a"}, invocation={"input": None, "output": 0})
+    assert json.loads(prompt.split("Invocation:\n", 1)[1]) == {
+        "input": None,
+        "output": 0,
+        "metadata": {"tenant": "a"},
+    }
+
+
+@pytest.mark.anyio
+async def test_execution_preserves_actual_invocation_arguments_and_output():
+    version = make_agent_version()
+    agent = Agent(TestModel(custom_output_text="actual answer"))
+    execution = await execute_agent_version(
+        version, agent, {"question": "why?", "tenant": "unused"}
+    )
+    assert execution.invocation == {
+        "input": {"prompt": "Answer why?.", "deps": {}},
+        "output": "actual answer",
+    }

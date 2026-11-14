@@ -4,6 +4,7 @@ Both builders belong here because this module is the shared boundary between val
 persisted version specifications and the executable agents reconstructed from them.
 """
 
+import json
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -43,6 +44,7 @@ class AgentExecution:
     """The complete inspectable outcome of running one stored subject-agent version."""
 
     prompt: str
+    invocation: dict[str, Any]
     deps: dict[str, Any]
     output: dict[str, object]
     response_columns: list[str]
@@ -219,6 +221,12 @@ async def execute_agent_version(
         result = await agent.run(prompt, deps=deps)
         return AgentExecution(
             prompt=prompt,
+            invocation={
+                "input": {"prompt": prompt, "deps": deps},
+                "output": result.output.model_dump(mode="json")
+                if isinstance(result.output, BaseModel)
+                else result.output,
+            },
             deps=deps,
             output=agent_response_data(spec, result.output, output_fields=version.output_fields),
             response_columns=response_columns,
@@ -229,6 +237,7 @@ async def execute_agent_version(
     except Exception as exc:  # noqa: BLE001 - model failures are returned for inspection.
         return AgentExecution(
             prompt=prompt,
+            invocation={"input": {"prompt": prompt, "deps": deps}},
             deps=deps,
             output={},
             response_columns=response_columns,
@@ -238,7 +247,9 @@ async def execute_agent_version(
         )
 
 
-def render_prompt(version: EvaluatorVersion, row_data: dict) -> str:
+def render_prompt(
+    version: EvaluatorVersion, row_data: dict, *, invocation: dict | None = None
+) -> str:
     """Format the version's prompt template against a row's data.
 
     Raises ContractError naming the missing column when the template references one
@@ -246,7 +257,19 @@ def render_prompt(version: EvaluatorVersion, row_data: dict) -> str:
     """
     values = {key: str(value) for key, value in row_data.items()}
     try:
-        return version.prompt_template.format(**values)
+        prompt = version.prompt_template.format(**values)
+        if version.input_contract == "invocation":
+            if invocation is None or "output" not in invocation:
+                raise ContractError("An invocation evaluator requires a mapped or recorded output.")
+            context = {"output": invocation["output"], "metadata": {}}
+            if version.input_mode == "input_output":
+                if "input" not in invocation:
+                    raise ContractError("This evaluator requires a mapped or recorded input.")
+                context["input"] = invocation["input"]
+            for key in version.required_columns:
+                context["metadata"][key] = row_data[key]
+            return prompt + "\n\nInvocation:\n" + json.dumps(context, ensure_ascii=False)
+        return prompt
     except KeyError as exc:
         column = exc.args[0]
         raise ContractError(
