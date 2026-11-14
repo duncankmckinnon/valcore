@@ -3,13 +3,22 @@
 from valcore.errors import ContractError
 
 
-def check_mapping(version, columns: list[str], mapping: dict, *, has_invocation: bool, metadata_columns: list[str] | None = None) -> None:
+def check_mapping(
+    version,
+    columns: list[str],
+    mapping: dict,
+    *,
+    has_invocation: bool,
+    metadata_columns: list[str] | None = None,
+) -> None:
     """Validate bindings before queuing work; recorded values are checked when read."""
     if not isinstance(mapping, dict) or set(mapping) - {"input", "output", "metadata"}:
         raise ContractError("Invocation mapping accepts only input, output, and metadata.")
     metadata_columns = columns if metadata_columns is None else metadata_columns
     metadata = mapping.get("metadata", {})
-    if not isinstance(metadata, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in metadata.items()):
+    if not isinstance(metadata, dict) or any(
+        not isinstance(k, str) or not isinstance(v, str) for k, v in metadata.items()
+    ):
         raise ContractError("Metadata mapping must map metadata names to column names.")
     for role in ("input", "output"):
         if role in mapping and (not isinstance(mapping[role], str) or mapping[role] not in columns):
@@ -25,13 +34,23 @@ def check_mapping(version, columns: list[str], mapping: dict, *, has_invocation:
         if role == "input" and version.input_mode == "output":
             continue
         if not has_invocation and role not in mapping:
-            raise ContractError(f"Map an {role} column for this evaluator, or select a recorded agent invocation.")
+            raise ContractError(
+                f"Map an {role} column for this evaluator, or select a recorded agent invocation."
+            )
 
 
-def bind_invocation(version, data: dict, mapping: dict, recorded: dict | None, *, metadata_data: dict | None = None):
+def bind_invocation(
+    version, data: dict, mapping: dict, recorded: dict | None, *, metadata_data: dict | None = None
+):
     """Missing and explicit null are different: null is a valid input or return value."""
     metadata_data = data if metadata_data is None else metadata_data
-    check_mapping(version, list(data), mapping, has_invocation=recorded is not None, metadata_columns=list(metadata_data))
+    check_mapping(
+        version,
+        list(data),
+        mapping,
+        has_invocation=recorded is not None,
+        metadata_columns=list(metadata_data),
+    )
     invocation = dict(recorded or {})
     for role in ("input", "output"):
         if role in mapping:
@@ -39,7 +58,9 @@ def bind_invocation(version, data: dict, mapping: dict, recorded: dict | None, *
     if "output" not in invocation:
         raise ContractError("No recorded output; map an output column.")
     if version.input_mode == "input_output" and "input" not in invocation:
-        raise ContractError("No recorded input; map an input column or use an output-only evaluator.")
+        raise ContractError(
+            "No recorded input; map an input column or use an output-only evaluator."
+        )
     if version.input_mode == "output":
         invocation.pop("input", None)
     names = dict.fromkeys(version.required_columns)
@@ -53,7 +74,11 @@ def invocation_contexts(store, run, version, rows):
     if version.input_contract != "invocation":
         return {}
     link = store.get_run_derivation(run.id)
-    responses = {r.dataset_row_id: r for r in store.list_agent_responses(link.derivation_id)} if link else {}
+    responses = (
+        {r.dataset_row_id: r for r in store.list_agent_responses(link.derivation_id)}
+        if link
+        else {}
+    )
     source = {r.id: r.data for r in store.list_rows(run.dataset_id)}
     result = {}
     for row in rows:
@@ -63,5 +88,7 @@ def invocation_contexts(store, run, version, rows):
             recorded = {"output": response.data}
         # Explicit mappings can reference the response projection. Metadata defaults to
         # original source values so an agent cannot replace request metadata by returning it.
-        result[row.id] = bind_invocation(version, row.data, run.invocation_mapping, recorded, metadata_data=source[row.id])
+        result[row.id] = bind_invocation(
+            version, row.data, run.invocation_mapping, recorded, metadata_data=source[row.id]
+        )
     return result
