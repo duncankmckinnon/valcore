@@ -283,6 +283,24 @@ is what makes valcore usable in CI.
 
 Once the judge agrees with you, run `eval` runs over unlabeled data to score it.
 
+To generate fresh responses and score them in one command, use
+`valcore run pipeline AGENT --dataset DATASET --evaluator EVALUATOR`.
+Repeat `--evaluator` for multiple judges; `--version` selects the Agent version and
+`--evaluator-version EVALUATOR VERSION` overrides a judge's active version.
+The workflow saves Agent responses automatically, then evaluates them concurrently.
+
+Use `--watch --json` for progress on stderr and one machine-readable summary on stdout.
+The CLI waits for completion and needs no server. Exit 0 means all runs completed
+without errors; execution failures still produce a JSON summary before exit 1.
+`valcore list runs --json` exposes parent, child, and derivation links for later inspection.
+See [the pipeline reference](reference.md#valcore-run-pipeline-agent---dataset-dataset---evaluator-evaluator)
+for options, concurrency limits, and partial-failure behavior.
+
+For a Logfire experiment, `valcore run experiment EVALUATOR --dataset DATASET`
+accepts `--kind validation` (the default) or `--kind eval`. Use
+`--kind eval --derivation REF` to score saved responses. Validation remains limited
+to the base Dataset because derivations do not yet have their own Label Sets.
+
 ### 5. Export
 
 Export an evaluator version as a standalone Python script that runs the same judge
